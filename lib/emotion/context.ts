@@ -46,7 +46,7 @@ export function buildEmotionContext(args: {
 }
 
 function deriveBaseline(ltm: MemoryRecord[]) {
-  const vads = ltm.map((m) => m.vad);
+  const vads = ltm.map((m) => m.vad).filter((v): v is VAD => !!v && typeof v.v === "number");
   if (vads.length < 3) return null;
   const mean = avg(vads);
   return {

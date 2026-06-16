@@ -3,6 +3,7 @@ import { CONFIG } from "../config";
 import { buildEmotionContext } from "../emotion/context";
 import { detectTextEmotion, fuseEmotion } from "../emotion/detect";
 import { importanceScore, novelty, policyFlag, taskCriticality } from "../emotion/importance";
+import { calculateCAI, type CAIResult } from "../emotion/cai";
 import { logSessionEvent, makeEvent } from "../logging/session-logger";
 import { retrieve, topScore } from "../memory/retrieval";
 import { stm } from "../memory/stm";
@@ -28,12 +29,13 @@ export interface TurnTrace {
   utterance: Utterance;
   emotion: ReturnType<typeof buildEmotionContext>;
   importance: number;
-  memoryWrite: ReturnType<typeof writeMemory>;
+  memoryWrite: Awaited<ReturnType<typeof writeMemory>>;
   retrieved: { mtmIds: string[]; ltmUserIds: string[]; ltmClientIds: string[]; scores: { id: string; score: number }[] };
   policy: ReturnType<typeof decidePolicy>;
   guardReasons: string[];
   llmModel: string;
   usedLiveLlm: boolean;
+  cai?: CAIResult;
 }
 
 export interface TurnOutput {
@@ -83,6 +85,23 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     trajectory: emotionCtx.trajectory,
     zDeviation: emotionCtx.zDeviation,
     flags: emotionCtx.flags,
+  }));
+
+  // FR-20: Calculate Commitment Acoustic Index (CAI)
+  const responseLength = input.transcript.split(/\s+/).length;
+  // Approximations since we don't have true acoustic feature extractors yet
+  const cai = calculateCAI({
+    pitchVariation: fused.vad.a > 0.3 ? 0.8 : 0.4,
+    speakingRate: 140, // assume normal
+    interruptions: 0,
+    pauseDurationMs: 500,
+    responseLength,
+  });
+
+  await logSessionEvent(makeEvent(evBase, "cai", {
+    score: cai.score,
+    category: cai.category,
+    explanation: cai.explanation
   }));
 
   const queryEmbedding = embed(input.transcript);
@@ -136,6 +155,13 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     notes: policy.notes,
   }));
 
+  if (policy.escalate !== "none") {
+    await logSessionEvent(makeEvent(evBase, "escalation", {
+      type: policy.escalate,
+      reason: policy.notes.join(", ")
+    }));
+  }
+
   const llmContext = buildLLMContext({
     userId: input.userId,
     clientId: input.clientId,
@@ -145,7 +171,11 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     policy,
   });
 
-  const llmReply = await generateReply({ system: llmContext.system, user: llmContext.user });
+  const llmReply = await generateReply({
+    system: llmContext.system,
+    user: llmContext.user,
+    clientId: input.clientId,
+  });
 
   const guarded = guardOutput({
     reply: llmReply.text,
@@ -193,6 +223,7 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
       guardReasons: guarded.reasons,
       llmModel: llmReply.model,
       usedLiveLlm: llmReply.usedLive,
+      cai,
     },
   };
 }

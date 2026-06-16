@@ -13,6 +13,15 @@ export default function AnalyticsDashboard() {
   }, []);
 
   if (!data) return <div className="p-10 font-sans text-gray-500 animate-pulse">Loading Analytics...</div>;
+  if (data.error) return (
+    <div className="p-10 font-sans">
+      <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl">
+        <h2 className="font-bold mb-2">Failed to load analytics</h2>
+        <p>{data.error}</p>
+        <p className="mt-4 text-sm font-semibold">Note: Did you run the SQL migration script from walkthrough.md in your Supabase SQL editor? The database might be missing required columns like 'clientId'.</p>
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-gray-50 p-8 font-sans text-gray-800">
@@ -21,7 +30,7 @@ export default function AnalyticsDashboard() {
         <p className="text-gray-500 mt-2">Real-time Analytics & Session Monitoring</p>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Total Calls</h3>
           <p className="text-4xl font-bold text-blue-600">{data.metrics.totalCalls}</p>
@@ -29,6 +38,10 @@ export default function AnalyticsDashboard() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Tool Invocations</h3>
           <p className="text-4xl font-bold text-indigo-600">{data.metrics.totalToolInvocations}</p>
+        </div>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+          <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Escalations</h3>
+          <p className="text-4xl font-bold text-orange-500">{data.metrics.escalations}</p>
         </div>
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Active Bookings</h3>

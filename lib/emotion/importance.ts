@@ -45,6 +45,7 @@ export function novelty(embedding: number[], existing: MemoryRecord[]): number {
   if (existing.length === 0) return 1;
   let maxSim = 0;
   for (const m of existing) {
+    if (!m.embedding || m.embedding.length === 0) continue;
     const s = cosine(embedding, m.embedding);
     if (s > maxSim) maxSim = s;
   }

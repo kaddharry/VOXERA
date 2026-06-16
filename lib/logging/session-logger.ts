@@ -8,7 +8,9 @@ export type SessionEventType =
   | "policy"
   | "guard"
   | "llm_reply"
-  | "tool_invocation";
+  | "tool_invocation"
+  | "cai"
+  | "escalation";
 
 export interface SessionEvent {
   ts: number;

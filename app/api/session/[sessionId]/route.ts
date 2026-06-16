@@ -16,6 +16,6 @@ export async function GET(
     );
   }
 
-  const events = getSessionLog(sessionId);
+  const events = await getSessionLog(sessionId);
   return Response.json({ sessionId, eventCount: events.length, events });
 }

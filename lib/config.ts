@@ -29,8 +29,15 @@ export const CONFIG = {
   deepgram: {
     sttModel: "nova-2-general",
     sttTier: "enhanced",
-    ttsModel: "aura-asteria-en",
+    ttsModel: "aura-asteria-en", // Default: female, friendly
     language: "en",
+    // FR-25: Available voice personas for businesses to choose from
+    voicePersonas: {
+      "female-friendly": { model: "aura-asteria-en", label: "Female · Friendly" },
+      "male-formal": { model: "aura-orion-en", label: "Male · Formal" },
+      "female-formal": { model: "aura-athena-en", label: "Female · Formal" },
+      "male-friendly": { model: "aura-arcas-en", label: "Male · Friendly" },
+    } as Record<string, { model: string; label: string }>,
   },
   llm: {
     model: "llama-3.3-70b-versatile",

@@ -12,6 +12,7 @@ async function run() {
     console.log("\nAttempting to create a booking...");
     const booking = await createBooking({
       userId: "test-user-123",
+      clientId: "test-client-id",
       date: "2026-12-25",
       time: "19:00",
       partySize: 4

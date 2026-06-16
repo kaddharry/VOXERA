@@ -12,6 +12,7 @@ export interface LLMReply {
 export async function generateReply(args: {
   system: string;
   user: string;
+  clientId: string;
 }): Promise<LLMReply> {
   const model = CONFIG.llm.model;
 
@@ -61,7 +62,7 @@ export async function generateReply(args: {
           } catch {}
 
           console.log(`[LLM] Invoking Tool: ${name} with args`, parsedArgs);
-          const resultStr = await dispatchToolCall(name, parsedArgs);
+          const resultStr = await dispatchToolCall(name, parsedArgs, args.clientId);
           
           messages.push({
             role: "tool",

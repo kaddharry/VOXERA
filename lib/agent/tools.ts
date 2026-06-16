@@ -58,7 +58,7 @@ export const TOOLS: ToolDef[] = [
   },
 ];
 
-export async function dispatchToolCall(name: string, args: Record<string, any>): Promise<string> {
+export async function dispatchToolCall(name: string, args: Record<string, any>, clientId: string = "dummy-client-id"): Promise<string> {
   try {
     switch (name) {
       case "check_availability": {
@@ -68,6 +68,7 @@ export async function dispatchToolCall(name: string, args: Record<string, any>):
       case "create_booking": {
         const booking = await createBooking({
           userId: args.userId,
+          clientId: clientId,
           date: args.date,
           time: args.time,
           partySize: args.partySize,

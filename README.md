@@ -1,66 +1,107 @@
-# emotion-engine
+<div align="center">
+  <h1>🎙️ VOXERA</h1>
+  <p><b>Voice-Based Agentic AI Receptionist Platform</b></p>
+  <p>Real-time voice agent routing <b>Deepgram STT + TTS</b> through a hierarchical, emotion-conditioned memory system powered by <b>Supabase `pgvector`</b> and an emotion-aware LLM policy layer.</p>
 
-Real-time voice agent that routes **Deepgram STT + TTS** through a **hierarchical, emotion-conditioned memory system** (STM / MTM / LTM) and an emotion-aware retrieval + policy layer.
+  [![Next.js](https://img.shields.io/badge/Next.js-16-black?style=flat-square&logo=next.js)](https://nextjs.org/)
+  [![Supabase](https://img.shields.io/badge/Supabase-pgvector-3ECF8E?style=flat-square&logo=supabase)](https://supabase.com/)
+  [![Deepgram](https://img.shields.io/badge/Deepgram-Nova--2-13B5C1?style=flat-square)](https://deepgram.com/)
+  [![Llama 3](https://img.shields.io/badge/Groq-Llama--3.3-orange?style=flat-square)](https://groq.com/)
+</div>
 
-## Pipeline
+---
 
+## 🚀 Features
+
+- **🧠 Production Vector Memory:** Replaced local in-memory stores with `pgvector` on Supabase. Implements dynamic semantic routing for Short-Term (STM), Medium-Term (MTM), and Long-Term (LTM) memories.
+- **🔐 Multi-Tenant Architecture:** Secure Admin Authentication portal utilizing server-side cookies (`@supabase/ssr`) guaranteeing client data isolation (`clientId`).
+- **🗂️ Knowledge Base UI:** Drag-and-drop dashboard for business owners to upload `.txt` and `.pdf` files. The pipeline automatically chunks, embeds, and stores business knowledge for RAG.
+- **🎭 Voice Personas:** Dynamically toggle AI personalities (Professional, Friendly, Emphatic, Casual) via the admin dashboard, mapping directly to Deepgram TTS acoustic models.
+- **📈 Real-Time Analytics:** Dashboard visualizing the Commitment Acoustic Index (CAI), user emotional states (VAD tracking), escalation triggers, and tool invocations.
+- **🛠️ Automated Workflows:** Integrated tool-calling for intelligent calendar availability checks, reservation creation, and live email confirmation dispatches via the **Resend SDK**.
+
+---
+
+## 🔄 Core Pipeline
+
+```mermaid
+graph TD
+    A[Mic] -->|Deepgram Nova-2| B(Text + STT Confidence)
+    B --> C{Orchestrator Turn}
+    
+    C --> D[Text Emotion + VAD]
+    D --> E[Fused Emotion State]
+    E --> F[Push to STM & Context]
+    F --> G[Importance Score]
+    
+    G --> H[Write Memory]
+    H -->|Promote on Recurrence| I[(Supabase LTM)]
+    
+    I --> J[Retrieve]
+    J -->|Semantic + EmoMatch + Recency + Importance| K[Decide Policy]
+    K -->|Acknowledge, Escalate, Guard| L(LLM: Llama-3.3-70b)
+    L --> M[Guard Output]
+    M -->|Deepgram Aura| N[Audio Output]
 ```
-mic → /api/stt (Deepgram nova-2) → text + stt_confidence
-    → /api/turn (orchestrator):
-         text emotion (lexicon+VAD) → fused emotion
-         → stm.push → buildEmotionContext → importance score I
-         → writeMemory (STM|MTM + promote→LTM on recurrence)
-         → retrieve (semantic + EmoMatch + recency·τI + importance − staleness − redundancy)
-         → decidePolicy (acknowledge, pace, escalate, no-upsell, safety)
-         → LLM (Anthropic) with grounded evidence + policy + STM
-         → guardOutput (citation fence, STT/retrieval gates, policy injection)
-    → /api/tts (Deepgram Aura) → audio/mpeg → <audio>
-```
 
-## Scoring (see [lib/emotion/importance.ts](lib/emotion/importance.ts), [lib/memory/retrieval.ts](lib/memory/retrieval.ts))
+## 🧮 Acoustic & Semantic Scoring
 
-- **Importance**: `I = α·intensity + β·ΔVAD_user + γ·novelty + δ·recurrence + ε·taskCriticality + ζ·policyFlag`
-- **Retrieval**: `score = w1·cos(q,m) + w2·EmoMatch + w3·exp(−Δt/τ_I) + w4·I(m) − w5·stale − w6·redund` with `τ_I = τ₀(1 + λ·I)`.
+The platform evaluates real-time conversational significance utilizing advanced decay formulas.
 
-## Run
+- **Importance Scoring**: 
+  `I = α·intensity + β·ΔVAD_user + γ·novelty + δ·recurrence + ε·taskCriticality + ζ·policyFlag`
+- **Retrieval Math**: 
+  `score = w1·cos(q,m) + w2·EmoMatch + w3·exp(−Δt/τ_I) + w4·I(m) − w5·stale − w6·redund`
+  *With Emotion-adaptive decay:* `τ_I = τ₀(1 + λ·I)`
 
-```bash
-cp .env.example .env.local   # add DEEPGRAM_API_KEY and optionally ANTHROPIC_API_KEY
-npm install
-npm run dev
-```
+---
 
-Open `http://localhost:3000`. Without `ANTHROPIC_API_KEY` the LLM falls back to a deterministic canned reply (policy rules still apply) so you can exercise the memory + emotion + policy path offline. Without `DEEPGRAM_API_KEY` the STT/TTS routes return 501 and you can still type into the textbox.
+## 💻 Local Setup & Deployment
 
-Offline smoke test (no keys needed):
+> [!IMPORTANT]
+> To run this application locally, you will need a Supabase project instance with the `pgvector` extension enabled.
 
-```bash
-npx tsx scripts/smoke.ts
-```
+1. **Clone & Install**
+   ```bash
+   git clone https://github.com/your-username/voxera.git
+   cd voxera
+   npm install
+   ```
 
-## Directory layout
+2. **Environment Variables**
+   Copy `.env.example` to `.env.local` and configure your API keys:
+   ```bash
+   cp .env.example .env.local
+   ```
+   *(Requires: `GROQ_API_KEYS`, `DEEPGRAM_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`)*
 
-- [lib/types.ts](lib/types.ts) — core types (`Utterance`, `MemoryRecord`, `PolicyDirectives`, `VAD`…).
-- [lib/emotion/](lib/emotion/) — text lexicon → VAD, fusion, context builder (trajectory, z-score, flags), importance engine.
-- [lib/memory/](lib/memory/) — STM ring buffer, in-memory vector store, writer (routing, merge, promotion), retrieval (formula R + MMR).
-- [lib/agent/](lib/agent/) — policy rules, LLM context assembler, anti-hallucination guard, orchestrator.
-- [lib/deepgram/](lib/deepgram/) — Deepgram SDK v5 wrappers for STT (`listen.v1.media.transcribeFile`) and TTS (`speak.v1.audio.generate`).
-- [app/api/](app/api/) — Next.js 16 route handlers (`runtime = "nodejs"`, `dynamic = "force-dynamic"`).
-- [app/_components/VoiceAgent.tsx](app/_components/VoiceAgent.tsx) — mic → STT → turn → TTS demo UI with per-turn trace.
+3. **Database Migration**
+   Execute the migration script to configure your Postgres instance.
+   - Navigate to your Supabase **SQL Editor**.
+   - Copy the contents of `sql/migration.sql` and run the script. This will establish the `memories`, `reservations`, and `session_logs` tables along with the `match_memories` RPC function.
 
-## Research claims
+4. **Run Development Server**
+   ```bash
+   npm run dev
+   ```
+   Visit `http://localhost:3000` to interact with the Voice Agent, or navigate to `http://localhost:3000/admin` to access the secured dashboard.
 
-1. Emotion as a governing signal for *storage* and *retrieval* (not just response style).
-2. Temporal emotion timeline with per-user VAD baseline + escalation detection.
-3. Emotion-adaptive decay `τ_I = τ₀(1+λI)` — important affective memories persist longer.
-4. Emotion-congruent retrieval via VAD cosine on top of semantic similarity.
-5. Dual-scope LTM (user + client) unified in one retrieval pass.
-6. Closed-loop memory × policy × anti-hallucination with confidence gates.
+---
 
-## Swap points (for production)
+## 📁 Directory Architecture
 
-- **STT streaming**: replace `transcribeBuffer` with `client.listen.v1.connect()` WebSocket; feed partials into `handleTurn` on endpointing.
-- **TTS streaming**: replace `synthesize` with `client.speak.v1.connect()` WebSocket for first-chunk < 250 ms.
-- **Embeddings**: swap [lib/util/embed.ts](lib/util/embed.ts) with a real embedding service; keep the `(text) → number[]` signature.
-- **Vector store**: swap [lib/memory/store.ts](lib/memory/store.ts) with pgvector/Qdrant; retain `put/search/byTier`.
-- **Audio emotion**: implement `detectAudioEmotionStub` against a Wav2Vec2 head; fusion in [lib/emotion/detect.ts](lib/emotion/detect.ts) is modality-agnostic.
+| Path | Description |
+|------|-------------|
+| 📂 `lib/types.ts` | Core interfaces (`Utterance`, `MemoryRecord`, `PolicyDirectives`, `VAD`). |
+| 📂 `lib/emotion/` | VAD fusion, trajectory analysis, Commitment Acoustic Index (CAI), and importance engine. |
+| 📂 `lib/memory/` | STM ring buffer, Supabase `pgvector` writer (merge/promotion) & MMR retrieval algorithms. |
+| 📂 `lib/agent/` | Dynamic LLM system prompt assembler, tool orchestration, and anti-hallucination guard rails. |
+| 📂 `lib/deepgram/`| Real-time WebSocket wrappers for STT and HTTP TTS logic. |
+| 📂 `app/api/` | Next.js 16 App Router handlers bridging the client stream to the orchestrator. |
+| 📂 `app/admin/` | Secure multi-tenant SSR portal containing analytics, settings, and the RAG document uploader. |
+
+---
+
+<div align="center">
+  <p><i>Engineered for robust, hallucination-resistant voice workflows.</i></p>
+</div>

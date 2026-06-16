@@ -9,9 +9,10 @@ async function run() {
     await sendBookingConfirmation("onboarding@resend.dev", {
       id: "BKG-TEST",
       userId: "123",
+      clientId: "test-client",
       date: "2026-12-25",
       time: "19:00",
-      partySize: 4,
+      partySize: 2,
       status: "confirmed"
     });
     console.log("✅ Email trigger executed!");

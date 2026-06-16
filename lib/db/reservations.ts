@@ -6,6 +6,7 @@ import { supabase } from "./supabase";
 export interface Booking {
   id: string;
   userId: string;
+  clientId: string;
   status: "confirmed" | "cancelled";
   date: string;
   time: string;

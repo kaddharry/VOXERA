@@ -54,10 +54,11 @@ export function VoiceAgent() {
         setHistory((h) => [...h, { user: text, reply: data.reply, trace: data.trace }]);
         setTranscript("");
 
+        const persona = localStorage.getItem("voxera_voice_persona") || "female-friendly";
         const tts = await fetch("/api/tts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: data.reply, policy: data.trace.policy }),
+          body: JSON.stringify({ text: data.reply, policy: data.trace.policy, persona }),
         });
         if (tts.ok) {
           const blob = await tts.blob();

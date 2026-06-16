@@ -19,12 +19,13 @@ export class DeepgramLiveWrapper {
     this.live = await deepgram.listen.v1.connect({
       model: "nova-2",
       language: "en",
-      smart_format: true,
+      smart_format: "true",
       encoding: "linear16",
       sample_rate: 16000,
       channels: 1,
-      interim_results: true,
-      utterance_end_ms: 1000,
+      interim_results: "true",
+      utterance_end_ms: "1000",
+      Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
     });
 
     console.log("[Deepgram Live] Connected.");

@@ -13,12 +13,12 @@ export async function POST(request: NextRequest) {
       { status: 501 },
     );
   }
-  const body = (await request.json()) as { text?: string; policy?: PolicyDirectives };
+  const body = (await request.json()) as { text?: string; policy?: PolicyDirectives; persona?: string };
   if (!body.text || body.text.length === 0) {
     return Response.json({ error: "text is required" }, { status: 400 });
   }
   try {
-    const audio = await synthesize(body.text, { policy: body.policy });
+    const audio = await synthesize(body.text, { policy: body.policy, persona: body.persona });
     const ab = audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength) as ArrayBuffer;
     return new Response(ab, {
       status: 200,

@@ -18,7 +18,7 @@ Today's date is 2026-10-09.`;
   console.log("\n[Test] Executing LLM Loop (Waiting for LLM & Tool Calls)...\n");
 
   try {
-    const reply = await generateReply({ system, user });
+    const reply = await generateReply({ system, user, clientId: "test-client-id" });
     console.log(`\n[Test] Final Agent Reply: "${reply.text}"`);
     console.log(`[Test] Model Used: ${reply.model}`);
     console.log(`[Test] Used Live API: ${reply.usedLive}`);

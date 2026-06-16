@@ -15,7 +15,8 @@ export interface RetrievalRequest {
   emotion: EmotionContext;
 }
 
-function emoMatch(a: VAD, b: VAD): number {
+function emoMatch(a: VAD | undefined, b: VAD | undefined): number {
+  if (!a || !b) return 0.5; // neutral match if VAD data is missing
   const va = [a.v, a.a, a.d];
   const vb = [b.v, b.a, b.d];
   const s = cosine(va, vb);
@@ -37,8 +38,10 @@ function staleness(rec: MemoryRecord): number {
 
 function redundancyPenalty(rec: MemoryRecord, selected: MemoryRecord[]): number {
   if (selected.length === 0) return 0;
+  if (!rec.embedding || rec.embedding.length === 0) return 0;
   let maxSim = 0;
   for (const s of selected) {
+    if (!s.embedding || s.embedding.length === 0) continue;
     const sim = cosine(rec.embedding, s.embedding);
     if (sim > maxSim) maxSim = sim;
   }
@@ -53,7 +56,7 @@ function scoreRecord(
   boostEmotion: boolean,
 ): number {
   const { w } = CONFIG.retrieval;
-  const sem = clamp((cosine(queryEmb, rec.embedding) + 1) / 2);
+  const sem = (rec.embedding && rec.embedding.length > 0) ? clamp((cosine(queryEmb, rec.embedding) + 1) / 2) : 0.5;
   const emo = emoMatch(emotion.current.vad, rec.vad);
   const rec_ = recencyBoost(rec.ts, rec.importance);
   const imp = rec.importance;

@@ -7,12 +7,17 @@ import { getDeepgram } from "./client";
 // — this REST path is fine for non-streaming replies and demos.
 export async function synthesize(text: string, opts?: {
   policy?: PolicyDirectives;
+  persona?: string;
 }): Promise<Uint8Array> {
   const dg = getDeepgram();
   const shaped = applyProsody(text, opts?.policy);
+  
+  const personaConfig = opts?.persona ? CONFIG.deepgram.voicePersonas[opts.persona as keyof typeof CONFIG.deepgram.voicePersonas] : undefined;
+  const model = personaConfig?.model || CONFIG.deepgram.ttsModel;
+
   const binary = await dg.speak.v1.audio.generate({
     text: shaped,
-    model: CONFIG.deepgram.ttsModel,
+    model: model,
     encoding: "mp3",
   });
   const buf = await binary.arrayBuffer();

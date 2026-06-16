@@ -55,6 +55,7 @@ export async function writeMemory(input: WriteInput): Promise<{
   const mtmCandidates = await vectorStore.byTier("MTM", userId, clientId);
   const sameTopic = mtmCandidates.filter((m) => m.topic === topic);
   for (const cand of sameTopic) {
+    if (!cand.embedding || cand.embedding.length === 0) continue;
     const sim = cosine(embedding, cand.embedding);
     if (sim >= mergeSimilarity && cand.emotion === emotion.current.label) {
       await vectorStore.update(cand.id, {

@@ -15,12 +15,20 @@ const TurnSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  await ensureSeeded();
-  const body = await request.json();
-  const parsed = TurnSchema.safeParse(body);
-  if (!parsed.success) {
-    return Response.json({ error: "invalid payload", issues: parsed.error.issues }, { status: 400 });
+  try {
+    await ensureSeeded();
+    const body = await request.json();
+    const parsed = TurnSchema.safeParse(body);
+    if (!parsed.success) {
+      return Response.json({ error: "invalid payload", issues: parsed.error.issues }, { status: 400 });
+    }
+    const out = await handleTurn(parsed.data);
+    return Response.json(out);
+  } catch (err: any) {
+    console.error("[/api/turn] Unhandled error:", err);
+    return Response.json(
+      { error: err.message || "Internal server error", stack: process.env.NODE_ENV === "development" ? err.stack : undefined },
+      { status: 500 }
+    );
   }
-  const out = await handleTurn(parsed.data);
-  return Response.json(out);
 }

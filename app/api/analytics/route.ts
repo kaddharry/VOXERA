@@ -1,14 +1,24 @@
 import { NextResponse } from "next/server";
 import { supabase } from "../../../lib/db/supabase";
+import { createClient } from "../../../lib/db/server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    const supabaseServer = await createClient();
+    const { data: { user } } = await supabaseServer.auth.getUser();
+    
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const clientId = user.id;
+
     // 1. Fetch Session Events
     const { data: events, error: eventsError } = await supabase
       .from("session_logs")
       .select("*")
+      .eq("clientId", clientId)
       .order("ts", { ascending: false })
       .limit(1000); // Limit to last 1000 events for memory safety
 
@@ -27,11 +37,13 @@ export async function GET() {
     });
 
     const toolEvents = (events || []).filter((e) => e.type === "tool_invocation");
+    const escalationEvents = (events || []).filter((e) => e.type === "escalation");
 
     // 2. Fetch Bookings
     const { data: bookings, error: bookingsError } = await supabase
       .from("reservations")
-      .select("status");
+      .select("status")
+      .eq("clientId", clientId);
 
     if (bookingsError) throw bookingsError;
 
@@ -44,6 +56,7 @@ export async function GET() {
         totalToolInvocations: toolEvents.length,
         activeBookings,
         cancelledBookings,
+        escalations: escalationEvents.length,
       },
       emotions: emotionCounts,
       // send last 50 events for timeline

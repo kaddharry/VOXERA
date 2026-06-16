@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { CONFIG } from "@/lib/config";
 import { DEMO, ensureSeeded } from "@/lib/bootstrap";
 import { ingestDocument } from "@/lib/knowledge/ingest";
+import { createClient } from "@/lib/db/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,8 +36,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const clientId =
-    (formData.get("clientId") as string | null) ?? DEMO.clientId;
+  const supabaseServer = await createClient();
+  const { data: { user } } = await supabaseServer.auth.getUser();
+
+  if (!user) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const clientId = user.id;
 
   // Validate MIME type.
   const mimeType = file.type || "application/octet-stream";

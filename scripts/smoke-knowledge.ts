@@ -3,6 +3,7 @@ import { chunkText } from "../lib/knowledge/chunk";
 import { ingestDocument, queryKnowledgeBase } from "../lib/knowledge/ingest";
 import { classifyConfidence } from "../lib/emotion/confidence";
 import { vectorStore } from "../lib/memory/store";
+import { seedClientMemory } from "../lib/memory/writer";
 
 async function main() {
   await ensureSeeded();
