@@ -81,7 +81,7 @@ export async function retrieve(req: RetrievalRequest): Promise<RetrievedContext>
     const selected: MemoryRecord[] = [];
     const scored: Array<{ rec: MemoryRecord; score: number }> = [];
     for (const rec of cands) {
-      if (minSem != null) {
+      if (minSem != null && rec.embedding && rec.embedding.length > 0) {
         const sem = clamp((cosine(queryEmb, rec.embedding) + 1) / 2);
         if (sem < minSem && rec.importance < 0.7) continue;
       }

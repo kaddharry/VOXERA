@@ -70,7 +70,7 @@ export async function writeMemory(input: WriteInput): Promise<{
 
   const rec: MemoryRecord = {
     id: nanoid(10),
-    tier: importance >= tierThresholds.ltm ? "MTM" : "MTM",
+    tier: "MTM",
     userId,
     clientId,
     ts: utterance.ts,

@@ -93,8 +93,8 @@ function offlineFallback(userBlock: string): string {
   if (/book|schedule|appointment/.test(lc)) {
     // Offline mock for testing tool invocations
     console.log("[LLM] Offline fallback triggered mock tool invocation for check_availability & create_booking");
-    dispatchToolCall("check_availability", { date: "2026-10-10", time: "19:00" }).then(() => {
-        dispatchToolCall("create_booking", { userId: "U-123", date: "2026-10-10", time: "19:00", partySize: 4 });
+    dispatchToolCall("check_availability", { date: "2026-10-10", time: "19:00" }, "offline-test").then(() => {
+        dispatchToolCall("create_booking", { userId: "U-123", date: "2026-10-10", time: "19:00", partySize: 4 }, "offline-test");
     });
     return "Let me check our calendar for that time. Yes, we have a slot available. I've locked that in for you!";
   }

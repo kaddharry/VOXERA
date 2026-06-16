@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface TurnTrace {
-  utterance: { id: string; text: string; emotion?: { label: string; intensity: number; confidence: number } };
+  utterance: { id: string; text: string; emotion?: { label: string; intensity: number; confidence: number; confidenceCategory?: string } };
   emotion: {
     current: { label: string; intensity: number; confidence: number; vad: { v: number; a: number; d: number } };
     trajectory: { slope_v: number; slope_a: number };
@@ -17,6 +17,7 @@ interface TurnTrace {
   guardReasons: string[];
   llmModel: string;
   usedLiveLlm: boolean;
+  cai?: { score: number; category: string; explanation: string };
 }
 
 interface TurnEntry {
@@ -187,7 +188,7 @@ function TurnCard({ entry }: { entry: TurnEntry }) {
       </div>
       <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-xs">
         <Cell label="Emotion" value={`${t.emotion.current.label} · ${t.emotion.current.intensity.toFixed(2)}`} />
-        <Cell label="Conf" value={t.emotion.current.confidence.toFixed(2)} />
+        <Cell label="Confidence" value={`${t.emotion.current.confidence.toFixed(2)} (${t.utterance.emotion?.confidenceCategory ?? confCategory(t.emotion.current.confidence)})`} />
         <Cell label="Importance" value={t.importance.toFixed(2)} />
         <Cell label="Memory" value={`${t.memoryWrite.tier}${t.memoryWrite.merged ? " (merged)" : ""}`} />
         <Cell
@@ -200,7 +201,13 @@ function TurnCard({ entry }: { entry: TurnEntry }) {
         />
         <Cell label="Policy" value={`${t.policy.pace} · esc=${t.policy.escalate}`} />
         <Cell label="Flags" value={flagList.length ? flagList.join(", ") : "—"} />
+        {t.cai && <Cell label="CAI" value={`${t.cai.score}/100 · ${t.cai.category}`} />}
       </dl>
+      {t.cai && (
+        <div className="text-[10px] text-zinc-500 dark:text-zinc-400 bg-zinc-50 dark:bg-zinc-900 rounded px-2 py-1">
+          <span className="font-semibold">Engagement:</span> {t.cai.explanation}
+        </div>
+      )}
       <details className="text-xs text-zinc-600 dark:text-zinc-400">
         <summary className="cursor-pointer select-none">retrieval · guard · llm</summary>
         <pre className="mt-2 whitespace-pre-wrap break-words">{JSON.stringify(
@@ -219,6 +226,12 @@ function TurnCard({ entry }: { entry: TurnEntry }) {
       </details>
     </article>
   );
+}
+
+function confCategory(c: number): string {
+  if (c >= 0.75) return "High";
+  if (c >= 0.45) return "Medium";
+  return "Low";
 }
 
 function Cell({ label, value }: { label: string; value: string }) {

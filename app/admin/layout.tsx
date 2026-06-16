@@ -27,23 +27,37 @@ export default async function AdminLayout({
               href="/admin"
               className="bg-gray-100 text-gray-900 group flex items-center px-3 py-2 text-sm font-medium rounded-md"
             >
-              Dashboard
+              📊 Dashboard
+            </a>
+            <a
+              href="/admin/sessions"
+              className="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-3 py-2 text-sm font-medium rounded-md"
+            >
+              📋 Sessions
             </a>
             <a
               href="/admin/knowledge"
               className="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-3 py-2 text-sm font-medium rounded-md"
             >
-              Knowledge Base
+              📚 Knowledge Base
             </a>
             <a
               href="/admin/settings"
               className="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-3 py-2 text-sm font-medium rounded-md"
             >
-              Settings
+              ⚙️ Settings
             </a>
           </nav>
-          <div className="mt-auto px-3 border-t border-gray-100 pt-4">
+          <div className="mt-auto px-3 border-t border-gray-100 pt-4 space-y-3">
             <p className="text-xs text-gray-500 truncate">{user.email}</p>
+            <form action="/api/auth/logout" method="POST">
+              <button
+                type="submit"
+                className="w-full text-left text-xs text-red-500 hover:text-red-700 font-medium"
+              >
+                Sign Out
+              </button>
+            </form>
           </div>
         </div>
       </aside>
