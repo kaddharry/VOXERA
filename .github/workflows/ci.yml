@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: '.nvmrc'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run linter
+      run: npm run lint
+      
+    - name: Build Next.js app
+      run: npm run build
+      env:
+        # Provide dummy env vars so build does not fail on validation
+        NEXT_TELEMETRY_DISABLED: 1
+        GROQ_API_KEYS: "dummy"
+        DEEPGRAM_API_KEY: "dummy"
+        SUPABASE_URL: "https://dummy.supabase.co"
+        SUPABASE_ANON_KEY: "dummy"
+        SUPABASE_SERVICE_ROLE_KEY: "dummy"
+        RESEND_API_KEY: "dummy"

@@ -1,0 +1,11 @@
+# These owners will be the default reviewers for pull requests.
+
+# Global default
+* @hardik
+
+# Specific areas
+/app/admin/    @hardik
+/app/api/      @hardik
+/lib/db/       @hardik
+/lib/deepgram/ @hardik
+/lib/agent/    @hardik
