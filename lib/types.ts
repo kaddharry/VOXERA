@@ -77,6 +77,7 @@ export interface MemoryRecord {
   recurrence: number;
   resolved: boolean;
   ttl?: number;
+  documentId?: string;
 }
 
 export interface PolicyDirectives {

@@ -27,6 +27,7 @@ function toRow(rec: MemoryRecord): Record<string, unknown> {
     recurrence: rec.recurrence,
     resolved: rec.resolved,
     ttl: rec.ttl ?? null,
+    documentId: rec.documentId ?? null,
   };
 }
 
@@ -64,6 +65,7 @@ function fromRow(row: any): MemoryRecord {
     recurrence: row.recurrence ?? 1,
     resolved: row.resolved ?? false,
     ttl: row.ttl ?? undefined,
+    documentId: row.documentId ?? undefined,
   };
 }
 
@@ -95,6 +97,7 @@ export const vectorStore = {
     if (patch.summary !== undefined) rowPatch.summary = patch.summary;
     if (patch.topic !== undefined) rowPatch.topic = patch.topic;
     if (patch.tier !== undefined) rowPatch.tier = patch.tier;
+    if (patch.documentId !== undefined) rowPatch.documentId = patch.documentId;
     if (patch.vad !== undefined) {
       rowPatch.vad_v = patch.vad.v;
       rowPatch.vad_a = patch.vad.a;

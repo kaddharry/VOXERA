@@ -4,6 +4,7 @@ import { seedClientMemory } from "../memory/writer";
 import { embed } from "../util/embed";
 import { vectorStore } from "../memory/store";
 import { chunkText } from "./chunk";
+import { supabase } from "../db/supabase";
 
 export interface IngestResult {
   documentId: string;
@@ -16,13 +17,14 @@ export interface IngestResult {
  * Ingests a document into the LTM_client knowledge base.
  *
  * Workflow:
- *  1. Extracts raw text from the buffer (plain text or PDF).
- *  2. Splits the text into overlapping chunks.
- *  3. Embeds each chunk and stores it as an LTM_client memory record
- *     via seedClientMemory().
- *
- * The chunks become searchable by the existing RAG retrieval engine
- * immediately — no additional wiring needed.
+ *  1. Determines the version number for the document.
+ *  2. Creates a record in knowledge_documents table as 'processing'.
+ *  3. Extracts raw text from the buffer (plain text or PDF).
+ *  4. Splits the text into overlapping chunks.
+ *  5. Embeds each chunk and stores it in memories table referencing the documentId.
+ *  6. Marks prior versions as 'superseded' and deletes their chunks.
+ *  7. Sets document status to 'ready' and saves chunk count.
+ *  8. On failure, sets status to 'failed' and saves the error message.
  */
 export async function ingestDocument(args: {
   clientId: string;
@@ -33,49 +35,131 @@ export async function ingestDocument(args: {
   const { clientId, filename, mimeType } = args;
   const documentId = nanoid(12);
 
-  // Validate file size.
-  if (args.content.byteLength > CONFIG.knowledge.maxFileSizeBytes) {
-    throw new Error(
-      `File too large: ${args.content.byteLength} bytes (max ${CONFIG.knowledge.maxFileSizeBytes})`,
-    );
+  // Check for prior versions of this document
+  const { data: existingDocs } = await supabase
+    .from("knowledge_documents")
+    .select("version")
+    .eq("clientId", clientId)
+    .eq("filename", filename);
+
+  let version = 1;
+  if (existingDocs && existingDocs.length > 0) {
+    const maxVersion = Math.max(...existingDocs.map((d) => d.version));
+    version = maxVersion + 1;
   }
 
-  // Extract raw text based on mime type.
-  let rawText: string;
-  if (mimeType === "text/plain") {
-    rawText = Buffer.from(args.content).toString("utf-8");
-  } else if (mimeType === "application/pdf") {
-    rawText = await extractPdfText(args.content);
-  } else {
-    throw new Error(`Unsupported file type: ${mimeType}`);
-  }
-
-  if (rawText.trim().length === 0) {
-    throw new Error("Document contains no extractable text");
-  }
-
-  // Derive a topic from filename (strip extension, normalize).
-  const topic = filename
-    .replace(/\.[^.]+$/, "")
-    .replace(/[_-]+/g, " ")
-    .toLowerCase()
-    .trim() || "knowledge";
-
-  // Chunk the text.
-  const chunks = chunkText(rawText);
-  const chunkIds: string[] = [];
-
-  for (let i = 0; i < chunks.length; i++) {
-    const chunkId = await seedClientMemory({
+  // Create initial document record
+  const { error: insertError } = await supabase
+    .from("knowledge_documents")
+    .insert({
+      id: documentId,
       clientId,
-      topic: `kb:${topic}`,
-      text: chunks[i],
-      importance: 0.85,
+      filename,
+      mimeType,
+      status: "processing",
+      chunkCount: 0,
+      version,
+      createdAt: Date.now(),
     });
-    chunkIds.push(chunkId);
+
+  if (insertError) {
+    throw new Error(`Failed to create document record: ${insertError.message}`);
   }
 
-  return { documentId, clientId, chunkCount: chunks.length, chunkIds };
+  try {
+    // Validate file size.
+    if (args.content.byteLength > CONFIG.knowledge.maxFileSizeBytes) {
+      throw new Error(
+        `File too large: ${args.content.byteLength} bytes (max ${CONFIG.knowledge.maxFileSizeBytes})`,
+      );
+    }
+
+    // Extract raw text based on mime type.
+    let rawText: string;
+    if (mimeType === "text/plain") {
+      rawText = Buffer.from(args.content).toString("utf-8");
+    } else if (mimeType === "application/pdf") {
+      rawText = await extractPdfText(args.content);
+    } else {
+      throw new Error(`Unsupported file type: ${mimeType}`);
+    }
+
+    if (rawText.trim().length === 0) {
+      throw new Error("Document contains no extractable text");
+    }
+
+    // Derive a topic from filename (strip extension, normalize).
+    const topic = filename
+      .replace(/\.[^.]+$/, "")
+      .replace(/[_-]+/g, " ")
+      .toLowerCase()
+      .trim() || "knowledge";
+
+    // Chunk the text.
+    const chunks = chunkText(rawText);
+    const chunkIds: string[] = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkId = await seedClientMemory({
+        clientId,
+        topic: `kb:${topic}`,
+        text: chunks[i],
+        importance: 0.85,
+        documentId,
+      });
+      chunkIds.push(chunkId);
+    }
+
+    // Deactivate/supersede old versions
+    const { data: oldDocs } = await supabase
+      .from("knowledge_documents")
+      .select("id")
+      .eq("clientId", clientId)
+      .eq("filename", filename)
+      .neq("id", documentId);
+
+    if (oldDocs && oldDocs.length > 0) {
+      const oldDocIds = oldDocs.map((d) => d.id);
+      
+      await supabase
+        .from("knowledge_documents")
+        .update({ status: "superseded" })
+        .in("id", oldDocIds);
+
+      // Clean up superseded chunks
+      await supabase
+        .from("memories")
+        .delete()
+        .in("documentId", oldDocIds);
+    }
+
+    // Set new doc status to ready
+    const { error: readyError } = await supabase
+      .from("knowledge_documents")
+      .update({
+        status: "ready",
+        chunkCount: chunks.length,
+      })
+      .eq("id", documentId);
+
+    if (readyError) {
+      throw readyError;
+    }
+
+    return { documentId, clientId, chunkCount: chunks.length, chunkIds };
+  } catch (err: any) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    
+    await supabase
+      .from("knowledge_documents")
+      .update({
+        status: "failed",
+        errorMessage: errMsg,
+      })
+      .eq("id", documentId);
+
+    throw err;
+  }
 }
 
 /**

@@ -175,6 +175,8 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     system: llmContext.system,
     user: llmContext.user,
     clientId: input.clientId,
+    sessionId: input.sessionId,
+    userId: input.userId,
   });
 
   const guarded = guardOutput({

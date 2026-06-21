@@ -10,7 +10,9 @@ export type SessionEventType =
   | "llm_reply"
   | "tool_invocation"
   | "cai"
-  | "escalation";
+  | "escalation"
+  | "calendar_sync"
+  | "email_dispatch";
 
 export interface SessionEvent {
   ts: number;

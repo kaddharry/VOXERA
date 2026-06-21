@@ -40,6 +40,7 @@ export async function GET() {
     });
 
     const toolEvents = safeEvents.filter((e) => e.type === "tool_invocation");
+    const successfulToolEvents = toolEvents.filter((e) => (e.payload as any)?.success !== false);
     const escalationEvents = safeEvents.filter((e) => e.type === "escalation");
 
     // Average CAI score
@@ -48,7 +49,7 @@ export async function GET() {
       ? Math.round(caiEvents.reduce((sum, e) => sum + ((e.payload as any)?.score ?? 0), 0) / caiEvents.length)
       : 0;
 
-    // Recent sessions summary (last 10 unique sessions)
+    // Recent sessions summary (last 10 unique sessions) and duration calculations
     const sessionMap = new Map<string, { events: typeof safeEvents; lastTs: number }>();
     for (const ev of safeEvents) {
       const existing = sessionMap.get(ev.sessionId);
@@ -108,10 +109,100 @@ export async function GET() {
     // 4. Live queue metrics from in-process CallQueueManager
     const queueMetrics = callQueue.getMetrics();
 
+    // ─── NEW SPRINT 5 METRICS ──────────────────────────────────────────────────
+
+    // 1. Unique Session start timestamps (min timestamp per session ID)
+    const sessionTimes = new Map<string, number>();
+    for (const ev of safeEvents) {
+      const currentMin = sessionTimes.get(ev.sessionId);
+      if (currentMin === undefined || ev.ts < currentMin) {
+        sessionTimes.set(ev.sessionId, ev.ts);
+      }
+    }
+
+    // 2. Peak Hours Heatmap (24-hour array)
+    const hourlyHeatmap = new Array(24).fill(0);
+    for (const ts of sessionTimes.values()) {
+      const date = new Date(ts);
+      const hour = date.getHours();
+      hourlyHeatmap[hour]++;
+    }
+
+    // 3. Session Count daily trend chart
+    const dailyCounts: Record<string, number> = {};
+    for (const ts of sessionTimes.values()) {
+      const dateStr = new Date(ts).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      });
+      dailyCounts[dateStr] = (dailyCounts[dateStr] || 0) + 1;
+    }
+    const dailyTrend = Object.entries(dailyCounts)
+      .map(([date, count]) => ({ date, count }))
+      .sort((a, b) => {
+        const curYear = new Date().getFullYear();
+        return new Date(`${a.date}, ${curYear}`).getTime() - new Date(`${b.date}, ${curYear}`).getTime();
+      });
+
+    // 4. Booking Conversion Rate (% of sessions with synced booking)
+    const bookingSessions = new Set<string>();
+    for (const ev of safeEvents) {
+      if (ev.type === "calendar_sync" && ev.payload?.status === "synced") {
+        bookingSessions.add(ev.sessionId);
+      }
+    }
+    const conversionRate = totalCalls > 0
+      ? Math.round((bookingSessions.size / totalCalls) * 100)
+      : 0;
+
+    // 5. Average Session Duration
+    let totalDurationMs = 0;
+    let sessionDurationCount = 0;
+    for (const [sid, info] of sessionMap.entries()) {
+      const minTs = Math.min(...info.events.map((e) => e.ts));
+      const maxTs = Math.max(...info.events.map((e) => e.ts));
+      const duration = maxTs - minTs;
+      if (duration > 0) {
+        totalDurationMs += duration;
+        sessionDurationCount++;
+      }
+    }
+    const avgSessionDurationMs = sessionDurationCount > 0
+      ? Math.round(totalDurationMs / sessionDurationCount)
+      : 0;
+
+    // 6. Missed Bookings (failed create_booking attempts)
+    const missedBookings = safeEvents.filter(
+      (e) => e.type === "tool_invocation" &&
+             e.payload?.tool === "create_booking" &&
+             e.payload?.success === false
+    ).length;
+
+    // 7. Confidence distribution (high / medium / low)
+    let highConf = 0;
+    let medConf = 0;
+    let lowConf = 0;
+    const emotionEvents2 = safeEvents.filter((e) => e.type === "emotion");
+    for (const ev of emotionEvents2) {
+      const payload = ev.payload as any;
+      const level = payload?.confidenceCategory?.level || 
+                    (payload?.confidence >= 0.8 ? "high" : 
+                     payload?.confidence >= 0.5 ? "medium" : "low");
+      if (level === "high") highConf++;
+      else if (level === "medium") medConf++;
+      else if (level === "low") lowConf++;
+    }
+    const totalConf = highConf + medConf + lowConf;
+    const confidenceDistribution = {
+      high: totalConf > 0 ? Math.round((highConf / totalConf) * 100) : 0,
+      medium: totalConf > 0 ? Math.round((medConf / totalConf) * 100) : 0,
+      low: totalConf > 0 ? Math.round((lowConf / totalConf) * 100) : 0,
+    };
+
     return NextResponse.json({
       metrics: {
         totalCalls,
-        totalToolInvocations: toolEvents.length,
+        totalToolInvocations: successfulToolEvents.length, // Count successful/executed calls
         activeBookings,
         cancelledBookings,
         escalations: escalationEvents.length,
@@ -121,7 +212,14 @@ export async function GET() {
         activeCalls: queueMetrics.activeCallCount,
         callQueueLength: queueMetrics.queueLength,
         avgCallDurationMs,
+        // Sprint 5 advanced metrics
+        conversionRate,
+        avgSessionDurationMs,
+        missedBookings,
       },
+      hourlyHeatmap,
+      dailyTrend,
+      confidenceDistribution,
       emotions: emotionCounts,
       recentEvents: safeEvents.slice(0, 50),
       recentSessions,

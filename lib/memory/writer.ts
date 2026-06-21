@@ -123,6 +123,7 @@ export async function seedClientMemory(args: {
   text: string;
   topic: string;
   importance?: number;
+  documentId?: string;
 }) {
   const embedding = embed(args.text);
   const rec: MemoryRecord = {
@@ -143,6 +144,7 @@ export async function seedClientMemory(args: {
     sourceUtteranceIds: [],
     recurrence: 1,
     resolved: true,
+    documentId: args.documentId,
   };
   await vectorStore.put(rec);
   return rec.id;

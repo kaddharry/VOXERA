@@ -12,7 +12,7 @@ Today's date is 2026-10-09.`;
   console.log(`[Test] System Prompt: ${system}`);
   console.log(`[Test] User Prompt: ${user}\n`);
 
-  const initialAvail = await checkAvailability("2026-10-10", "19:00");
+  const initialAvail = await checkAvailability("2026-10-10", "19:00", "test-client-id");
   console.log(`[Test] DB Availability Before LLM Call (2026-10-10 @ 19:00): ${initialAvail}`);
 
   console.log("\n[Test] Executing LLM Loop (Waiting for LLM & Tool Calls)...\n");
@@ -26,7 +26,7 @@ Today's date is 2026-10-09.`;
     console.error(`\n[Test] LLM Error: ${err.message}`);
   }
 
-  const finalAvail = await checkAvailability("2026-10-10", "19:00");
+  const finalAvail = await checkAvailability("2026-10-10", "19:00", "test-client-id");
   console.log(`\n[Test] DB Availability After LLM Call (2026-10-10 @ 19:00): ${finalAvail}`);
   console.log("\n✅ Tool smoke test complete.");
 }
