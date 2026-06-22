@@ -287,7 +287,7 @@ SRD impact:
 
 - Improves NFR-4 Reliability.
 - Improves NFR-8 Maintainability.
-- Supports evaluation requirements.
+- Supports evaluation requirements..
 
 ## Suggested Priority Order
 

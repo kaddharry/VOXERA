@@ -70,35 +70,115 @@ The platform evaluates real-time conversational significance utilizing advanced 
 
 ---
 
-## 💻 Local Setup & Deployment
+## 1. Quick Start
 
-> [!IMPORTANT]
-> To run this application locally, you will need a Supabase project instance with the `pgvector` extension enabled.
+If you just want the one-command quickstart to get the prototype running:
+```bash
+git clone https://github.com/your-org/voxera.git
+cd voxera
+cp .env.example .env.local  # Fill in keys provided by lead
+npm install && npm run dev
+```
+Visit `http://localhost:3000` to interact with the Voice Agent, or navigate to `http://localhost:3000/admin` to access the secured dashboard.
 
-1. **Clone & Install**
-   ```bash
-   git clone https://github.com/your-username/voxera.git
-   cd voxera
-   npm install
-   ```
+---
 
-2. **Environment Variables**
-   Copy `.env.example` to `.env.local` and configure your API keys:
-   ```bash
-   cp .env.example .env.local
-   ```
-   *(Requires: `GROQ_API_KEYS`, `DEEPGRAM_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`)*
+## 2. Local Development Setup
 
-3. **Database Migration**
-   Execute the migration script to configure your Postgres instance.
-   - Navigate to your Supabase **SQL Editor**.
-   - Copy the contents of `sql/migration_v2.sql` and run the script. This will establish the `memories`, `reservations`, and `session_logs` tables along with the `match_memories` RPC function.
+We have designed the local development environment to be as frictionless as possible. We strictly use native `npm run dev` rather than Docker locally, as we rely entirely on external managed services (Supabase, Groq, Deepgram), which keeps local CPU and memory overhead extremely low.
 
-4. **Run Development Server**
-   ```bash
-   npm run dev
-   ```
-   Visit `http://localhost:3000` to interact with the Voice Agent, or navigate to `http://localhost:3000/admin` to access the secured dashboard.
+## 3. Node.js Version Requirements
+
+VOXERA strictly requires **Node.js v20.x**. This ensures consistency across all 5 developers on the team and prevents "works on my machine" bugs.
+
+## 4. NVM Usage
+
+To easily manage your Node version, we provide an `.nvmrc` file in the root. If you use NVM, simply run:
+```bash
+nvm use
+```
+If you do not have NVM installed, ensure your global Node installation matches v20.
+
+## 5. Team Onboarding
+
+Welcome to the VOXERA team! Your first week will involve familiarizing yourself with the Next.js App Router and the Supabase `pgvector` implementations. Please read `CONTRIBUTING.md` for specific PR and code review guidelines.
+
+## 6. Environment Variables Setup
+
+All environment variables must be placed in `.env.local`. Do not commit this file.
+You can find the template in `.env.example`.
+Required keys include:
+- `GROQ_API_KEYS`
+- `DEEPGRAM_API_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `RESEND_API_KEY`
+
+If you add a new environment variable during development, you **must** add a dummy version of it to `.env.example` and inform the team in the #dev channel.
+
+---
+
+## 7. Docker Usage
+
+### When to use Docker?
+**Do not use Docker for local development.** It adds unnecessary volume mounting overhead for a SaaS-only stack. Use `npm run dev`.
+
+**Do use Docker for production deployments.** Docker guarantees environment consistency when deploying to AWS, GCP, or Railway.
+
+## 8. Docker Build Instructions
+
+We use a multi-stage Dockerfile that outputs a minimal Next.js standalone build.
+To build the image:
+```bash
+docker build -t voxera:latest .
+```
+
+## 9. Docker Run Instructions
+
+To test the production container locally:
+```bash
+docker run -p 3000:3000 --env-file .env.local voxera:latest
+```
+
+## 10. Production Deployment Notes
+
+- Next.js telemetry is disabled in the Dockerfile.
+- The build process runs `npm run build` during the image creation. This means dummy environment variables are provided inside the Dockerfile strictly so static prerendering succeeds.
+- When running the container in the cloud, you must inject your live `.env.local` variables via your provider's secrets manager.
+
+---
+
+## 11. Troubleshooting
+
+- **Supabase Build Error:** If `npm run build` fails with `supabaseUrl is required`, ensure your `.env.local` is present, or if building in Docker, ensure the dummy variables exist in the Dockerfile.
+- **Lint Errors:** The CI pipeline runs `npm run lint`. Ensure you resolve all React hook and TypeScript errors before pushing.
+- **Port 3000 in use:** If `npm run dev` fails, kill the background node process: `npx kill-port 3000`.
+
+## 12. Contribution Workflow
+
+1. Grab a ticket from the board.
+2. Branch off `main`.
+3. Commit logical chunks.
+4. Open a PR against `main`. Our `.github/pull_request_template.md` will guide you.
+5. Wait for GitHub Actions (CI) to pass.
+6. Get 1 peer review approval (enforced via `CODEOWNERS`).
+
+## 13. Git Branch Strategy
+
+- **`main`**: The protected production branch. Always deployable.
+- **`feature/*`**: For new features (e.g., `feature/voice-personas`).
+- **`bugfix/*`**: For fixing issues (e.g., `bugfix/stt-latency`).
+
+## 14. Common Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start the local development server |
+| `npm run build` | Test the production build locally |
+| `npm run lint` | Run ESLint to catch syntax/style errors |
+| `nvm use` | Switch to the correct Node.js version |
+| `docker build -t voxera .` | Build the production Docker image |
 
 ---
 

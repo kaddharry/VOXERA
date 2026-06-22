@@ -58,12 +58,7 @@ const contentMap: Record<TabId, { tag: string, tagColor: string, title: string, 
 };
 
 export function UseCaseTabs() {
-  const [activeTab, setActiveTab] = activeTabState("healthcare");
-
-  function activeTabState(initial: TabId): [TabId, (id: TabId) => void] {
-      const [state, setState] = useState<TabId>(initial);
-      return [state, setState];
-  }
+  const [activeTab, setActiveTab] = useState<TabId>("healthcare");
 
   const activeContent = contentMap[activeTab];
   const Icon = activeContent.icon;
