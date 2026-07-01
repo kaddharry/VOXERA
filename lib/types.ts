@@ -9,7 +9,9 @@ export type EmotionLabel =
   | "fear"
   | "confusion"
   | "joy"
-  | "gratitude";
+  | "gratitude"
+  | "excitement"
+  | "disappointment";
 
 export interface ConfidenceCategory {
   level: "high" | "medium" | "low";
@@ -30,6 +32,7 @@ export interface EmotionSignal {
   vad: VAD;
   source: "text" | "audio" | "fused";
   at: number;
+  isMixed?: boolean;
 }
 
 export interface Utterance {

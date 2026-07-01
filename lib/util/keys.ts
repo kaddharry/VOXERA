@@ -75,18 +75,34 @@ export class KeyRotator {
         return await operation(key);
       } catch (error: any) {
         lastError = error;
-        // Check if error is a typical API rate limit (429) or quota exceeded (401/403)
         const status = error?.status || error?.response?.status;
         const isQuotaError = status === 429 || status === 401 || status === 403;
+        const isTimeoutError =
+          error?.code === "ETIMEDOUT" ||
+          error?.code === "ECONNABORTED" ||
+          error?.message?.includes("timed out") ||
+          error?.message?.includes("timeout") ||
+          error?.message?.includes("Request timed out") ||
+          status === 408 ||
+          status === 502 ||
+          status === 503 ||
+          status === 504;
 
-        if (isQuotaError && this.keys.length > 1) {
+        if ((isQuotaError || isTimeoutError) && this.keys.length > 1) {
+          const reason = isQuotaError ? `quota (${status})` : `timeout/transient (${status ?? error?.code ?? "unknown"})`;
           console.warn(
-            `[KeyRotator] API Error ${status} for ${this.name}. Triggering rotation.`,
+            `[KeyRotator] ${reason} for ${this.name}. Rotating key (attempt ${attempts + 1}/${maxRetries}).`,
           );
           this.rotate();
           attempts++;
+        } else if (isTimeoutError && this.keys.length === 1) {
+          // Single key — still retry in case the timeout is transient
+          console.warn(
+            `[KeyRotator] Timeout for ${this.name} (single key). Retrying (attempt ${attempts + 1}/${maxRetries}).`,
+          );
+          attempts++;
         } else {
-          // If it's not a quota error or we only have 1 key, bubble it up immediately
+          // Non-retryable error — bubble up immediately
           throw error;
         }
       }

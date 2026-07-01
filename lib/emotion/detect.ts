@@ -10,6 +10,11 @@ export function detectTextEmotion(text: string): EmotionSignal {
   const vadAcc: VAD = { v: 0, a: 0, d: 0 };
   let totalW = 0;
 
+  const negLabels = new Set<EmotionLabel>(["frustration", "anger", "distress", "sadness", "fear", "disappointment"]);
+  const posLabels = new Set<EmotionLabel>(["joy", "gratitude", "excitement"]);
+  let hasNegMatch = false;
+  let hasPosMatch = false;
+
   for (const entry of LEXICON) {
     const matches = text.match(entry.kw);
     if (!matches) continue;
@@ -19,6 +24,28 @@ export function detectTextEmotion(text: string): EmotionSignal {
     vadAcc.a += entry.vad.a * w;
     vadAcc.d += entry.vad.d * w;
     totalW += w;
+    if (negLabels.has(entry.label)) hasNegMatch = true;
+    if (posLabels.has(entry.label)) hasPosMatch = true;
+  }
+
+  // Context-aware punctuation: !! and ??? boost arousal in the direction
+  // of the already-detected valence, instead of blindly assuming frustration.
+  const exclamCount = (text.match(/!{2,}/g) || []).length;
+  const questionCount = (text.match(/\?{2,}/g) || []).length;
+  if (exclamCount > 0) {
+    const arousalBoost = 0.3 * exclamCount;
+    vadAcc.a += arousalBoost;
+    // If no negative keywords matched, treat !! as positive intensity amplifier
+    if (!hasNegMatch) {
+      vadAcc.v += 0.2 * exclamCount;
+      labelScores["excitement"] = (labelScores["excitement"] ?? 0) + 0.4 * exclamCount;
+    }
+    totalW += arousalBoost;
+  }
+  if (questionCount > 0) {
+    vadAcc.a += 0.1 * questionCount;
+    labelScores["confusion"] = (labelScores["confusion"] ?? 0) + 0.3 * questionCount;
+    totalW += 0.1 * questionCount;
   }
 
   // Caps boost arousal.
@@ -43,8 +70,19 @@ export function detectTextEmotion(text: string): EmotionSignal {
       ? { v: 0, a: 0, d: 0 }
       : { v: clamp(vadAcc.v / totalW, -1, 1), a: clamp(vadAcc.a / totalW, -1, 1), d: clamp(vadAcc.d / totalW, -1, 1) };
 
+  // Positivity safety net: if accumulated valence is clearly positive and arousal
+  // is high, but the label ended up negative (e.g. due to thin lexicon overlap),
+  // correct the label to excitement.
+  if (vad.v > 0.2 && vad.a > 0.3 && negLabels.has(label) && hasPosMatch) {
+    label = "excitement";
+  }
+
   const intensity = clamp(Math.sqrt(vad.v * vad.v + vad.a * vad.a + vad.d * vad.d) / Math.sqrt(3));
   const confidence = clamp(totalW === 0 ? 0.5 : Math.min(1, 0.45 + 0.15 * totalW));
+
+  // Mixed emotions safety net: if both positive and negative strong keywords hit,
+  // we flag it as mixed so the persona engine can adapt and not just blindly celebrate.
+  const isMixed = hasNegMatch && hasPosMatch;
 
   return {
     label,
@@ -54,6 +92,7 @@ export function detectTextEmotion(text: string): EmotionSignal {
     vad,
     source: "text",
     at: Date.now(),
+    isMixed,
   };
 }
 
