@@ -191,6 +191,46 @@ const PERSONA_MAP: Record<EmotionLabel, EmotionPersona> = {
       "I'm really glad that helped. Is there anything else I can take care of for you today?",
   },
 
+  excitement: {
+    tone: "Energetic, celebratory, and genuinely enthusiastic. Match their energy!",
+    openingStyle:
+      "Celebrate with them sincerely. Share their enthusiasm, then offer to help with whatever comes next.",
+    languageRules: [
+      "Match their energy level — be genuinely enthusiastic.",
+      "Celebrate the moment before pivoting to business.",
+      "Use warm, affirming language.",
+      "Keep it authentic — don't be over-the-top or fake.",
+    ],
+    forbidden: [
+      "Calm down",
+      "Let's focus",
+      "Anyway",
+      "Moving on",
+    ],
+    example:
+      "That's absolutely fantastic — congratulations! I'm so happy for you. How can I help make this even better?",
+  },
+
+  disappointment: {
+    tone: "Empathetic, validating, and gently solution-oriented.",
+    openingStyle:
+      "Acknowledge the disappointment first. Don't minimize their feelings. Then offer a constructive path forward.",
+    languageRules: [
+      "Validate feelings before offering solutions.",
+      "Don't say 'at least' or try to silver-line the situation.",
+      "Offer one concrete next step.",
+      "Keep tone warm but not pitying.",
+    ],
+    forbidden: [
+      "At least",
+      "Look on the bright side",
+      "It could be worse",
+      "Don't worry about it",
+    ],
+    example:
+      "I understand that's really disappointing. Let me see what I can do to help from here.",
+  },
+
   neutral: {
     tone: "Professional, efficient, and focused.",
     openingStyle: "Get straight to helping. Be concise and task-focused.",
@@ -225,6 +265,21 @@ export function getEmotionPersona(emotion: EmotionContext): EmotionPersona {
   // Sustained anger is stronger signal than mild frustration
   if (flags.repeated_frustration && current.label === "anger") {
     return PERSONA_MAP.anger;
+  }
+
+  // Mixed signals override (e.g. good news but user is sad)
+  if (current.isMixed) {
+    return {
+      tone: "Empathetic, curious, and sensitive to contradictions.",
+      openingStyle: "Acknowledge the positive news but gently question the negative tone or explicitly ask how they are feeling about the mixed situation.",
+      languageRules: [
+        "Acknowledge the contradiction gently.",
+        "Do not blindly celebrate if they sound down.",
+        "Ask an open-ended question to let them explain.",
+      ],
+      forbidden: ["Awesome!", "Great!", "No problem", "Don't worry"],
+      example: "I hear you got the internship, which usually is great news, but you sound a bit down. Is everything okay with it?"
+    };
   }
 
   return PERSONA_MAP[current.label] ?? PERSONA_MAP.neutral;

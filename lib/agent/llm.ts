@@ -34,6 +34,8 @@ export async function generateReply(args: {
     const openai = new OpenAI({
       apiKey,
       baseURL: CONFIG.llm.baseURL,
+      timeout: 15_000,    // 15-second hard timeout per request
+      maxRetries: 1,      // OpenAI SDK built-in retry (1 retry on transient errors)
     });
 
     let finalResponseText = "";

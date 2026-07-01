@@ -26,9 +26,32 @@ export async function POST(request: NextRequest) {
     return Response.json(out);
   } catch (err: any) {
     console.error("[/api/turn] Unhandled error:", err);
-    return Response.json(
-      { error: err.message || "Internal server error", stack: process.env.NODE_ENV === "development" ? err.stack : undefined },
-      { status: 500 }
-    );
+    
+    // Return a graceful fallback instead of a 500 so the voice agent doesn't crash
+    const fallbackText = "I'm having a little trouble connecting right now. Could you hold on a moment or try again?";
+    return Response.json({
+      reply: fallbackText,
+      trace: {
+        utterance: {
+          id: "err-fallback",
+          role: "user",
+          text: "",
+          ts: Date.now(),
+        },
+        emotion: {
+          current: { label: "neutral", intensity: 0, confidence: 1, confidenceCategory: "high", vad: {v:0, a:0, d:0}, source: "text", at: Date.now() },
+          trajectory: "flat",
+          zDeviation: 0,
+          flags: {},
+        },
+        importance: 0,
+        memoryWrite: { tier: "STM", recordId: "", merged: false },
+        retrieved: { mtmIds: [], ltmUserIds: [], ltmClientIds: [], scores: [] },
+        policy: { pace: "normal", acknowledgeFirst: false, allowUpsell: false, escalate: "none", notes: [] },
+        guardReasons: [],
+        llmModel: "fallback",
+        usedLiveLlm: false,
+      }
+    });
   }
 }

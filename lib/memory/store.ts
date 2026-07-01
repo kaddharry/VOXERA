@@ -1,5 +1,5 @@
 import type { MemoryRecord, MemoryTier } from "../types";
-import { supabase } from "../db/supabase";
+import { supabase, isSupabaseHealthy, recordSupabaseSuccess, recordSupabaseFailure } from "../db/supabase";
 
 /**
  * Maps a MemoryRecord to the flat Postgres row format.
@@ -71,19 +71,41 @@ function fromRow(row: any): MemoryRecord {
 
 export const vectorStore = {
   async put(rec: MemoryRecord) {
-    const { error } = await supabase.from("memories").upsert(toRow(rec));
-    if (error) console.error("[VectorStore] Put Error:", error);
+    if (!isSupabaseHealthy()) return;
+    try {
+      const { error } = await supabase.from("memories").upsert(toRow(rec));
+      if (error) {
+        console.error("[VectorStore] Put Error:", error.message);
+        recordSupabaseFailure();
+      } else {
+        recordSupabaseSuccess();
+      }
+    } catch (err: any) {
+      console.error("[VectorStore] Put threw:", err.message ?? err);
+      recordSupabaseFailure();
+    }
   },
 
   async get(id: string): Promise<MemoryRecord | undefined> {
-    const { data, error } = await supabase
-      .from("memories")
-      .select("*")
-      .eq("id", id)
-      .single();
+    if (!isSupabaseHealthy()) return undefined;
+    try {
+      const { data, error } = await supabase
+        .from("memories")
+        .select("*")
+        .eq("id", id)
+        .single();
 
-    if (error || !data) return undefined;
-    return fromRow(data);
+      if (error || !data) {
+        if (error) recordSupabaseFailure();
+        return undefined;
+      }
+      recordSupabaseSuccess();
+      return fromRow(data);
+    } catch (err: any) {
+      console.error("[VectorStore] Get threw:", err.message ?? err);
+      recordSupabaseFailure();
+      return undefined;
+    }
   },
 
   async update(id: string, patch: Partial<MemoryRecord>) {
@@ -104,27 +126,49 @@ export const vectorStore = {
       rowPatch.vad_d = patch.vad.d;
     }
 
-    const { error } = await supabase
-      .from("memories")
-      .update(rowPatch)
-      .eq("id", id);
-    if (error) console.error("[VectorStore] Update Error:", error);
+    if (!isSupabaseHealthy()) return;
+    try {
+      const { error } = await supabase
+        .from("memories")
+        .update(rowPatch)
+        .eq("id", id);
+      if (error) {
+        console.error("[VectorStore] Update Error:", error.message);
+        recordSupabaseFailure();
+      } else {
+        recordSupabaseSuccess();
+      }
+    } catch (err: any) {
+      console.error("[VectorStore] Update threw:", err.message ?? err);
+      recordSupabaseFailure();
+    }
   },
 
   async byTier(tier: MemoryTier, userId: string | null, clientId: string): Promise<MemoryRecord[]> {
-    let query = supabase
-      .from("memories")
-      .select("*")
-      .eq("tier", tier)
-      .eq("clientId", clientId);
+    if (!isSupabaseHealthy()) return [];
+    try {
+      let query = supabase
+        .from("memories")
+        .select("*")
+        .eq("tier", tier)
+        .eq("clientId", clientId);
 
-    if (userId && tier !== "LTM_client") {
-      query = query.eq("userId", userId);
+      if (userId && tier !== "LTM_client") {
+        query = query.eq("userId", userId);
+      }
+
+      const { data, error } = await query;
+      if (error || !data) {
+        if (error) recordSupabaseFailure();
+        return [];
+      }
+      recordSupabaseSuccess();
+      return data.map(fromRow);
+    } catch (err: any) {
+      console.error("[VectorStore] byTier threw:", err.message ?? err);
+      recordSupabaseFailure();
+      return [];
     }
-
-    const { data, error } = await query;
-    if (error || !data) return [];
-    return data.map(fromRow);
   },
 
   async search(args: {
@@ -134,24 +178,33 @@ export const vectorStore = {
     query: number[];
     topK: number;
   }): Promise<Array<{ rec: MemoryRecord; sim: number }>> {
-    const { data, error } = await supabase.rpc("match_memories", {
-      query_embedding: args.query,
-      match_threshold: 0.0,
-      match_count: args.topK,
-      filter_tier: args.tier,
-      filter_client_id: args.clientId,
-      filter_user_id: args.userId,
-    });
+    if (!isSupabaseHealthy()) return [];
+    try {
+      const { data, error } = await supabase.rpc("match_memories", {
+        query_embedding: args.query,
+        match_threshold: 0.0,
+        match_count: args.topK,
+        filter_tier: args.tier,
+        filter_client_id: args.clientId,
+        filter_user_id: args.userId,
+      });
 
-    if (error) {
-      console.error("[VectorStore] Search Error:", error);
+      if (error) {
+        console.error("[VectorStore] Search Error:", error.message);
+        recordSupabaseFailure();
+        return [];
+      }
+
+      recordSupabaseSuccess();
+      return (data || []).map((row: any) => ({
+        rec: fromRow(row),
+        sim: row.similarity ?? 0,
+      }));
+    } catch (err: any) {
+      console.error("[VectorStore] Search threw:", err.message ?? err);
+      recordSupabaseFailure();
       return [];
     }
-
-    return (data || []).map((row: any) => ({
-      rec: fromRow(row),
-      sim: row.similarity ?? 0,
-    }));
   },
 
   async nearest(

@@ -1,0 +1,283 @@
+# VOXERA Technical Implementation Handbook
+
+This document serves as the authoritative technical implementation handbook for the VOXERA platform, describing the current production-ready architecture, workflows, database schemas, and external integrations.
+
+---
+
+## 1. Overview
+
+VOXERA is a multi-tenant, emotion-adaptive AI voice receptionist and SaaS operations platform. It allows businesses to handle phone calls, answer customer queries using a document-trained Knowledge Base (RAG), and book appointments with real-time Google Calendar and Resend email synchronizations.
+
+---
+
+## 2. High-Level Architecture
+
+The system operates across three primary boundaries:
+1. **Next.js App Router Frontend & Management API**: Handles tenant authentication, document uploads, settings configuration, and session analytics.
+2. **Telephony & Audio Streaming Engine**: Connects Twilio phone lines to a real-time WebSocket connection, handling bi-directional audio codecs (mulaw to PCM and vice versa) and streaming audio packets to/from Deepgram.
+3. **AI Orchestrator & Database Layer**: Routes transcriptions through vector memory stores, applies emotion-aware prompt policies, runs LLM tool-calling loops, interacts with Google Calendar/Resend, and records structured event logs in Supabase Postgres.
+
+```
+                  [Caller Phone Line]
+                          │ (SIP)
+                          ▼
+                   [Twilio Telecom]
+                          │ (HTTPS Webhook)
+                          ▼
+            [Next.js api/telephony/incoming] ── (Retrieves Tenant ID)
+                          │ (Returns TwiML Connect Stream)
+                          ▼
+               [Twilio Media Stream]
+                          │ (WebSockets / 8kHz mulaw)
+                          ▼
+            [Next.js api/telephony/stream] ── (TelephonyStreamHandler)
+                          │
+                          ├─► [PCM Conversion] ──► [Deepgram Live STT]
+                          │                                │ (Text Transcript)
+                          │                                ▼
+                          │                        [AI Orchestrator]
+                          │                                │ (Semantic Memory + RAG)
+                          │                                ├─► [Supabase Vector DB]
+                          │                                ├─► [Groq Llama 3.3]
+                          │                                ├─► [Integrations: Google Calendar, Resend]
+                          │                                ▼
+                          │                        (Text Response)
+                          │                                │
+                          │                                ▼
+                          │                        [Deepgram TTS]
+                          │                                │ (MP3 Audio)
+                          │                                ▼
+                          │                        [Audio Codec / mulaw]
+                          │                                │ (8kHz mulaw)
+                          │                                ▼
+                          └────────────────────────► [Twilio Stream]
+```
+
+---
+
+## 3. Feature Status Summary
+
+All core features are implemented, tested, and fully integrated:
+* **Multi-Tenant Isolation (FR-23)**: Fully active. Client IDs are securely resolved server-side from Supabase cookies and propagated through database queries, memory retrieval, file uploads, and reservations.
+* **Telephony & Real-Time Codecs (FR-1, FR-19)**: Inbound Twilio streams are processed in-process via custom WebSockets. Supports queue routing, wait metric estimations, and status logging.
+* **Emotion-Aware Routing (FR-11, FR-18)**: Dynamically injects voice coaching rules into system prompts. Triggers human-escalation flags upon sustained customer negativity or extreme anger.
+* **Vector Memory & Document Ingestion (FR-10, FR-16)**: Supports paginated document table, error detail drawer, cascade deletions, and automatic duplicate prevention (superseding old document chunks).
+* **Advisory Slot Locking (FR-13)**: Employs Postgres-level advisory transactions to eliminate double-booking race conditions.
+* **Integrations (FR-14, FR-15)**: Actively syncs Google Calendar events via a custom OAuth2 JWT client and sends personalized confirmation emails via Resend.
+* **SVG/CSS Dashboard (FR-22)**: Visualizes real-time metrics, heatmaps, trends, conversion rates, and confidence distributions without heavy graphing libraries.
+
+---
+
+## 4. System Modules
+
+### 4.1 Authentication & Multi-Tenancy
+* **Purpose**: Restricts access to client analytics, settings, and documents, guaranteeing zero cross-tenant leakage.
+* **Implementation Logic**:
+  - Uses `@supabase/ssr` to instantiate cookie-based clients.
+  - Layout-level middleware (`app/admin/layout.tsx`) intercepts unauthenticated routes and redirects users to `/login`.
+  - Backend API endpoints extract the authenticated client credentials directly from the session cookie instead of trusting client-supplied URL parameters.
+* **Files & Directories**:
+  - [server.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/server.ts) — Server-side Supabase client initialization.
+  - [page.tsx](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/login/page.tsx) & [actions.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/login/actions.ts) — Server actions for login, logout, and signup.
+  - [layout.tsx](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/admin/layout.tsx) — Protected layout routing.
+
+### 4.2 Telephony, WebSockets & Audio Codecs
+* **Purpose**: Establishes bi-directional audio connections with Twilio.
+* **Implementation Logic**:
+  - Incoming Webhook (`/api/telephony/incoming`) validates Twilio signatures, verifies active phone numbers, checks queue thresholds, and generates hold (`buildWaitTwiml`) or media stream (`buildConnectTwiml`) TwiML responses.
+  - WebSocket Upgrade (`/api/telephony/stream`) runs an in-process socket handler.
+  - `TelephonyStreamHandler` converts 8kHz mono mulaw audio bytes to 16kHz linear PCM using an in-memory decoding lookup table.
+  - Transformed PCM is piped into `DeepgramLiveWrapper` via WebSockets.
+  - When the orchestrator produces a response, Deepgram TTS generates an MP3, which is decoded to raw PCM, resampled, encoded back into 8kHz mulaw bytes, and flushed to Twilio.
+* **Files & Directories**:
+  - [twilio.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/telephony/twilio.ts) — HMAC webhook validation and TwiML generators.
+  - [stream-handler.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/telephony/stream-handler.ts) — Mulaw codec conversion table and telephony socket manager.
+  - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/incoming/route.ts) — Webhook entry endpoint.
+  - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/stream/route.ts) — WebSocket upgrade endpoint.
+  - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/status/route.ts) — Twilio callback endpoint to update call durations.
+  - [server.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/server.ts) — Standalone WebSocket server running on port 3001 for browser/script testing.
+
+### 4.3 Speech Emotion Recognition (SER) & Emotion Engine
+* **Purpose**: Dynamically adjusts agent speaking tone, policies, and safeguards based on the caller's feeling states.
+* **Implementation Logic**:
+  - Classifies caller mood into one of 11 labels: `neutral`, `frustration`, `anger`, `sadness`, `distress`, `fear`, `confusion`, `joy`, `gratitude`, `excitement`, `disappointment`.
+  - Uses a **35+ entry lexicon** (`lib/emotion/lexicon.ts`) covering anger, frustration, distress, sadness, disappointment, fear, confusion, joy, excitement (including pride, accomplishment, celebration keywords), gratitude, stress, and relief.
+  - **Context-aware punctuation handling**: Multiple exclamation marks (`!!`) and question marks (`???`) boost arousal in the direction of the already-detected valence, instead of blindly assuming frustration. A **positivity safety net** catches edge cases where a clearly positive message (high valence + high arousal) was incorrectly classified as a negative emotion.
+  - Maps labels to structured voice configurations (`lib/emotion/persona.ts`), with 11 full persona definitions including tone instructions, forbidden phrases, opening style coaching, and example sentences.
+  - Injects formatted markdown blocks at the highest priority location inside the LLM prompt.
+  - Traverses the session timeline to identify sustained negative turns (3 consecutive anger/distress turns or intensity > 0.70), returning `escalate: "human"` to immediately route the caller to human staff.
+* **Files & Directories**:
+  - [lexicon.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/emotion/lexicon.ts) — 35+ keyword-to-emotion mappings with VAD offsets and weights.
+  - [detect.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/emotion/detect.ts) — Text emotion detector with context-aware punctuation and positivity safety net.
+  - [persona.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/emotion/persona.ts) — 11 full persona definitions with tone rules, warnings, and priority overrides.
+  - [context.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/context.ts) — System prompt builder incorporating emotion coach blocks.
+  - [policy.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/policy.ts) — Escalation, pacing, and upsell directive engine.
+
+### 4.4 Memory & Vector Store (RAG)
+* **Purpose**: Stores and retrieves semantic memories and client documents.
+* **Implementation Logic**:
+  - Stores memory records in a flat Postgres table `memories`.
+  - Semantic lookup uses the `match_memories` Supabase RPC, computing cosine similarity over OpenAI-compatible 1536-dimensional embeddings.
+  - Memory classes:
+    - **Short-Term Memory (STM)**: In-session conversation details.
+    - **Medium-Term Memory (MTM)**: Recent summaries and customer preferences.
+    - **Long-Term User Memory (LTM_user)**: Historical interaction records across call sessions.
+    - **Long-Term Client Memory (LTM_client)**: Ingested business manuals and knowledge documents.
+* **Files & Directories**:
+  - [store.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/memory/store.ts) — Explicit column serializers (`toRow` and `fromRow`) for Supabase database interaction. Integrates with the Supabase circuit breaker to gracefully degrade when the database is unreachable.
+  - [retrieval.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/memory/retrieval.ts) — Distance matches and decay scoring.
+  - [writer.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/memory/writer.ts) — Seed and commit methods for memory states.
+
+### 4.5 Knowledge Base Ingestion Pipeline
+* **Purpose**: Transforms raw uploaded files into searchable vector knowledge chunks.
+* **Implementation Logic**:
+  - Upload route (`/api/knowledge/upload`) parses files (.txt, .pdf) and creates an initial document log in the `knowledge_documents` table with status `'processing'`.
+  - Compares the uploaded filename against existing documents. If a matching name exists, it increments the file version, marks the old document as `'superseded'`, and removes its existing chunks from the database to avoid duplicate search hits.
+  - Extracts text, splits it into semantic chunks, generates 1536-dimensional embeddings, and writes to the `memories` table under a shared `documentId` key.
+  - On failure, logs the message stack to `errorMessage` and flags status as `'failed'`. On success, writes status `'ready'`.
+  - Cascading deletes are enforced: removing a document via the API executes a foreign key cascade that automatically purges all associated vector memory chunks.
+* **Files & Directories**:
+  - [ingest.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/knowledge/ingest.ts) — Version checking, chunking, and db serialization.
+  - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/knowledge/upload/route.ts) — Raw file parsing api.
+  - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/knowledge/documents/route.ts) — Search pagination and cascade deletion endpoint.
+  - [page.tsx](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/admin/knowledge/page.tsx) — Management dashboard featuring polling refreshes and error drawers.
+
+### 4.6 Booking Engine & Third-Party Integrations
+* **Purpose**: Schedules customer bookings while ensuring thread-safe calendars and notifications.
+* **Implementation Logic**:
+  - **Thread Safety**: Booking execution runs via the `create_reservation_atomic` Postgres function. This RPC acquires a transactional advisory lock (`pg_advisory_xact_lock`) on the hash of the slot (`clientId + date + time`), preventing race-condition double bookings.
+  - **Google Calendar Sync**: Employs a custom REST client to issue signed JSON Web Tokens (RS256 signature using `crypto`) to Google's OAuth2 endpoints on behalf of a Service Account. FreeBusy calls check external conflicts before updating events.
+  - **Email Alerts**: Uses the Resend SDK to dynamically send html emails based on state: Confirmations (Green), Rescheduled modifications (Blue), and Cancellations (Red).
+* **Files & Directories**:
+  - [reservations.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/reservations.ts) — Reservation queries, cancellation logs, and atomic RPC invoker.
+  - [calendar.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/integrations/calendar.ts) — Custom Google OAuth JWT handler and calendar event API actions.
+  - [email.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/integrations/email.ts) — Resend template formatter and dispatcher.
+  - [tools.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/tools.ts) — Tool definitions for `create_booking`, `modify_booking`, `cancel_booking`, and `check_availability`.
+
+### 4.7 Analytics Engine
+* **Purpose**: Aggregates operation metrics and visualizes dashboards.
+* **Implementation Logic**:
+  - Analytics API aggregates database tables, filtering on the authenticated `clientId`.
+  - Custom SVG/CSS progress arcs, segmented horizontal bars, and vertical layout grids render clean graphics natively, eliminating runtime issues associated with heavy visualization modules.
+  - Tool execution routes write logs directly to the database via `dispatchToolCall`, avoiding double counts.
+* **Files & Directories**:
+  - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/analytics/route.ts) — Heatmap, trends, and bucket statistics aggregator.
+  - [page.tsx](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/admin/page.tsx) — Dashboard UI.
+
+### 4.8 AI Orchestrator
+* **Purpose**: Coordinates conversational loops with optimized parallelism.
+* **Implementation Logic**:
+  - Uses `llama-3.3-70b-versatile` hosted on Groq.
+  - Computes the Commitment Acoustic Index (CAI) based on speech rate, pause intervals, and intensity.
+  - Executes tool calling loops, updating sessions with log records on execution outcomes.
+  - **Parallelized pipeline**: Independent database fetches (`LTM_user` + `MTM`) run concurrently via `Promise.all`. Memory write and retrieval are also parallelized. This reduces the critical path to only the LLM inference call.
+  - **Fire-and-forget observability logging**: All 8 session event log writes are dispatched with `void` (no `await`), ensuring that logging failures or Supabase timeouts never block the user-facing response.
+* **Files & Directories**:
+  - [orchestrator.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/orchestrator.ts) — Core parallelized loop with fire-and-forget logging.
+  - [llm.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/llm.ts) — LLM call wrappers.
+  - [session-logger.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/logging/session-logger.ts) — Circuit-breaker-protected event logger that catches all errors internally.
+
+### 4.9 Supabase Resilience Layer
+* **Purpose**: Prevents cascading timeouts when the Supabase database is temporarily unreachable.
+* **Implementation Logic**:
+  - **Timeout Fetch**: All Supabase HTTP requests are wrapped with a 5-second `AbortController` timeout, preventing DNS failures (`ENOTFOUND`) from blocking the pipeline for 10+ seconds.
+  - **Circuit Breaker Pattern**: After 3 consecutive Supabase failures, the circuit opens and all database operations immediately return empty/no-op results for a 30-second cooldown period. A successful operation resets the circuit.
+  - **Graceful Degradation**: When the circuit is open, the orchestrator continues to function using in-memory STM data and the local lexicon-based emotion engine. Logging is silently skipped. The system self-heals when connectivity is restored.
+* **Files & Directories**:
+  - [supabase.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/supabase.ts) — Timeout fetch wrapper, circuit breaker state, and health check API.
+
+---
+
+## 5. Database Schema
+
+Here are the primary multi-tenant database tables used in the production environment:
+
+### 5.1 `knowledge_documents`
+Tracks administrative file uploads:
+```sql
+CREATE TABLE public.knowledge_documents (
+  id text PRIMARY KEY,
+  "clientId" text NOT NULL,
+  filename text NOT NULL,
+  "mimeType" text NOT NULL,
+  status text NOT NULL DEFAULT 'processing', -- 'processing' | 'ready' | 'failed' | 'superseded'
+  "chunkCount" integer DEFAULT 0,
+  "errorMessage" text,
+  version integer DEFAULT 1,
+  "createdAt" bigint NOT NULL
+);
+```
+
+### 5.2 `memories`
+Stores 1536-dimensional vector embedding chunks:
+```sql
+CREATE TABLE public.memories (
+  id text PRIMARY KEY,
+  "clientId" text NOT NULL,
+  "startedAt" bigint NOT NULL,
+  content text NOT NULL,
+  embedding public.vector(1536) NOT NULL,
+  intensity double precision NOT NULL DEFAULT 0,
+  importance double precision NOT NULL DEFAULT 0,
+  topic text,
+  emotion text NOT NULL DEFAULT 'neutral',
+  vad_v double precision NOT NULL DEFAULT 0.5,
+  vad_a double precision NOT NULL DEFAULT 0.5,
+  vad_d double precision NOT NULL DEFAULT 0.5,
+  "documentId" text REFERENCES public.knowledge_documents(id) ON DELETE CASCADE
+);
+```
+
+### 5.3 `reservations`
+Manages customer bookings:
+```sql
+CREATE TABLE public.reservations (
+  id text PRIMARY KEY,
+  "clientId" text NOT NULL,
+  date text NOT NULL, -- YYYY-MM-DD
+  time text NOT NULL, -- HH:MM
+  status text NOT NULL DEFAULT 'confirmed', -- 'confirmed' | 'cancelled'
+  "customerName" text,
+  "customerEmail" text,
+  "customerPhone" text,
+  "calendarEventId" text,
+  "createdAt" bigint NOT NULL
+);
+```
+
+### 5.4 `call_logs`
+Tracks telephony call metrics:
+```sql
+CREATE TABLE public.call_logs (
+  id text PRIMARY KEY, -- Twilio CallSid
+  "clientId" text NOT NULL,
+  "callerNumber" text,
+  status text NOT NULL DEFAULT 'active', -- 'active' | 'completed' | 'failed' | 'queued'
+  "startedAt" bigint NOT NULL,
+  "endedAt" bigint,
+  "durationMs" bigint,
+  "sessionId" text,
+  "queueWaitMs" bigint DEFAULT 0
+);
+```
+
+---
+
+## 6. Important Design Decisions
+
+1. **Flattened Vector Database Schema**: Swapped dynamic metadata JSONB blobs for explicit columns (`vad_v`, `intensity`, etc.) to prevent runtime type exceptions, simplify indexing, and accelerate mathematical scoring matches in Postgres.
+2. **Postgres advisory locks (`pg_advisory_xact_lock`)**: Implemented transactional advisory locks during slot allocation, securing appointments against race conditions without relying on heavy external queue engines.
+3. **No Third-Party Charting Packages**: Programmed raw SVGs and Tailwind layouts for heatmaps and analytics dials to avoid runtime canvas issues, improve loading speed, and ensure layout responsiveness.
+4. **Native Local Development execution**: The environment runs using `npm run dev` and `npm run server` locally while using external managed services (Supabase, Groq, Deepgram), minimizing local computing overhead.
+5. **Fire-and-Forget Observability**: Session event logging is treated as non-critical telemetry that should never block the user-facing response path. All log writes are dispatched without `await` and protected by a circuit breaker, ensuring the system remains responsive even during complete database outages.
+6. **Context-Aware Punctuation Detection**: Punctuation cues (`!!`, `???`, ALL CAPS) amplify arousal in the direction of the already-detected valence rather than forcing a fixed label. This prevents false negatives where enthusiastic positive messages are misclassified as frustration.
+7. **Supabase Circuit Breaker**: A threshold-based circuit breaker (3 failures → 30s cooldown) prevents the cascading timeout pattern where N sequential failed database calls each block for ~3-5 seconds, compounding to 30+ second response times.
+
+---
+
+## 7. Current Limitations
+
+* **Single-Node Queue**: The telephony queue is processed in-memory. If server nodes scale horizontally, queue locks must be migrated to redis or db queues.
+* **Acoustic Metrics Estimation**: Pitch variation and interruption tracking are estimated. True acoustic measurements require routing raw audio waveforms through a node-level processing pipe prior to STT.
+* **Lexicon-Based Emotion Detection**: The text emotion classifier uses a keyword lexicon rather than a trained ML model (e.g., RoBERTa). While the lexicon now covers 35+ patterns across 11 labels, edge cases involving sarcasm, irony, or highly ambiguous language may still be misclassified. The architecture is designed for drop-in replacement with a real model via the `detectTextEmotion` signature.
+* **In-Memory Circuit Breaker State**: The Supabase circuit breaker state is held in process memory. If the Next.js server restarts, the circuit resets. This is acceptable for single-node operation but should be externalized (e.g., to Redis) for multi-node deployments.
