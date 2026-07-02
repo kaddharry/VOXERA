@@ -1,11 +1,6 @@
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-var detect_1 = require("./lib/emotion/detect");
-var persona_1 = require("./lib/emotion/persona");
-var fs_1 = __importDefault(require("fs"));
+import { detectTextEmotion } from "./lib/emotion/detect.js";
+import { getEmotionPersona } from "./lib/emotion/persona.js";
+import fs from "fs";
 var SENTENCES = [
     "Oh, great! Another three-hour wait for technical support. This is exactly how I wanted to spend my afternoon.",
     "I wouldn't say the experience was exactly terrible, but it certainly wasn't what I’d call 'good' either.",
@@ -19,8 +14,8 @@ function runTests() {
     md += "Testing the emotion engine against highly difficult, nuanced, and contradictory sentences to see how it handles sarcasm, mixed signals, and complex negation.\n\n";
     for (var _i = 0, SENTENCES_1 = SENTENCES; _i < SENTENCES_1.length; _i++) {
         var text = SENTENCES_1[_i];
-        var current = (0, detect_1.detectTextEmotion)(text);
-        var persona = (0, persona_1.getEmotionPersona)({
+        var current = detectTextEmotion(text);
+        var persona = getEmotionPersona({
             current: current,
             trajectory: { slope_v: 0, slope_a: 0, window: 0 },
             zDeviation: 0,
@@ -42,7 +37,7 @@ function runTests() {
         md += "  - **Example:** \"".concat(persona.example, "\"\n\n");
         md += "---\n\n";
     }
-    fs_1.default.writeFileSync("TEST_RESULTS.md", md);
+    fs.writeFileSync("TEST_RESULTS.md", md);
     console.log("Wrote TEST_RESULTS.md");
 }
 runTests();

@@ -41,7 +41,7 @@ for (const text of TEST_CASES) {
   minLatency = Math.min(minLatency, latency);
 
   console.log(`[Text]   : "${text}"`);
-  console.log(`[Label]  : ${result.label.toUpperCase()} (Confidence: ${result.confidence.toFixed(2)} - ${result.confidenceCategory.level})`);
+  console.log(`[Label]  : ${result.label.toUpperCase()} (Confidence: ${result.confidence.toFixed(2)} - ${result.confidenceCategory?.level ?? "unknown"})`);
   console.log(`[VAD]    : v: ${result.vad.v.toFixed(2)}, a: ${result.vad.a.toFixed(2)}, d: ${result.vad.d.toFixed(2)}`);
   console.log(`[Latency]: ${latency.toFixed(4)} ms`);
   console.log("-----------------------------------------");

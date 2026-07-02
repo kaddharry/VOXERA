@@ -28,7 +28,7 @@ The next phases of development will transition the codebase from a highly comple
 | :--- | :--- | :--- | :--- | :--- |
 | **Multi-Tenant Isolation** | 🟡 Needs Imp. | High | 85% | Needs Row-Level Security (RLS) enforcement at DB level. |
 | **Telephony & WebSockets** | ✅ Stable | Medium | 95% | Queue is currently in-process memory; needs redis for horizontal scaling. |
-| **Speech Emotion (SER)** | ✅ Stable | Medium | 97% | Expanded to 11 labels, 35+ lexicon entries, context-aware punctuation, positivity safety net. |
+| **Speech Emotion (SER)** | ✅ Stable | Medium | 98% | Expanded to 11 labels, 35+ lexicon entries, context-aware punctuation, positivity safety net. CI lint and build issues resolved. |
 | **Memory (Vector Store)** | ✅ Stable | High | 94% | Circuit breaker integration prevents cascading timeouts. Needs compound indexes. |
 | **Knowledge Base (RAG)** | 🟢 Complete | High | 95% | Cascading deletion, status polling, and version superseding are stable. |
 | **Booking & Integrations** | 🟢 Complete | High | 90% | Advisory locks and calendar JWT sync are stable. Needs client credential encryption. |
@@ -106,6 +106,7 @@ The next phases of development will transition the codebase from a highly comple
 * [x] **Emotion Engine Overhaul**: Expanded from 9 to 11 labels (`excitement`, `disappointment`). Lexicon expanded from 12 to 35+ entries. Fixed `!!` → frustration misclassification bug. Added context-aware punctuation detection and positivity safety net.
 * [x] **Supabase Resilience Layer**: Implemented 5-second timeout fetch wrapper, circuit breaker pattern (3 failures → 30s cooldown), and graceful degradation across all database operations.
 * [x] **Orchestrator Latency Fix**: Converted all 8 `logSessionEvent()` calls from blocking `await` to fire-and-forget `void`. Parallelized independent DB fetches and memory operations. Reduced turn latency from ~29s to ~3-5s.
+* [x] **CI Lint & TypeScript Build Fix** (2026-07-02): Resolved ESLint `no-require-imports` errors by converting compiled CommonJS `.js` files to ES module syntax. Fixed TypeScript strict-mode error in `scripts/test-emotion.ts` by adding safe optional chaining for the optional `confidenceCategory` field. Fixed React Hook `useEffect` dependency warnings in Knowledge Base admin page. All lint errors and build errors eliminated.
 * [ ] Enable Row Level Security (RLS) on all Supabase tables and verify policies.
 * [ ] Create compound indexes for analytical time-series logs.
 * [ ] Encrypt Google Service Account tokens in database-backed tenant configurations.

@@ -281,3 +281,37 @@ CREATE TABLE public.call_logs (
 * **Acoustic Metrics Estimation**: Pitch variation and interruption tracking are estimated. True acoustic measurements require routing raw audio waveforms through a node-level processing pipe prior to STT.
 * **Lexicon-Based Emotion Detection**: The text emotion classifier uses a keyword lexicon rather than a trained ML model (e.g., RoBERTa). While the lexicon now covers 35+ patterns across 11 labels, edge cases involving sarcasm, irony, or highly ambiguous language may still be misclassified. The architecture is designed for drop-in replacement with a real model via the `detectTextEmotion` signature.
 * **In-Memory Circuit Breaker State**: The Supabase circuit breaker state is held in process memory. If the Next.js server restarts, the circuit resets. This is acceptable for single-node operation but should be externalized (e.g., to Redis) for multi-node deployments.
+
+---
+
+## 8. Changelog
+
+### 2026-07-02 — CI Lint & TypeScript Build Fix
+
+**Problems Discovered:**
+1. **ESLint `no-require-imports` errors** in two compiled JavaScript files (`lib/emotion/detect.js` and `test-stress-runner.js`) used CommonJS `require()` syntax, which is forbidden by the `@typescript-eslint/no-require-imports` rule enforced in CI.
+2. **TypeScript build error** in `scripts/test-emotion.ts` at line 44: `result.confidenceCategory` is declared as optional (`?`) in the `EmotionSignal` interface, but was accessed without a null check, causing `TS2532: Object is possibly 'undefined'`.
+3. **React Hook warnings** in `app/admin/knowledge/page.tsx` (lines 73 and 98): two `useEffect` hooks referenced `fetchDocuments` without listing it as a dependency, triggering `react-hooks/exhaustive-deps` warnings.
+
+**Root Causes:**
+1. The `.js` files were TypeScript compiler outputs that retained CommonJS module syntax (`require()`, `module.exports`). The ESLint configuration does not ignore `.js` files (only `.next/`, `out/`, `build/`), so these compiled outputs were linted alongside source code.
+2. The `EmotionSignal.confidenceCategory` field is typed as `ConfidenceCategory | undefined` (optional with `?`). While `detectTextEmotion()` always populates this field, TypeScript's strict mode correctly flags the access as unsafe since the type allows `undefined`.
+3. The `fetchDocuments` async function was defined as a plain closure inside the component body, creating a new reference on every render but not tracked by `useEffect` dependency arrays.
+
+**Files Modified:**
+- [detect.js](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/emotion/detect.js) — Converted CommonJS `require()` to ES module `import` declarations; replaced `Object.defineProperty(exports, ...)` with `export` function declarations.
+- [test-stress-runner.js](file:///Users/hardikkadd/Desktop/Projects/VOXERA/test-stress-runner.js) — Converted CommonJS `require()` and `__importDefault` wrapper to ES module `import`; updated internal call-site references from compiled patterns (`detect_1.detectTextEmotion`) to direct names.
+- [test-emotion.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/scripts/test-emotion.ts) — Added optional chaining (`?.`) with nullish coalescing (`?? "unknown"`) for the `confidenceCategory.level` access.
+- [page.tsx](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/admin/knowledge/page.tsx) — Wrapped `fetchDocuments` in `useCallback` with `[currentPage, searchQuery]` dependencies; added `fetchDocuments` to both `useEffect` dependency arrays.
+
+**Implementation Approach:**
+- All fixes preserve existing runtime behaviour. No ESLint rules were disabled, no TypeScript strict checks were suppressed, and no `as any` casts were introduced.
+- The ES module conversions in `.js` files maintain the same public API surface (`detectTextEmotion`, `detectAudioEmotionStub`, `fuseEmotion` exports).
+- The TypeScript fix uses `?.` + `??` to safely degrade to `"unknown"` if `confidenceCategory` is ever `undefined`, matching the defensive coding style used elsewhere in the codebase.
+
+**Validation Performed:**
+- `npm run lint` → **0 errors, 0 warnings** (all lint errors and the `useEffect` dependency warnings resolved).
+- `npm run build` → **Build succeeded** (TypeScript type checking passed, all 15 static pages generated, production bundle optimized).
+
+**Final Outcome:**
+All CI-blocking errors are resolved. The existing Pull Request on `feature/improve-emotion-analysis` is now ready to merge.
