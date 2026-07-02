@@ -62,21 +62,29 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
 
   const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
 
-  const ltmUserAll = await vectorStore.byTier("LTM_user", input.userId, input.clientId);
+  // ── Phase 1: Parallel DB fetches ──────────────────────────────────────────
+  // LTM_user and MTM are independent — fetch them concurrently.
+  const queryEmbedding = embed(input.transcript);
+  const [ltmUserAll, mtmExisting] = await Promise.all([
+    vectorStore.byTier("LTM_user", input.userId, input.clientId),
+    vectorStore.byTier("MTM", input.userId, input.clientId),
+  ]);
+
   const emotionCtx = buildEmotionContext({
     current: fused,
     stm: stm.get(input.sessionId),
     ltmUser: ltmUserAll,
   });
 
-  await logSessionEvent(makeEvent(evBase, "utterance", {
+  // ── Fire-and-forget logging (never blocks the response path) ──────────────
+  void logSessionEvent(makeEvent(evBase, "utterance", {
     utteranceId: userTurn.id,
     role: userTurn.role,
     text: userTurn.text,
     sttConfidence: sttConf,
   }));
 
-  await logSessionEvent(makeEvent(evBase, "emotion", {
+  void logSessionEvent(makeEvent(evBase, "emotion", {
     label: fused.label,
     intensity: fused.intensity,
     confidence: fused.confidence,
@@ -98,14 +106,13 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     responseLength,
   });
 
-  await logSessionEvent(makeEvent(evBase, "cai", {
+  void logSessionEvent(makeEvent(evBase, "cai", {
     score: cai.score,
     category: cai.category,
     explanation: cai.explanation
   }));
 
-  const queryEmbedding = embed(input.transcript);
-  const mtmExisting = await vectorStore.byTier("MTM", input.userId, input.clientId);
+  // ── Phase 2: Importance scoring (uses mtmExisting from Phase 1) ───────────
   const I = importanceScore({
     text: input.transcript,
     emotion: emotionCtx,
@@ -115,39 +122,43 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     policyFlag: policyFlag(emotionCtx),
   });
 
-  const memoryWrite = await writeMemory({
-    utterance: userTurn,
-    userId: input.userId,
-    clientId: input.clientId,
-    emotion: emotionCtx,
-    importance: I,
-  });
+  // ── Phase 3: Memory write + retrieval in parallel ─────────────────────────
+  // These are independent: writeMemory writes a new record, retrieve reads existing ones.
+  const [memoryWrite, retrieved] = await Promise.all([
+    writeMemory({
+      utterance: userTurn,
+      userId: input.userId,
+      clientId: input.clientId,
+      emotion: emotionCtx,
+      importance: I,
+    }),
+    retrieve({
+      sessionId: input.sessionId,
+      userId: input.userId,
+      clientId: input.clientId,
+      queryText: input.transcript,
+      emotion: emotionCtx,
+    }),
+  ]);
 
-  await logSessionEvent(makeEvent(evBase, "memory_write", {
+  const policy = decidePolicy(emotionCtx);
+
+  // Fire-and-forget logging for memory, retrieval, and policy events
+  void logSessionEvent(makeEvent(evBase, "memory_write", {
     tier: memoryWrite.tier,
     recordId: memoryWrite.recordId,
     merged: memoryWrite.merged,
     importance: I,
   }));
 
-  const retrieved = await retrieve({
-    sessionId: input.sessionId,
-    userId: input.userId,
-    clientId: input.clientId,
-    queryText: input.transcript,
-    emotion: emotionCtx,
-  });
-
-  const policy = decidePolicy(emotionCtx);
-
-  await logSessionEvent(makeEvent(evBase, "retrieval", {
+  void logSessionEvent(makeEvent(evBase, "retrieval", {
     mtmIds: retrieved.mtm.map((m) => m.id),
     ltmUserIds: retrieved.ltmUser.map((m) => m.id),
     ltmClientIds: retrieved.ltmClient.map((m) => m.id),
     scores: retrieved.scores,
   }));
 
-  await logSessionEvent(makeEvent(evBase, "policy", {
+  void logSessionEvent(makeEvent(evBase, "policy", {
     acknowledgeFirst: policy.acknowledgeFirst,
     pace: policy.pace,
     allowUpsell: policy.allowUpsell,
@@ -156,12 +167,13 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   }));
 
   if (policy.escalate !== "none") {
-    await logSessionEvent(makeEvent(evBase, "escalation", {
+    void logSessionEvent(makeEvent(evBase, "escalation", {
       type: policy.escalate,
       reason: policy.notes.join(", ")
     }));
   }
 
+  // ── Phase 4: LLM call (the only truly blocking external call) ─────────────
   const llmContext = buildLLMContext({
     userId: input.userId,
     clientId: input.clientId,
@@ -197,12 +209,13 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   };
   stm.push(input.sessionId, agentTurn);
 
-  await logSessionEvent(makeEvent(evBase, "guard", {
+  // Fire-and-forget final logging
+  void logSessionEvent(makeEvent(evBase, "guard", {
     ok: guarded.ok,
     reasons: guarded.reasons,
   }));
 
-  await logSessionEvent(makeEvent(evBase, "llm_reply", {
+  void logSessionEvent(makeEvent(evBase, "llm_reply", {
     model: llmReply.model,
     usedLive: llmReply.usedLive,
     replyLength: guarded.cleaned.length,

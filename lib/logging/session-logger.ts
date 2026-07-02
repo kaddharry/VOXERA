@@ -1,4 +1,4 @@
-import { supabase } from "../db/supabase";
+import { supabase, isSupabaseHealthy, recordSupabaseSuccess, recordSupabaseFailure } from "../db/supabase";
 
 export type SessionEventType =
   | "utterance"
@@ -25,11 +25,28 @@ export interface SessionEvent {
 
 /**
  * Appends a single session event to the Supabase session_logs table.
+ * 
+ * This function is designed to be called fire-and-forget (without await).
+ * It checks the circuit breaker first and catches all errors internally
+ * so it never blocks or crashes the calling pipeline.
  */
 export async function logSessionEvent(event: SessionEvent): Promise<void> {
-  const { error } = await supabase.from("session_logs").insert([event]);
-  if (error) {
-    console.error("[Logger] Failed to write session event to Supabase:", error);
+  // Short-circuit if Supabase is known to be unreachable
+  if (!isSupabaseHealthy()) {
+    return;
+  }
+
+  try {
+    const { error } = await supabase.from("session_logs").insert([event]);
+    if (error) {
+      console.error("[Logger] Failed to write session event:", error.message);
+      recordSupabaseFailure();
+    } else {
+      recordSupabaseSuccess();
+    }
+  } catch (err: any) {
+    console.error("[Logger] Session event write threw:", err.message ?? err);
+    recordSupabaseFailure();
   }
 }
 

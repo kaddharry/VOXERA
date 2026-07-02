@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { 
   UploadCloud, 
   FileText, 
@@ -50,7 +50,7 @@ export default function KnowledgeBasePage() {
   const pollingInterval = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch documents list
-  const fetchDocuments = async (showLoading = true) => {
+  const fetchDocuments = useCallback(async (showLoading = true) => {
     if (showLoading) setLoadingDocs(true);
     try {
       const res = await fetch(
@@ -65,12 +65,12 @@ export default function KnowledgeBasePage() {
     } finally {
       if (showLoading) setLoadingDocs(false);
     }
-  };
+  }, [currentPage, searchQuery]);
 
   // Re-fetch on pagination or search change
   useEffect(() => {
     fetchDocuments(true);
-  }, [currentPage, searchQuery]);
+  }, [currentPage, searchQuery, fetchDocuments]);
 
   // Setup auto-polling if any document is processing
   useEffect(() => {
@@ -95,7 +95,7 @@ export default function KnowledgeBasePage() {
         pollingInterval.current = null;
       }
     };
-  }, [documents]);
+  }, [documents, fetchDocuments]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {

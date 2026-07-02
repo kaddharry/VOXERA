@@ -15,6 +15,14 @@
 
 ---
 
+## 📚 Engineering Documentation
+
+For in-depth technical details on the platform's design, integrations, and engineering milestones, refer to:
+* 📖 **[VOXERA Technical Implementation Handbook](file:///Users/hardikkadd/Desktop/Projects/VOXERA/VOXERA_IMPLEMENTATION.md)**: Describes the current production-ready architecture, workflows, database schemas, and external integrations.
+* 🗺️ **[VOXERA Engineering Roadmap](file:///Users/hardikkadd/Desktop/Projects/VOXERA/VOXERA_ROADMAP.md)**: Outlines subsystem statuses, near/medium/long-term development goals, and future SaaS transitions.
+
+---
+
 ## 🚀 Features
 
 - **🧠 Production Vector Memory:** Replaced local in-memory stores with `pgvector` on Supabase. Implements dynamic semantic routing for Short-Term (STM), Medium-Term (MTM), and Long-Term (LTM) memories.
