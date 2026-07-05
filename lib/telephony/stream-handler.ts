@@ -38,7 +38,10 @@ function encodeMulaw(pcmSample: number): number {
   const BIAS = 0x84;
   const CLIP = 32635;
   let sign = 0;
-  if (pcmSample < 0) { sign = 0x80; pcmSample = -pcmSample; }
+  if (pcmSample < 0) {
+    sign = 0x80;
+    pcmSample = -pcmSample;
+  }
   if (pcmSample > CLIP) pcmSample = CLIP;
   pcmSample += BIAS;
   let exponent = 7;
@@ -58,7 +61,7 @@ function pcmToMulaw(pcmBuffer: Buffer): Buffer {
 }
 
 export interface StreamHandlerOptions {
-  ws: WebSocket;          // The WebSocket connection to Twilio
+  ws: WebSocket; // The WebSocket connection to Twilio
   callSid: string;
   clientId: string;
   callerNumber: string;
@@ -71,7 +74,7 @@ export interface StreamHandlerOptions {
  *  1. Twilio opens a WebSocket (Media Stream) → this handler receives audio frames
  *  2. Audio is decoded mulaw → PCM → streamed to Deepgram STT
  *  3. On final transcript → handleTurn() (existing orchestrator, zero changes)
- *  4. LLM reply → Deepgram TTS → mp3 → PCM → mulaw → sent back to Twilio
+ *  4. LLM reply → Deepgram TTS (Linear16 PCM) → μ-law → sent back to Twilio
  *  5. Call ends → DB updated, queue updated
  */
 export class TelephonyStreamHandler {
@@ -85,6 +88,7 @@ export class TelephonyStreamHandler {
   private streamSid: string | null = null;
   private startedAt: number;
   private isBusy = false; // prevent overlapping LLM turns
+  private hasEnded = false; // prevent double-invocation of onCallEnded
 
   constructor(opts: StreamHandlerOptions) {
     this.ws = opts.ws;
@@ -177,23 +181,22 @@ export class TelephonyStreamHandler {
   }
 
   /**
-   * Converts text → mp3 via Deepgram TTS → mulaw → sends back to Twilio stream
+   * Converts text → Linear16 PCM → G.711 μ-law → sends back to the Twilio Media Stream.
    */
   private async speakToTwilio(text: string) {
     if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
 
     try {
-      // Get mp3 audio from Deepgram TTS
-      const mp3Bytes = await synthesize(text);
+      // Request Linear16 PCM from Deepgram for Twilio Media Streams
+      const pcmBytes = await synthesize(text, {
+        encoding: "linear16",
+        sampleRate: 8000,
+      });
 
-      // mp3 → raw PCM via simple re-encode to mulaw for Twilio
-      // For production, use ffmpeg or a proper audio converter.
-      // For now, we use the raw PCM approach: treat mp3 bytes as-is for mulaw encode
-      // NOTE: This is a simplified path. For best quality, add ffmpeg conversion.
-      const mulawAudio = pcmToMulaw(Buffer.from(mp3Bytes));
+      // Convert Linear16 PCM to G.711 μ-law
+      const mulawAudio = pcmToMulaw(Buffer.from(pcmBytes));
       const base64Audio = mulawAudio.toString("base64");
 
-      // Twilio Media Stream expects this JSON format to play audio
       const mediaMessage = JSON.stringify({
         event: "media",
         streamSid: this.streamSid,
@@ -209,6 +212,9 @@ export class TelephonyStreamHandler {
   }
 
   private async onCallEnded() {
+    if (this.hasEnded) return;
+    this.hasEnded = true;
+
     const endedAt = Date.now();
     const durationMs = endedAt - this.startedAt;
 
