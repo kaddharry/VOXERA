@@ -67,15 +67,21 @@ function scoreRecord(
 }
 
 export async function retrieve(req: RetrievalRequest): Promise<RetrievedContext> {
-  const queryEmb = embed(req.queryText);
-  const stmTurns = stm.get(req.sessionId);
+  const queryEmb = await embed(req.queryText);
+  const stmTurns = await stm.get(req.sessionId);
   const boostEmotion = req.emotion.flags.increasing_distress || req.emotion.flags.repeated_frustration;
 
-  const [mtmCandidates, ltmUserCands, ltmClientCands] = await Promise.all([
-    vectorStore.byTier("MTM", req.userId, req.clientId),
-    vectorStore.byTier("LTM_user", req.userId, req.clientId),
-    vectorStore.byTier("LTM_client", null, req.clientId)
+  // Issue #6: Use pgvector search instead of loading all records with byTier()
+  // Fetch a generous candidate set from the database, then re-rank with emotion/recency/importance in JS
+  const candidateK = 20;
+  const [mtmResults, ltmUserResults, ltmClientResults] = await Promise.all([
+    vectorStore.search({ tier: "MTM", userId: req.userId, clientId: req.clientId, query: queryEmb, topK: candidateK }),
+    vectorStore.search({ tier: "LTM_user", userId: req.userId, clientId: req.clientId, query: queryEmb, topK: candidateK }),
+    vectorStore.search({ tier: "LTM_client", userId: null, clientId: req.clientId, query: queryEmb, topK: candidateK }),
   ]);
+  const mtmCandidates = mtmResults.map((r) => r.rec);
+  const ltmUserCands = ltmUserResults.map((r) => r.rec);
+  const ltmClientCands = ltmClientResults.map((r) => r.rec);
 
   const pick = (cands: MemoryRecord[], topK: number, minSem: number | null) => {
     const selected: MemoryRecord[] = [];

@@ -58,14 +58,23 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     emotion: fused,
     ts,
   };
-  stm.push(input.sessionId, userTurn);
+  await stm.push(input.sessionId, userTurn, input.clientId);
 
   const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
 
-  const ltmUserAll = await vectorStore.byTier("LTM_user", input.userId, input.clientId);
+  // Issue #6: Use pgvector search for emotion context instead of loading all LTM_user records
+  const queryEmbForCtx = await embed(input.transcript);
+  const ltmUserResults = await vectorStore.search({
+    tier: "LTM_user",
+    userId: input.userId,
+    clientId: input.clientId,
+    query: queryEmbForCtx,
+    topK: 10,
+  });
+  const ltmUserAll = ltmUserResults.map((r) => r.rec);
   const emotionCtx = buildEmotionContext({
     current: fused,
-    stm: stm.get(input.sessionId),
+    stm: await stm.get(input.sessionId),
     ltmUser: ltmUserAll,
   });
 
@@ -104,8 +113,16 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     explanation: cai.explanation
   }));
 
-  const queryEmbedding = embed(input.transcript);
-  const mtmExisting = await vectorStore.byTier("MTM", input.userId, input.clientId);
+  const queryEmbedding = await embed(input.transcript);
+  // Issue #6: Use pgvector search instead of loading all records with byTier()
+  const mtmSearchResults = await vectorStore.search({
+    tier: "MTM",
+    userId: input.userId,
+    clientId: input.clientId,
+    query: queryEmbedding,
+    topK: 20,
+  });
+  const mtmExisting = mtmSearchResults.map((r) => r.rec);
   const I = importanceScore({
     text: input.transcript,
     emotion: emotionCtx,
@@ -195,7 +212,7 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     text: guarded.cleaned,
     ts: Date.now(),
   };
-  stm.push(input.sessionId, agentTurn);
+  await stm.push(input.sessionId, agentTurn, input.clientId);
 
   await logSessionEvent(makeEvent(evBase, "guard", {
     ok: guarded.ok,

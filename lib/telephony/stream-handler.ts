@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import WebSocket from "ws";
 import { DeepgramLiveWrapper } from "../deepgram/live";
-import { synthesize } from "../deepgram/tts";
+import { synthesizeLinear16 } from "../deepgram/tts";
 import { handleTurn } from "../agent/orchestrator";
 import { supabase } from "../db/supabase";
 import { callQueue } from "../queue/manager";
@@ -85,6 +85,7 @@ export class TelephonyStreamHandler {
   private streamSid: string | null = null;
   private startedAt: number;
   private isBusy = false; // prevent overlapping LLM turns
+  private isSpeaking = false; // Issue #8: track if TTS is playing for barge-in
 
   constructor(opts: StreamHandlerOptions) {
     this.ws = opts.ws;
@@ -95,7 +96,7 @@ export class TelephonyStreamHandler {
     this.userId = `caller-${opts.callerNumber.replace(/\D/g, "")}`;
     this.startedAt = Date.now();
 
-    this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this));
+    this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), { sampleRate: 8000 });
     this.init();
   }
 
@@ -139,6 +140,13 @@ export class TelephonyStreamHandler {
         if (media?.payload) {
           const mulawBuf = Buffer.from(media.payload as string, "base64");
           const pcmBuf = decodeMulaw(mulawBuf);
+
+          // Issue #8: Barge-in — if caller speaks while TTS is playing, stop playback
+          if (this.isSpeaking) {
+            this.isSpeaking = false;
+            this.sendClearMessage();
+          }
+
           this.deepgram.sendAudio(pcmBuf);
         }
         break;
@@ -183,17 +191,15 @@ export class TelephonyStreamHandler {
     if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
 
     try {
-      // Get mp3 audio from Deepgram TTS
-      const mp3Bytes = await synthesize(text);
+      // Issue #4: Get linear16 PCM at 8kHz directly from Deepgram (not mp3)
+      const pcmBuffer = await synthesizeLinear16(text);
 
-      // mp3 → raw PCM via simple re-encode to mulaw for Twilio
-      // For production, use ffmpeg or a proper audio converter.
-      // For now, we use the raw PCM approach: treat mp3 bytes as-is for mulaw encode
-      // NOTE: This is a simplified path. For best quality, add ffmpeg conversion.
-      const mulawAudio = pcmToMulaw(Buffer.from(mp3Bytes));
+      // PCM is now correct 8kHz linear16 — encode to mulaw for Twilio
+      const mulawAudio = pcmToMulaw(pcmBuffer);
       const base64Audio = mulawAudio.toString("base64");
 
       // Twilio Media Stream expects this JSON format to play audio
+      this.isSpeaking = true;
       const mediaMessage = JSON.stringify({
         event: "media",
         streamSid: this.streamSid,
@@ -205,7 +211,21 @@ export class TelephonyStreamHandler {
       this.ws.send(mediaMessage);
     } catch (err) {
       console.error(`[TelephonyStream] TTS error:`, err);
+      this.isSpeaking = false;
     }
+  }
+
+  /**
+   * Issue #8: Send a clear message to Twilio to stop any in-progress audio playback (barge-in).
+   */
+  private sendClearMessage() {
+    if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
+    const clearMsg = JSON.stringify({
+      event: "clear",
+      streamSid: this.streamSid,
+    });
+    this.ws.send(clearMsg);
+    console.log(`[TelephonyStream] Barge-in: cleared TTS playback for ${this.callSid}`);
   }
 
   private async onCallEnded() {

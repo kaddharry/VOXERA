@@ -24,6 +24,31 @@ export async function synthesize(text: string, opts?: {
   return new Uint8Array(buf);
 }
 
+/**
+ * Synthesizes speech as raw linear16 PCM at 8kHz — ready for Twilio mulaw encoding.
+ * Issue #4: The original synthesize() returns mp3, which can't be directly treated as PCM.
+ */
+export async function synthesizeLinear16(text: string, opts?: {
+  policy?: PolicyDirectives;
+  persona?: string;
+}): Promise<Buffer> {
+  const dg = getDeepgram();
+  const shaped = applyProsody(text, opts?.policy);
+
+  const personaConfig = opts?.persona ? CONFIG.deepgram.voicePersonas[opts.persona as keyof typeof CONFIG.deepgram.voicePersonas] : undefined;
+  const model = personaConfig?.model || CONFIG.deepgram.ttsModel;
+
+  const binary = await dg.speak.v1.audio.generate({
+    text: shaped,
+    model: model,
+    encoding: "linear16",
+    sample_rate: 8000,
+    container: "none",
+  });
+  const buf = await binary.arrayBuffer();
+  return Buffer.from(buf);
+}
+
 // Light prosody adaptation: under slow pacing, insert subtle pauses and
 // keep sentences short. Deepgram Aura does not accept SSML, so we rely on
 // punctuation and pacing cues that the model respects.
