@@ -1,4 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+/**
+ * Telephony Pipeline Integration Tests (Mocked)
+ *
+ * Tests the audio codec layer (mulaw encode/decode), Twilio message parsing,
+ * and DeepgramLiveWrapper state management with mocked external dependencies.
+ * Does NOT test actual Twilio WebSocket connections or real Deepgram STT.
+ */
+import { describe, it, expect, vi } from "vitest";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -11,11 +18,15 @@ vi.mock("../../lib/db/supabase", () => ({
     from: vi.fn(() => ({
       update: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
+      insert: vi.fn().mockReturnThis(),
       then: vi.fn().mockImplementation((onfulfilled) =>
         Promise.resolve({ data: null, error: null }).then(onfulfilled)
       ),
     })),
   },
+  isSupabaseHealthy: vi.fn().mockReturnValue(true),
+  recordSupabaseSuccess: vi.fn(),
+  recordSupabaseFailure: vi.fn(),
 }));
 
 vi.mock("../../lib/queue/manager", () => ({
@@ -23,25 +34,16 @@ vi.mock("../../lib/queue/manager", () => ({
     markCallStarted: vi.fn(),
     markCallEnded: vi.fn(),
     getMetrics: vi.fn().mockReturnValue({ activeCalls: 0, queuedCalls: 0, totalHandled: 0, rejected: 0 }),
+    dequeueCaller: vi.fn(),
   },
 }));
 
-import {
-  decodeMulaw as _decodeMulaw,
-  encodeMulaw as _encodeMulaw,
-} from "../../lib/telephony/stream-handler";
-
 // ─── Audio Codec Tests ────────────────────────────────────────────────────────
 
-// We test the mulaw codec functions by importing the module and checking the
-// internal functions indirectly through the stream handler behavior.
-
-describe("Issue #9: Telephony Pipeline", () => {
+describe("Telephony Pipeline Integration (Mocked Services)", () => {
 
   describe("Mulaw Codec", () => {
     it("decodes mulaw silence (0xFF) to near-zero PCM", () => {
-      // 0xFF in mulaw represents silence (near-zero amplitude)
-      // We can test the decode table indirectly
       const MULAW_DECODE_TABLE: number[] = (() => {
         const table: number[] = new Array(256);
         for (let i = 0; i < 256; i++) {
@@ -57,10 +59,8 @@ describe("Issue #9: Telephony Pipeline", () => {
         return table;
       })();
 
-      // 0xFF (mulaw silence) should decode to a small value
       expect(Math.abs(MULAW_DECODE_TABLE[0xFF])).toBeLessThan(200);
 
-      // All table entries should be valid 16-bit signed values
       for (const val of MULAW_DECODE_TABLE) {
         expect(val).toBeGreaterThanOrEqual(-32768);
         expect(val).toBeLessThanOrEqual(32767);
@@ -68,7 +68,6 @@ describe("Issue #9: Telephony Pipeline", () => {
     });
 
     it("encodes PCM silence to mulaw correctly", () => {
-      // Replicate encodeMulaw logic
       function encodeMulaw(pcmSample: number): number {
         const BIAS = 0x84;
         const CLIP = 32635;
@@ -83,17 +82,14 @@ describe("Issue #9: Telephony Pipeline", () => {
         return mulawByte & 0xff;
       }
 
-      // Silence (0) should produce a valid mulaw byte
       const silenceByte = encodeMulaw(0);
       expect(silenceByte).toBeGreaterThanOrEqual(0);
       expect(silenceByte).toBeLessThanOrEqual(255);
 
-      // Max positive should clip and produce valid output
       const maxByte = encodeMulaw(32767);
       expect(maxByte).toBeGreaterThanOrEqual(0);
       expect(maxByte).toBeLessThanOrEqual(255);
 
-      // Negative values should produce valid output
       const negByte = encodeMulaw(-1000);
       expect(negByte).toBeGreaterThanOrEqual(0);
       expect(negByte).toBeLessThanOrEqual(255);
@@ -129,12 +125,10 @@ describe("Issue #9: Telephony Pipeline", () => {
         return mulawByte & 0xff;
       }
 
-      // Test that encoding then decoding preserves the general magnitude
       const testSamples = [0, 100, 1000, 5000, 10000, -100, -5000, -10000];
       for (const sample of testSamples) {
         const encoded = encodeMulaw(sample);
         const decoded = MULAW_DECODE_TABLE[encoded];
-        // Mulaw is lossy, but the decoded value should be within 10% or 200 of the original
         const tolerance = Math.max(Math.abs(sample) * 0.15, 200);
         expect(Math.abs(decoded - sample)).toBeLessThan(tolerance);
       }
@@ -184,7 +178,6 @@ describe("Issue #9: Telephony Pipeline", () => {
 
   describe("DeepgramLiveWrapper", () => {
     it("initializes with correct default sample rate", async () => {
-      // Import the class
       const { DeepgramLiveWrapper } = await import("../../lib/deepgram/live");
       const wrapper = new DeepgramLiveWrapper();
       expect(wrapper.getState()).toBe("disconnected");
@@ -200,8 +193,77 @@ describe("Issue #9: Telephony Pipeline", () => {
     it("buffers audio when in connecting state", async () => {
       const { DeepgramLiveWrapper } = await import("../../lib/deepgram/live");
       const wrapper = new DeepgramLiveWrapper();
-      // Before connection, sendAudio should not throw
       expect(() => wrapper.sendAudio(Buffer.from([0, 1, 2]))).not.toThrow();
+    });
+  });
+
+  describe("TelephonyStreamHandler Audio Loop", () => {
+    it("receives, decodes, and routes mulaw audio chunks via WebSocket", async () => {
+      const { TelephonyStreamHandler } = await import("../../lib/telephony/stream-handler");
+      const { DeepgramLiveWrapper } = await import("../../lib/deepgram/live");
+
+      // Spy on DeepgramLiveWrapper methods
+      const connectSpy = vi.spyOn(DeepgramLiveWrapper.prototype, "connect").mockResolvedValue(undefined);
+      const sendAudioSpy = vi.spyOn(DeepgramLiveWrapper.prototype, "sendAudio").mockImplementation(() => {});
+      const closeSpy = vi.spyOn(DeepgramLiveWrapper.prototype, "close").mockImplementation(() => {});
+
+      // Mock WebSocket
+      const listeners: Record<string, Function[]> = {};
+      const mockWs = {
+        on: vi.fn((event: string, cb: Function) => {
+          listeners[event] = listeners[event] || [];
+          listeners[event].push(cb);
+        }),
+        send: vi.fn(),
+        readyState: 1, // WebSocket.OPEN
+      } as any;
+
+      // Instantiate handler
+      new TelephonyStreamHandler({
+        ws: mockWs,
+        callSid: "test-call-123",
+        clientId: "test-client",
+        callerNumber: "+1234567890",
+      });
+
+      // Yield event loop to allow async TelephonyStreamHandler.init() to resolve its awaits
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Let it initialize (it runs callQueue.markCallStarted() and deepgram.connect())
+      expect(connectSpy).toHaveBeenCalled();
+
+      // Trigger "connected" event
+      const onMessage = listeners["message"]?.[0];
+      expect(onMessage).toBeDefined();
+
+      onMessage(Buffer.from(JSON.stringify({ event: "connected" })));
+
+      // Trigger "start" event
+      onMessage(Buffer.from(JSON.stringify({
+        event: "start",
+        start: { streamSid: "stream-123" }
+      })));
+
+      // Trigger "media" event with base64 mulaw payload (0xFF is mulaw silence)
+      const silencePayload = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF]).toString("base64");
+      onMessage(Buffer.from(JSON.stringify({
+        event: "media",
+        media: { payload: silencePayload }
+      })));
+
+      // Verify that sendAudio was called with the decoded PCM buffer
+      expect(sendAudioSpy).toHaveBeenCalled();
+      const sentBuffer = sendAudioSpy.mock.calls[0][0] as Buffer;
+      expect(sentBuffer.length).toBe(8); // 4 bytes mulaw = 8 bytes linear16 PCM
+
+      // Trigger "stop" event
+      onMessage(Buffer.from(JSON.stringify({ event: "stop" })));
+      expect(closeSpy).toHaveBeenCalled();
+
+      // Clean up spies
+      connectSpy.mockRestore();
+      sendAudioSpy.mockRestore();
+      closeSpy.mockRestore();
     });
   });
 });

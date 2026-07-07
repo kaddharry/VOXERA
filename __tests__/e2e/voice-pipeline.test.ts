@@ -31,6 +31,9 @@ vi.mock("../../lib/db/supabase", () => ({
     from: vi.fn(() => mockChain),
     rpc: vi.fn().mockResolvedValue({ data: [], error: null }),
   },
+  isSupabaseHealthy: vi.fn().mockReturnValue(true),
+  recordSupabaseSuccess: vi.fn(),
+  recordSupabaseFailure: vi.fn(),
 }));
 
 // Mock STM

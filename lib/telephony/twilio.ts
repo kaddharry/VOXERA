@@ -80,3 +80,17 @@ export function buildRejectTwiml(): string {
   response.hangup();
   return response.toString();
 }
+
+/**
+ * TwiML to enqueue a call in Twilio's native queue.
+ */
+export function buildEnqueueTwiml(queueName: string): string {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+  response.say(
+    { voice: "Polly.Joanna-Neural" },
+    "All agents are busy. Please hold while we place you in the queue."
+  );
+  response.enqueue(queueName);
+  return response.toString();
+}
