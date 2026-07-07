@@ -75,6 +75,9 @@ export interface MemoryRecord {
   vad: VAD;
   intensity: number;
   importance: number;
+  importance_score: number;
+  retrieval_count: number;
+  last_retrieved_at?: number;
   embedding: number[];
   sourceUtteranceIds: string[];
   recurrence: number;
@@ -92,10 +95,33 @@ export interface PolicyDirectives {
   notes: string[];
 }
 
+export interface RetrievalExplanation {
+  memoryId: string;
+  reason: string;
+  metrics: {
+    similarity: number;
+    importance: number;
+    recency: number;
+    retrievalFrequency: number;
+    rawScore: number;
+  };
+}
+
+export interface TimelineEvent {
+  id: string;
+  topic: string;
+  startDate: number;
+  endDate: number;
+  memories: MemoryRecord[];
+  summary: string;
+}
+
 export interface RetrievedContext {
   stm: Utterance[];
   mtm: MemoryRecord[];
   ltmUser: MemoryRecord[];
   ltmClient: MemoryRecord[];
   scores: { id: string; score: number }[];
+  explanations?: Record<string, RetrievalExplanation>;
+  timeline?: TimelineEvent[];
 }

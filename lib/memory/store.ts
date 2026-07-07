@@ -22,6 +22,9 @@ function toRow(rec: MemoryRecord): Record<string, unknown> {
     vad_d: rec.vad.d,
     intensity: rec.intensity,
     importance: rec.importance,
+    importance_score: rec.importance_score ?? rec.importance,
+    retrieval_count: rec.retrieval_count ?? 0,
+    last_retrieved_at: rec.last_retrieved_at ?? null,
     embedding: rec.embedding,
     "sourceUtteranceIds": rec.sourceUtteranceIds,
     recurrence: rec.recurrence,
@@ -54,6 +57,9 @@ function fromRow(row: any): MemoryRecord {
     },
     intensity: row.intensity ?? 0,
     importance: row.importance ?? 0.5,
+    importance_score: row.importance_score ?? row.importance ?? 0.5,
+    retrieval_count: row.retrieval_count ?? 0,
+    last_retrieved_at: row.last_retrieved_at ? Number(row.last_retrieved_at) : undefined,
     // Postgres pgvector returns a string like "[0.1,0.2,...]" —
     // supabase-js auto-parses it, but we guard just in case.
     embedding: Array.isArray(row.embedding)
@@ -113,6 +119,9 @@ export const vectorStore = {
     const rowPatch: Record<string, unknown> = {};
     if (patch.ts !== undefined) rowPatch.ts = patch.ts;
     if (patch.importance !== undefined) rowPatch.importance = patch.importance;
+    if (patch.importance_score !== undefined) rowPatch.importance_score = patch.importance_score;
+    if (patch.retrieval_count !== undefined) rowPatch.retrieval_count = patch.retrieval_count;
+    if (patch.last_retrieved_at !== undefined) rowPatch.last_retrieved_at = patch.last_retrieved_at;
     if (patch.recurrence !== undefined) rowPatch.recurrence = patch.recurrence;
     if (patch.resolved !== undefined) rowPatch.resolved = patch.resolved;
     if (patch.ttl !== undefined) rowPatch.ttl = patch.ttl;

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "../../lib/db/server";
 import Link from "next/link";
-import { LayoutDashboard, MessageSquare, Database, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, MessageSquare, Database, Settings, LogOut, Sparkles } from "lucide-react";
 
 export default async function AdminLayout({
   children,
@@ -32,6 +32,7 @@ export default async function AdminLayout({
             <NavItem href="/admin" icon={LayoutDashboard} label="Dashboard" />
             <NavItem href="/admin/sessions" icon={MessageSquare} label="Sessions" />
             <NavItem href="/admin/knowledge" icon={Database} label="Knowledge Base" />
+            <NavItem href="/admin/rag" icon={Sparkles} label="RAG Debugger" />
             <NavItem href="/admin/settings" icon={Settings} label="Settings" />
           </nav>
           

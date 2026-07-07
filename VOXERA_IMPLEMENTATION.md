@@ -213,20 +213,39 @@ Stores 1536-dimensional vector embedding chunks:
 ```sql
 CREATE TABLE public.memories (
   id text PRIMARY KEY,
+  tier text NOT NULL,
+  "userId" text,
   "clientId" text NOT NULL,
-  "startedAt" bigint NOT NULL,
-  content text NOT NULL,
-  embedding public.vector(1536) NOT NULL,
-  intensity double precision NOT NULL DEFAULT 0,
-  importance double precision NOT NULL DEFAULT 0,
-  topic text,
+  ts bigint NOT NULL DEFAULT (extract(epoch from now()) * 1000)::bigint,
+  text text NOT NULL,
+  summary text NOT NULL DEFAULT '',
+  entities text[] NOT NULL DEFAULT '{}',
+  topic text NOT NULL DEFAULT 'general',
   emotion text NOT NULL DEFAULT 'neutral',
-  vad_v double precision NOT NULL DEFAULT 0.5,
-  vad_a double precision NOT NULL DEFAULT 0.5,
-  vad_d double precision NOT NULL DEFAULT 0.5,
-  "documentId" text REFERENCES public.knowledge_documents(id) ON DELETE CASCADE
+  vad_v real NOT NULL DEFAULT 0,
+  vad_a real NOT NULL DEFAULT 0,
+  vad_d real NOT NULL DEFAULT 0,
+  intensity real NOT NULL DEFAULT 0,
+  importance real NOT NULL DEFAULT 0.5,
+  importance_score real NOT NULL DEFAULT 0.5,
+  retrieval_count integer NOT NULL DEFAULT 0,
+  last_retrieved_at bigint,
+  embedding vector(1536),
+  "sourceUtteranceIds" text[] NOT NULL DEFAULT '{}',
+  recurrence integer NOT NULL DEFAULT 1,
+  resolved boolean NOT NULL DEFAULT false,
+  ttl bigint
 );
 ```
+
+### 5.2.1 Adaptive Memory Ranking & Explainability Pipeline
+The Memory & RAG subsystem employs an adaptive memory ranking, decay, explainability, and chronological event grouping pipeline:
+1. **Dynamic Scoring & Re-ranking:** Re-ranking uses pgvector similarity coupled with custom metrics.
+2. **Adaptive Score Decay:** Static memory importance score (`importance_score`) decays over time with a **7-day half-life** since last retrieval or write activity to prevent obsolete data from cluttering agent context.
+3. **Preservation Floors for Critical Facts:** Key facts (LTM user/client memories, or records containing critical keywords like allergies, preferences, language, vip, payment, compliance) have a preservation floor of `0.70`, ensuring they never decay below this point and are consistently prioritized.
+4. **Retrieval Usage Boost:** Whenever a memory is selected in the retrieval results, its `retrieval_count` is incremented, and its `importance_score` gets a logarithmic boost: `importance_score = min(decayed_importance + 0.05 * ln(1 + retrieval_count), 1.0)`.
+5. **Selection Explainability:** Every retrieval result maps the exact relevance score components (semantic similarity, dynamic importance, recency, emotion match, staleness) to produce a detailed natural language explanation for administrators.
+6. **Chronological Timeline Grouping:** Retrieved memories are grouped into events using proximity (within 48 hours) and topic sharing, providing a sequential narrative to the LLM.
 
 ### 5.3 `reservations`
 Manages customer bookings:

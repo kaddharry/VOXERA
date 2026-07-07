@@ -44,3 +44,15 @@ This document summarizes the core engineering logic implemented to resolve GitHu
 * **Supabase RPC (`match_memories`):** The similarity search now runs entirely inside Postgres using the pgvector `<=>` cosine distance operator, returning the computed `similarity` score (`sim`) alongside each of the Top-20 candidate records.
 * **No Local Cosine Math:** The Node.js application layer directly uses the database-computed similarity score `sim` for final scoring and re-ranking, completely eliminating high-dimensional math loops and saving memory/CPU resources.
 
+---
+
+## 6. Adaptive Memory Ranking, Explainability & Timeline-based Retrieval
+* **Adaptive Scoring & Time-Decay:** Stored memories maintain an `importance_score` that decays dynamically based on a **7-day half-life** since last retrieval or edit activity.
+* **Preservation Floor for Critical Facts:** Critical user details (such as allergies, permanent preferences, VIP status, language) are preserved with a score floor of `0.70`, ensuring they never decay out of priority.
+* **Retrieval usage boost:** Selecting a memory adds a logarithmic boost `+ 0.05 * ln(1 + retrieval_count)` and updates `last_retrieved_at`.
+* **Selection Explainability Audit Logs:** Every retrieved memory calculates its score components (similarity, dynamic importance, recency, emotion match, staleness) and generates a detailed natural language explanation for RAG evaluation.
+* **RAG Debugger & Session History Integration:**
+  - Added a stunning **RAG Debugger** page (`/admin/rag`) in the sidebar layout for administrators to run mock queries and inspect explainability metrics and event sequence timelines.
+  - Upgraded the **Session History** event log to format `retrieval` logs into gorgeous, structured audit cards with selection reasons instead of raw JSON string blocks.
+* **Timeline Chronological Grouping:** Retrieved memories are grouped into event buckets based on time proximity (within 48 hours) and topic sharing, formatting memory context as a narrative sequence.
+
