@@ -50,13 +50,14 @@ function redundancyPenalty(rec: MemoryRecord, selected: MemoryRecord[]): number 
 
 function scoreRecord(
   rec: MemoryRecord,
-  queryEmb: number[],
+  sim: number,
   emotion: EmotionContext,
   selected: MemoryRecord[],
   boostEmotion: boolean,
 ): number {
   const { w } = CONFIG.retrieval;
-  const sem = (rec.embedding && rec.embedding.length > 0) ? clamp((cosine(queryEmb, rec.embedding) + 1) / 2) : 0.5;
+  // Use the similarity score computed in database pgvector instead of local cosine()
+  const sem = clamp((sim + 1) / 2);
   const emo = emoMatch(emotion.current.vad, rec.vad);
   const rec_ = recencyBoost(rec.ts, rec.importance);
   const imp = rec.importance;
@@ -71,33 +72,27 @@ export async function retrieve(req: RetrievalRequest): Promise<RetrievedContext>
   const stmTurns = await stm.get(req.sessionId);
   const boostEmotion = req.emotion.flags.increasing_distress || req.emotion.flags.repeated_frustration;
 
-  // Issue #6: Use pgvector search instead of loading all records with byTier()
-  // Fetch a generous candidate set from the database, then re-rank with emotion/recency/importance in JS
+  // Fetch candidate sets with pgvector similarity calculated in database
   const candidateK = 20;
   const [mtmResults, ltmUserResults, ltmClientResults] = await Promise.all([
     vectorStore.search({ tier: "MTM", userId: req.userId, clientId: req.clientId, query: queryEmb, topK: candidateK }),
     vectorStore.search({ tier: "LTM_user", userId: req.userId, clientId: req.clientId, query: queryEmb, topK: candidateK }),
     vectorStore.search({ tier: "LTM_client", userId: null, clientId: req.clientId, query: queryEmb, topK: candidateK }),
   ]);
-  const mtmCandidates = mtmResults.map((r) => r.rec);
-  const ltmUserCands = ltmUserResults.map((r) => r.rec);
-  const ltmClientCands = ltmClientResults.map((r) => r.rec);
 
-  const pick = (cands: MemoryRecord[], topK: number, minSem: number | null) => {
+  const pick = (cands: Array<{ rec: MemoryRecord; sim: number }>, topK: number, minSem: number | null) => {
     const selected: MemoryRecord[] = [];
-    const scored: Array<{ rec: MemoryRecord; score: number }> = [];
-    for (const rec of cands) {
-      if (minSem != null && rec.embedding && rec.embedding.length > 0) {
-        const sem = clamp((cosine(queryEmb, rec.embedding) + 1) / 2);
-        if (sem < minSem && rec.importance < 0.7) continue;
-      }
-      scored.push({ rec, score: 0 });
+    const scored: Array<{ rec: MemoryRecord; sim: number; score: number }> = [];
+    for (const item of cands) {
+      const sem = clamp((item.sim + 1) / 2);
+      if (minSem != null && sem < minSem && item.rec.importance < 0.7) continue;
+      scored.push({ rec: item.rec, sim: item.sim, score: 0 });
     }
     for (let i = 0; i < topK && scored.length > 0; i++) {
       let bestIdx = -1;
       let bestScore = -Infinity;
       for (let j = 0; j < scored.length; j++) {
-        const s = scoreRecord(scored[j].rec, queryEmb, req.emotion, selected, boostEmotion);
+        const s = scoreRecord(scored[j].rec, scored[j].sim, req.emotion, selected, boostEmotion);
         if (s > bestScore) {
           bestScore = s;
           bestIdx = j;
@@ -108,12 +103,15 @@ export async function retrieve(req: RetrievalRequest): Promise<RetrievedContext>
       picked.score = bestScore;
       selected.push(picked.rec);
     }
-    return selected.map((rec) => ({ rec, score: scoreRecord(rec, queryEmb, req.emotion, [], boostEmotion) }));
+    return selected.map((rec) => {
+      const sim = cands.find((c) => c.rec.id === rec.id)?.sim ?? 0;
+      return { rec, score: scoreRecord(rec, sim, req.emotion, [], boostEmotion) };
+    });
   };
 
-  const mtmPicked = pick(mtmCandidates, CONFIG.retrieval.topK.mtm, CONFIG.retrieval.minSemScore);
-  const ltmUserPicked = pick(ltmUserCands, CONFIG.retrieval.topK.ltmUser, null);
-  const ltmClientPicked = pick(ltmClientCands, CONFIG.retrieval.topK.ltmClient, null);
+  const mtmPicked = pick(mtmResults, CONFIG.retrieval.topK.mtm, CONFIG.retrieval.minSemScore);
+  const ltmUserPicked = pick(ltmUserResults, CONFIG.retrieval.topK.ltmUser, null);
+  const ltmClientPicked = pick(ltmClientResults, CONFIG.retrieval.topK.ltmClient, null);
 
   const scores = [...mtmPicked, ...ltmUserPicked, ...ltmClientPicked].map((x) => ({
     id: x.rec.id,

@@ -36,4 +36,11 @@ This document summarizes the core engineering logic implemented to resolve GitHu
 ## 4. AI Retrieval Pipeline & LLM Failover (Issue #7)
 * **Resilient Retry & Key Rotation:** `KeyRotator` automatically handles rate limits, credential exhaustion, server errors (500/502/503), and timeouts (15s) with exponential backoff (1s → 2s → 4s) across multiple API keys.
 * **Multi-Provider LLM Failover:** Attempts Groq API first, falls back to OpenAI if Groq fails, and defaults to offline fallback if both are offline.
-* **pgvector Search:** Swapped full-table scan with the database-side `match_memories` pgvector RPC, returning the top-20 candidates for local scoring and re-ranking.
+
+---
+
+## 5. Vector Memory Retrieval pgvector Optimization (Issue #6)
+* **Database-Side Similarity Calculation:** Swapped application-layer high-dimensional cosine similarity calculations (`cosine(queryEmb, rec.embedding)`) in `lib/memory/retrieval.ts` with database-native calculations.
+* **Supabase RPC (`match_memories`):** The similarity search now runs entirely inside Postgres using the pgvector `<=>` cosine distance operator, returning the computed `similarity` score (`sim`) alongside each of the Top-20 candidate records.
+* **No Local Cosine Math:** The Node.js application layer directly uses the database-computed similarity score `sim` for final scoring and re-ranking, completely eliminating high-dimensional math loops and saving memory/CPU resources.
+
