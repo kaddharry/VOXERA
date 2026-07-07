@@ -1,8 +1,41 @@
 import { seedClientMemory } from "./memory/writer";
 import { vectorStore } from "./memory/store";
 import { probeHealth } from "./db/supabase";
+import { callQueue } from "./queue/manager";
+import { getTwilioClient } from "./telephony/twilio";
 
 let seeded = false;
+
+// Register the slot open callback to dynamically redirect callers out of Twilio Enqueue
+callQueue.onSlotOpen(async () => {
+  while (callQueue.getQueueLength() > 0 && callQueue.canAcceptCall()) {
+    const nextCaller = callQueue.peekNextCaller();
+    if (!nextCaller) break;
+
+    try {
+      const client = getTwilioClient();
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
+      // Redirect URL that will return buildConnectTwiml()
+      const redirectUrl = `${baseUrl}/api/telephony/dequeue?callSid=${nextCaller.id}&clientId=${nextCaller.clientId || "demo"}&caller=${encodeURIComponent(nextCaller.phoneNumber || "unknown")}`;
+
+      console.log(`[Telephony Queue] Auto-redirecting queued caller ${nextCaller.id} out of Enqueue...`);
+      
+      // Dequeue first to prevent duplicate processing
+      callQueue.dequeueCaller(nextCaller.id);
+
+      await client.calls(nextCaller.id).update({
+        url: redirectUrl,
+        method: "POST",
+      });
+
+      // Slot filled, continue to next if we still have capacity
+    } catch (err: any) {
+      console.error(`[Telephony Queue] Failed to redirect queued caller ${nextCaller.id}:`, err?.message ?? err);
+      // Remove failed caller from queue to avoid blockages
+      callQueue.dequeueCaller(nextCaller.id);
+    }
+  }
+});
 
 export const DEMO = {
   clientId: "acme-telecom",
@@ -13,9 +46,6 @@ export const DEMO = {
 export async function ensureSeeded() {
   if (seeded) return;
 
-  // Run a fast connectivity probe on first request.
-  // If Supabase is unreachable, this opens the circuit breaker immediately
-  // so all subsequent DB calls return instantly instead of timing out.
   const healthy = await probeHealth();
   if (!healthy) {
     console.warn("[Bootstrap] Supabase unreachable — skipping seed, circuit breaker open.");

@@ -40,8 +40,10 @@ export const CONFIG = {
     } as Record<string, { model: string; label: string }>,
   },
   llm: {
-    model: "llama-3.3-70b-versatile",
-    baseURL: "https://api.groq.com/openai/v1",
+    providers: [
+      { name: "groq", baseURL: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", envKey: "GROQ_API_KEYS" },
+      { name: "openai", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", envKey: "OPENAI_API_KEY" },
+    ] as Array<{ name: string; baseURL: string; model: string; envKey: string }>,
     maxInputTokens: 6000,
     maxOutputTokens: 400,
   },

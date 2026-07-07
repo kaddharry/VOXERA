@@ -171,7 +171,7 @@ export async function queryKnowledgeBase(args: {
   query: string;
   topK?: number;
 }): Promise<Array<{ text: string; topic: string; similarity: number; id: string }>> {
-  const queryEmbedding = embed(args.query);
+  const queryEmbedding = await embed(args.query);
   const topK = args.topK ?? 5;
   const results = await vectorStore.search({
     tier: "LTM_client",

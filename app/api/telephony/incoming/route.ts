@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { nanoid } from "nanoid";
-import { validateTwilioSignature, buildConnectTwiml, buildWaitTwiml, buildRejectTwiml } from "../../../../lib/telephony/twilio";
+import { validateTwilioSignature, buildConnectTwiml, buildEnqueueTwiml, buildRejectTwiml } from "../../../../lib/telephony/twilio";
 import { callQueue } from "../../../../lib/queue/manager";
 import { supabase } from "../../../../lib/db/supabase";
 
@@ -14,12 +13,11 @@ const MAX_CONCURRENT_CALLS = 10;
  * Twilio calls this webhook when a phone call arrives.
  * We respond with TwiML that either:
  *   a) Opens a Media Stream WebSocket (normal path)
- *   b) Plays a wait message (queue full but under hard limit)
+ *   b) Enqueues the call natively on Twilio (queue full but under hard limit)
  *   c) Rejects the call (hard limit reached)
  */
 export async function POST(req: NextRequest) {
   try {
-    // --- Parse Twilio POST body (application/x-www-form-urlencoded) ---
     const body = await req.text();
     const params = Object.fromEntries(new URLSearchParams(body));
 
@@ -29,7 +27,6 @@ export async function POST(req: NextRequest) {
 
     console.log(`[Telephony] Incoming call: ${callSid} from ${callerNumber} to ${toNumber}`);
 
-    // --- Validate Twilio Signature (skip in dev if no secret set) ---
     const authToken = process.env.TWILIO_AUTH_TOKEN;
     if (authToken) {
       const signature = req.headers.get("x-twilio-signature") || "";
@@ -42,7 +39,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // --- Resolve clientId from the called phone number ---
     const { data: phoneRow } = await supabase
       .from("phone_numbers")
       .select("clientId")
@@ -50,10 +46,8 @@ export async function POST(req: NextRequest) {
       .eq("active", true)
       .single();
 
-    // Fall back to env var for single-tenant / dev deployments
     const clientId = phoneRow?.clientId || process.env.DEFAULT_CLIENT_ID || "demo";
 
-    // --- Queue Management ---
     const activeCount = callQueue.getActiveCallCount();
 
     if (activeCount >= MAX_CONCURRENT_CALLS) {
@@ -63,20 +57,23 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const caller = callQueue.enqueueCaller(callSid, callerNumber);
+    // Determine priority based on callerNumber (premium numbers get higher priority, e.g. 1)
+    const priority = callerNumber.includes("999") || callerNumber.includes("VIP") ? 1 : 5;
+
+    const caller = callQueue.enqueueCaller(callSid, callerNumber, priority, clientId);
     const waitMs = callQueue.getEstimatedWaitTimeMs(callSid);
 
     if (waitMs > 0) {
-      console.log(`[Telephony] Caller ${callSid} queued, wait: ${waitMs}ms`);
-      callQueue.dequeueCaller(callSid); // remove from queue — will re-enqueue on retry
-      return new NextResponse(buildWaitTwiml(Math.ceil(waitMs / 1000)), {
+      console.log(`[Telephony] Caller ${callSid} enqueued in Twilio queue, wait: ${waitMs}ms`);
+      // Keep in the CallQueueManager, do not dequeue! It will be dequeued when redirected.
+      return new NextResponse(buildEnqueueTwiml("voxera_queue"), {
         headers: { "Content-Type": "text/xml" },
       });
     }
 
-    callQueue.dequeueCaller(callSid); // accepted — remove from queue, stream-handler will markCallStarted
+    // Accepted immediately — remove from queue, stream-handler will markCallStarted
+    callQueue.dequeueCaller(callSid);
 
-    // --- Create call_log row ---
     await supabase.from("call_logs").insert([{
       id: callSid,
       clientId,
@@ -86,7 +83,6 @@ export async function POST(req: NextRequest) {
       queueWaitMs: caller.joinedAt ? Date.now() - caller.joinedAt : 0,
     }]);
 
-    // --- Build WebSocket URL for Twilio Media Streams ---
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `https://${req.headers.get("host")}`;
     const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}`;
 
