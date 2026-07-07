@@ -208,9 +208,9 @@ describe("Telephony Pipeline Integration (Mocked Services)", () => {
       const closeSpy = vi.spyOn(DeepgramLiveWrapper.prototype, "close").mockImplementation(() => {});
 
       // Mock WebSocket
-      const listeners: Record<string, Function[]> = {};
+      const listeners: Record<string, Array<(...args: any[]) => void>> = {};
       const mockWs = {
-        on: vi.fn((event: string, cb: Function) => {
+        on: vi.fn((event: string, cb: (...args: any[]) => void) => {
           listeners[event] = listeners[event] || [];
           listeners[event].push(cb);
         }),
