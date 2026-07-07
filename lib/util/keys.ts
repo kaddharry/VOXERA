@@ -94,26 +94,41 @@ export class KeyRotator {
         lastError = error;
         const status = error?.status || error?.response?.status;
         const isQuotaError = status === 429 || status === 401 || status === 403;
-        const isServerError = status === 500 || status === 502 || status === 503;
-        const isTimeout = error?.name === "TimeoutError";
-        const isRetryable = isQuotaError || isServerError || isTimeout;
+        const isTimeoutError =
+          error?.name === "TimeoutError" ||
+          error?.code === "ETIMEDOUT" ||
+          error?.code === "ECONNABORTED" ||
+          error?.message?.includes("timed out") ||
+          error?.message?.includes("timeout") ||
+          status === 408 ||
+          status === 500 ||
+          status === 502 ||
+          status === 503 ||
+          status === 504;
+
+        const isRetryable = isQuotaError || isTimeoutError;
 
         if (isRetryable) {
-          if (isQuotaError && this.keys.length > 1) {
+          if ((isQuotaError || isTimeoutError) && this.keys.length > 1) {
+            const reason = isQuotaError ? `quota (${status})` : `timeout/transient (${status ?? error?.code ?? "unknown"})`;
+            console.warn(
+              `[KeyRotator] ${reason} for ${this.name}. Rotating key (attempt ${attempts + 1}/${maxRetries}).`,
+            );
             this.rotate();
+          } else if (isTimeoutError && this.keys.length === 1) {
+            console.warn(
+              `[KeyRotator] Timeout for ${this.name} (single key). Retrying (attempt ${attempts + 1}/${maxRetries}).`,
+            );
           }
           attempts++;
           if (attempts < maxRetries) {
             const backoffMs = Math.pow(2, attempts - 1) * 1000; // 1s, 2s, 4s
             console.warn(
-              `[KeyRotator] ${this.name} attempt ${attempts}/${maxRetries} failed ` +
-              `(${isTimeout ? "timeout" : `HTTP ${status}`}). ` +
-              `Retrying in ${backoffMs}ms...`,
+              `[KeyRotator] Backing off for ${backoffMs}ms...`,
             );
             await sleep(backoffMs);
           }
         } else {
-          // Non-retryable error — bubble up immediately
           throw error;
         }
       }
@@ -127,5 +142,4 @@ export class KeyRotator {
   }
 }
 
-// Global singletons for the rotators.
 export const llmKeys = new KeyRotator("GROQ_API_KEYS");

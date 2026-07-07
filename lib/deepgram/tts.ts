@@ -15,13 +15,30 @@ export async function synthesize(text: string, opts?: {
   const personaConfig = opts?.persona ? CONFIG.deepgram.voicePersonas[opts.persona as keyof typeof CONFIG.deepgram.voicePersonas] : undefined;
   const model = personaConfig?.model || CONFIG.deepgram.ttsModel;
 
-  const binary = await dg.speak.v1.audio.generate({
-    text: shaped,
-    model: model,
-    encoding: "mp3",
-  });
-  const buf = await binary.arrayBuffer();
-  return new Uint8Array(buf);
+  // Retry TTS up to 2 times on transient failures (502/503/network errors)
+  const MAX_TTS_RETRIES = 2;
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt <= MAX_TTS_RETRIES; attempt++) {
+    try {
+      const binary = await dg.speak.v1.audio.generate({
+        text: shaped,
+        model: model,
+        encoding: "mp3",
+      });
+      const buf = await binary.arrayBuffer();
+      return new Uint8Array(buf);
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt < MAX_TTS_RETRIES) {
+        const backoff = (attempt + 1) * 500;
+        console.warn(`[TTS] Attempt ${attempt + 1} failed: ${err.message ?? err}. Retrying in ${backoff}ms...`);
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+  }
+
+  throw lastErr;
 }
 
 /**

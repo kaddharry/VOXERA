@@ -62,30 +62,40 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
 
   const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
 
-  // Issue #6: Use pgvector search for emotion context instead of loading all LTM_user records
-  const queryEmbForCtx = await embed(input.transcript);
-  const ltmUserResults = await vectorStore.search({
-    tier: "LTM_user",
-    userId: input.userId,
-    clientId: input.clientId,
-    query: queryEmbForCtx,
-    topK: 10,
-  });
+  const queryEmbedding = await embed(input.transcript);
+  const [ltmUserResults, mtmSearchResults] = await Promise.all([
+    vectorStore.search({
+      tier: "LTM_user",
+      userId: input.userId,
+      clientId: input.clientId,
+      query: queryEmbedding,
+      topK: 10,
+    }),
+    vectorStore.search({
+      tier: "MTM",
+      userId: input.userId,
+      clientId: input.clientId,
+      query: queryEmbedding,
+      topK: 20,
+    }),
+  ]);
   const ltmUserAll = ltmUserResults.map((r) => r.rec);
+  const mtmExisting = mtmSearchResults.map((r) => r.rec);
+
   const emotionCtx = buildEmotionContext({
     current: fused,
     stm: await stm.get(input.sessionId),
     ltmUser: ltmUserAll,
   });
 
-  await logSessionEvent(makeEvent(evBase, "utterance", {
+  void logSessionEvent(makeEvent(evBase, "utterance", {
     utteranceId: userTurn.id,
     role: userTurn.role,
     text: userTurn.text,
     sttConfidence: sttConf,
   }));
 
-  await logSessionEvent(makeEvent(evBase, "emotion", {
+  void logSessionEvent(makeEvent(evBase, "emotion", {
     label: fused.label,
     intensity: fused.intensity,
     confidence: fused.confidence,
@@ -96,33 +106,21 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     flags: emotionCtx.flags,
   }));
 
-  // FR-20: Calculate Commitment Acoustic Index (CAI)
   const responseLength = input.transcript.split(/\s+/).length;
-  // Approximations since we don't have true acoustic feature extractors yet
   const cai = calculateCAI({
     pitchVariation: fused.vad.a > 0.3 ? 0.8 : 0.4,
-    speakingRate: 140, // assume normal
+    speakingRate: 140,
     interruptions: 0,
     pauseDurationMs: 500,
     responseLength,
   });
 
-  await logSessionEvent(makeEvent(evBase, "cai", {
+  void logSessionEvent(makeEvent(evBase, "cai", {
     score: cai.score,
     category: cai.category,
     explanation: cai.explanation
   }));
 
-  const queryEmbedding = await embed(input.transcript);
-  // Issue #6: Use pgvector search instead of loading all records with byTier()
-  const mtmSearchResults = await vectorStore.search({
-    tier: "MTM",
-    userId: input.userId,
-    clientId: input.clientId,
-    query: queryEmbedding,
-    topK: 20,
-  });
-  const mtmExisting = mtmSearchResults.map((r) => r.rec);
   const I = importanceScore({
     text: input.transcript,
     emotion: emotionCtx,
@@ -132,39 +130,40 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     policyFlag: policyFlag(emotionCtx),
   });
 
-  const memoryWrite = await writeMemory({
-    utterance: userTurn,
-    userId: input.userId,
-    clientId: input.clientId,
-    emotion: emotionCtx,
-    importance: I,
-  });
+  const [memoryWrite, retrieved] = await Promise.all([
+    writeMemory({
+      utterance: userTurn,
+      userId: input.userId,
+      clientId: input.clientId,
+      emotion: emotionCtx,
+      importance: I,
+    }),
+    retrieve({
+      sessionId: input.sessionId,
+      userId: input.userId,
+      clientId: input.clientId,
+      queryText: input.transcript,
+      emotion: emotionCtx,
+    }),
+  ]);
 
-  await logSessionEvent(makeEvent(evBase, "memory_write", {
+  const policy = decidePolicy(emotionCtx);
+
+  void logSessionEvent(makeEvent(evBase, "memory_write", {
     tier: memoryWrite.tier,
     recordId: memoryWrite.recordId,
     merged: memoryWrite.merged,
     importance: I,
   }));
 
-  const retrieved = await retrieve({
-    sessionId: input.sessionId,
-    userId: input.userId,
-    clientId: input.clientId,
-    queryText: input.transcript,
-    emotion: emotionCtx,
-  });
-
-  const policy = decidePolicy(emotionCtx);
-
-  await logSessionEvent(makeEvent(evBase, "retrieval", {
+  void logSessionEvent(makeEvent(evBase, "retrieval", {
     mtmIds: retrieved.mtm.map((m) => m.id),
     ltmUserIds: retrieved.ltmUser.map((m) => m.id),
     ltmClientIds: retrieved.ltmClient.map((m) => m.id),
     scores: retrieved.scores,
   }));
 
-  await logSessionEvent(makeEvent(evBase, "policy", {
+  void logSessionEvent(makeEvent(evBase, "policy", {
     acknowledgeFirst: policy.acknowledgeFirst,
     pace: policy.pace,
     allowUpsell: policy.allowUpsell,
@@ -173,7 +172,7 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   }));
 
   if (policy.escalate !== "none") {
-    await logSessionEvent(makeEvent(evBase, "escalation", {
+    void logSessionEvent(makeEvent(evBase, "escalation", {
       type: policy.escalate,
       reason: policy.notes.join(", ")
     }));
@@ -214,12 +213,12 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   };
   await stm.push(input.sessionId, agentTurn, input.clientId);
 
-  await logSessionEvent(makeEvent(evBase, "guard", {
+  void logSessionEvent(makeEvent(evBase, "guard", {
     ok: guarded.ok,
     reasons: guarded.reasons,
   }));
 
-  await logSessionEvent(makeEvent(evBase, "llm_reply", {
+  void logSessionEvent(makeEvent(evBase, "llm_reply", {
     model: llmReply.model,
     usedLive: llmReply.usedLive,
     replyLength: guarded.cleaned.length,

@@ -18,16 +18,17 @@ export async function generateReply(args: {
   userId?: string;
 }): Promise<LLMReply> {
 
-  // Issue #7: Try each provider in order until one succeeds
   for (const provider of CONFIG.llm.providers) {
     const rotator = new KeyRotator(provider.envKey);
-    if (!rotator.getKey()) continue; // skip providers without keys
+    if (!rotator.getKey()) continue;
 
     try {
       const result = await rotator.executeWithRotation(async (apiKey) => {
         const openai = new OpenAI({
           apiKey,
           baseURL: provider.baseURL,
+          timeout: 15_000,
+          maxRetries: 1,
         });
 
         const messages: any[] = [
@@ -37,7 +38,6 @@ export async function generateReply(args: {
 
         let finalResponseText = "";
 
-        // We allow a max of 3 tool call iterations to prevent infinite tool loops.
         for (let i = 0; i < 3; i++) {
           const resp = await openai.chat.completions.create({
             model: provider.model,
@@ -51,7 +51,6 @@ export async function generateReply(args: {
           messages.push(message);
 
           if (message.tool_calls && message.tool_calls.length > 0) {
-            // Handle each tool call requested by the model
             for (const toolCall of message.tool_calls) {
               if (toolCall.type !== "function") continue;
 
@@ -72,11 +71,9 @@ export async function generateReply(args: {
                 name: name,
               });
             }
-            // Continue loop so the model can process the tool results
             continue;
           }
 
-          // If no tools were called, the model is done reasoning and returns a text reply
           finalResponseText = message.content || "";
           break;
         }
@@ -88,23 +85,20 @@ export async function generateReply(args: {
       return result;
     } catch (err) {
       console.warn(`[LLM] Provider "${provider.name}" failed:`, err instanceof Error ? err.message : err);
-      continue; // try next provider
+      continue;
     }
   }
 
-  // All providers failed — use offline fallback
   console.warn("[LLM] All providers exhausted. Using offline fallback.");
   return { text: offlineFallback(args.user), model: "offline-fallback", usedLive: false, provider: "offline" };
 }
 
-// Deterministic canned response used when all LLM providers are unavailable.
 function offlineFallback(userBlock: string): string {
   const turnMatch = userBlock.match(/USER:\s*(.+)/i);
   const current = turnMatch?.[1] ?? userBlock;
   const lc = current.toLowerCase();
 
   if (/book|schedule|appointment/.test(lc)) {
-    // Offline mock for testing tool invocations
     console.log("[LLM] Offline fallback triggered mock tool invocation for check_availability & create_booking");
     dispatchToolCall("check_availability", { date: "2026-10-10", time: "19:00" }, "offline-test").then(() => {
         dispatchToolCall("create_booking", { userId: "U-123", date: "2026-10-10", time: "19:00", partySize: 4 }, "offline-test");
