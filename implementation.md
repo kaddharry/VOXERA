@@ -1,46 +1,43 @@
 # VOXERA PR Implementation Summary
 
-This document summarizes the core engineering logic implemented to resolve GitHub issues #4 through #9.
+This document summarizes the engineering logic implemented to resolve Issue #16: Business Voice Personalization & Customer Recovery.
 
 ---
 
-## 1. STM Memory Leak & Eviction Policy (Issue #5)
-* **Problem:** Short-term memory (STM) persistence used an in-memory `Map` cache and a write-through mechanism to Supabase, but lacked an eviction strategy, causing an unbounded memory growth (potential Out-Of-Memory crash).
-* **Eviction Logic:**
-  * **TTL Eviction:** Cache entries expire and are deleted after **1 hour** of inactivity.
-  * **LRU Eviction:** The cache size is bounded at a maximum of **200 concurrent sessions**. When exceeded, the least-recently accessed entry is evicted.
-  * **Scheduled DB Sweeper:** A background cleanup task runs every **30 minutes** (using `setInterval` with `.unref()` so it doesn't block process exit) to remove stale sessions (older than 24 hours) from the Supabase database.
+## 1. Database Migrations (`sql/migration_v7.sql`)
+Added settings columns to the `public.business_settings` table to link custom voice cloning and recovery configurations to individual business tenants:
+* `voice_provider`: Specifies the current custom voice provider (`'elevenlabs'`, `'deepgram'`).
+* `custom_voice_id`: Holds the voice ID returned from the cloning API.
+* `sms_recovery_enabled`: Boolean flag to toggle post-call SMS triggers.
+* `sms_recovery_template`: Text template for recovery SMS with `{{link}}` support placeholder.
+* `sms_recovery_link`: Target URL of the tenant's support or feedback page.
 
 ---
 
-## 2. Telephony Queueing & Twilio `<Enqueue>` (Issue #8)
-* **Problem:** Queueing previously relied on a polling loop where Twilio played a wait message, paused, and redirected back to check if slots were free. This was inefficient and lacked priority handling.
-* **Optimized Queue Logic:**
-  * **Twilio Native `<Enqueue>`:** When the agent capacity is full, the incoming call handler responds with `<Enqueue>voxera_queue</Enqueue>`, placing the call in Twilio's native hold queue.
-  * **Priority Support:** VIP numbers or premium callers are automatically assigned higher priority (e.g., priority `1` instead of `5`) and are sorted to the front of the queue.
-  * **Queue Overflow Protection:** Rejects incoming calls with `<Reject>` if the queue grows to 5x the maximum concurrent call limit (50 waiting callers) to prevent unbounded growth.
-  * **Auto-Dequeue & Redirection:**
-    * When an active call ends, the `callQueue.markCallEnded()` method fires.
-    * This triggers an `onSlotAvailable` listener registered at startup (`lib/bootstrap.ts`).
-    * The listener peeks at the top queued caller and uses the **Twilio REST API** (`getTwilioClient()`) to dynamically redirect the call out of `<Enqueue>` to a new webhook endpoint: `/api/telephony/dequeue`.
-    * `/api/telephony/dequeue` returns the `buildConnectTwiml` payload to establish the WebSocket Media Stream.
+## 2. ElevenLabs Custom Voice Personalization (`lib/tts/voice-clone.ts`)
+Created a dedicated Voice Personalization service supporting:
+* **Voice Cloning:** Native form data upload of audio samples to the ElevenLabs `/v1/voices/add` API. Falls back to generating a unique mock voice ID in local environments without API keys.
+* **Speech Synthesis:** Calls ElevenLabs `/v1/text-to-speech/{voice_id}` requesting `pcm_8000` (8kHz linear16 PCM) output format, matching Twilio's sample rate specifications.
 
 ---
 
-## 3. TTS Audio Pipeline & Twilio Static Noise (Issue #4)
-* **Problem:** TTS returned mp3 bytes, which were sent directly to Twilio's mulaw encoder, resulting in garbled audio.
-* **Fix:** Migrated to `synthesizeLinear16()` which requests raw linear16 PCM audio at 8kHz directly from Deepgram. This matches the exact format needed by the mulaw encoder, eliminating static and noise.
+## 3. Dynamic TTS Routing (`lib/deepgram/tts.ts`)
+Upgraded speech generation to check tenant settings:
+* Fetches the client's `business_settings` from the database.
+* If a custom ElevenLabs voice is configured, it synthesizes the audio via ElevenLabs.
+* If the synthesis fails, or if no custom voice is configured, it falls back to the default Deepgram voice, ensuring high reliability and zero downtime.
 
 ---
 
-## 4. AI Retrieval Pipeline & LLM Failover (Issue #7)
-* **Resilient Retry & Key Rotation:** `KeyRotator` automatically handles rate limits, credential exhaustion, server errors (500/502/503), and timeouts (15s) with exponential backoff (1s → 2s → 4s) across multiple API keys.
-* **Multi-Provider LLM Failover:** Attempts Groq API first, falls back to OpenAI if Groq fails, and defaults to offline fallback if both are offline.
+## 4. Post-Call SMS Customer Recovery (`lib/telephony/stream-handler.ts`, `lib/telephony/sms.ts`)
+* **SMS Dispatch Utility:** Uses the Twilio REST client to dispatch messages. Falls back to console log simulation when Twilio keys are absent.
+* **Sentiment recovery trigger:** On call end (`onCallEnded`), the handler retrieves the final user utterance from Short-Term Memory (STM) and checks its emotional state.
+* If the final emotion is negative (`anger`, `frustration`, `sadness`, `distress`, `disappointment`) and recovery is enabled:
+  - Formats the SMS recovery message (replacing the `{{link}}` placeholder with the configured support link).
+  - Triggers the SMS dispatch via Twilio to the customer's phone number.
 
 ---
 
-## 5. Vector Memory Retrieval pgvector Optimization (Issue #6)
-* **Database-Side Similarity Calculation:** Swapped application-layer high-dimensional cosine similarity calculations (`cosine(queryEmb, rec.embedding)`) in `lib/memory/retrieval.ts` with database-native calculations.
-* **Supabase RPC (`match_memories`):** The similarity search now runs entirely inside Postgres using the pgvector `<=>` cosine distance operator, returning the computed `similarity` score (`sim`) alongside each of the Top-20 candidate records.
-* **No Local Cosine Math:** The Node.js application layer directly uses the database-computed similarity score `sim` for final scoring and re-ranking, completely eliminating high-dimensional math loops and saving memory/CPU resources.
-
+## 5. settings Page Dashboard (`app/admin/settings/page.tsx`, `/api/settings/*`)
+* **Settings APIs:** Added REST endpoints `/api/settings/voice` and `/api/settings/recovery` to retrieve and save configurations from the database instead of browser `localStorage`.
+* **Sleek UI:** Enhanced Settings Page UI with dark glassmorphism card components, dropzone file upload capability, custom voice selectors, and toggle switches for customer recovery configurations.

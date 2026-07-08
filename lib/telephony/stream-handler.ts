@@ -5,6 +5,8 @@ import { synthesizeLinear16 } from "../deepgram/tts";
 import { handleTurn } from "../agent/orchestrator";
 import { supabase } from "../db/supabase";
 import { callQueue } from "../queue/manager";
+import { stm } from "../memory/stm";
+import { sendSMS } from "./sms";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
@@ -192,7 +194,7 @@ export class TelephonyStreamHandler {
 
     try {
       // Issue #4: Get linear16 PCM at 8kHz directly from Deepgram (not mp3)
-      const pcmBuffer = await synthesizeLinear16(text);
+      const pcmBuffer = await synthesizeLinear16(text, { clientId: this.clientId });
 
       // PCM is now correct 8kHz linear16 — encode to mulaw for Twilio
       const mulawAudio = pcmToMulaw(pcmBuffer);
@@ -242,6 +244,47 @@ export class TelephonyStreamHandler {
       endedAt,
       durationMs,
     });
+
+    // Post-Call SMS Recovery Trigger (Issue #16)
+    try {
+      const { data: tenant } = await supabase
+        .from("tenants")
+        .select("id")
+        .eq("auth_user_id", this.clientId)
+        .single();
+
+      if (tenant) {
+        const { data: settings } = await supabase
+          .from("business_settings")
+          .select("sms_recovery_enabled, sms_recovery_template, sms_recovery_link")
+          .eq("tenant_id", tenant.id)
+          .single();
+
+        if (settings?.sms_recovery_enabled && this.callerNumber && this.callerNumber !== "unknown") {
+          const utterances = await stm.get(this.sessionId);
+          const userUtterances = utterances.filter((u) => u.role === "user");
+          const lastUserUtterance = userUtterances[userUtterances.length - 1];
+          const lastEmotion = lastUserUtterance?.emotion?.label || "neutral";
+
+          const NEGATIVE_EMOTIONS = new Set(["anger", "frustration", "sadness", "distress", "disappointment"]);
+
+          if (NEGATIVE_EMOTIONS.has(lastEmotion)) {
+            console.log(`[TelephonyStream] Call ended with negative emotion "${lastEmotion}". Triggering recovery SMS to ${this.callerNumber}`);
+            
+            const template = settings.sms_recovery_template || "We noticed you had a bad experience. Use {{link}} to get in touch.";
+            const link = settings.sms_recovery_link || "";
+            const body = template.replace("{{link}}", link);
+
+            await sendSMS({
+              to: this.callerNumber,
+              body,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[TelephonyStream] Error checking/triggering recovery SMS:", err);
+    }
   }
 
   private async updateCallLog(updates: Record<string, unknown>) {
