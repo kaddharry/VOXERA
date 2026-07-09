@@ -39,7 +39,7 @@ export interface CreateBookingArgs {
  */
 export async function checkAvailability(date: string, time: string, clientId: string): Promise<boolean> {
   // 1. Check Google Calendar conflicts if configured
-  const hasGcalConflict = await checkGoogleCalendarConflict(date, time);
+  const hasGcalConflict = await checkGoogleCalendarConflict(date, time, clientId);
   if (hasGcalConflict) {
     console.log(`[Conflict Checker] Conflict detected in Google Calendar for ${date} @ ${time}`);
     return false;
@@ -232,7 +232,7 @@ export async function cancelBooking(bookingId: string, clientId: string): Promis
 
   // 3. Delete Google Calendar Event
   if (cancelledBooking.calendarEventId) {
-    await deleteCalendarEvent(cancelledBooking.calendarEventId);
+    await deleteCalendarEvent(cancelledBooking.calendarEventId, cancelledBooking.clientId);
   }
 
   // 4. Dispatch cancellation email

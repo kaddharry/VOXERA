@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { Check, Upload, Sparkles, MessageSquare, Phone, Volume2, ShieldAlert } from "lucide-react";
+import { Check, Upload, Sparkles, MessageSquare, Phone, Volume2, Calendar } from "lucide-react";
 
 const VOICE_PERSONAS = [
   { id: "female-friendly", label: "Female · Friendly", model: "aura-asteria-en" },
@@ -21,6 +21,11 @@ export default function SettingsPage() {
   const [recoveryEnabled, setRecoveryEnabled] = useState(false);
   const [recoveryTemplate, setRecoveryTemplate] = useState("Hi, we noticed you had a less than stellar experience today. Please let us make it up to you: {{link}}");
   const [recoveryLink, setRecoveryLink] = useState("");
+
+  // Google Calendar integration credentials (Issue #12)
+  const [gcalEmail, setGcalEmail] = useState("");
+  const [gcalPrivateKey, setGcalPrivateKey] = useState("");
+  const [gcalCalendarId, setGcalCalendarId] = useState("");
   
   const [cloningStatus, setCloningStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
   const [cloningError, setCloningError] = useState<string | null>(null);
@@ -50,10 +55,21 @@ export default function SettingsPage() {
         if (data.greeting) setGreeting(data.greeting);
       })
       .catch((err) => console.error("Failed to load recovery settings:", err));
+
+    // 3. Fetch Google Calendar credentials
+    fetch("/api/settings/credentials")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.email) setGcalEmail(data.email);
+        if (data.privateKey) setGcalPrivateKey(data.privateKey);
+        if (data.calendarId) setGcalCalendarId(data.calendarId);
+      })
+      .catch((err) => console.error("Failed to load credentials:", err));
   }, []);
 
   const handleSaveSettings = async () => {
     try {
+      // 1. Save greeting and SMS recovery settings
       const response = await fetch("/api/settings/recovery", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -66,6 +82,19 @@ export default function SettingsPage() {
       });
 
       if (!response.ok) throw new Error("Failed to save recovery settings");
+
+      // 2. Save Google Calendar credentials (Issue #12)
+      const credsResponse = await fetch("/api/settings/credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: gcalEmail,
+          privateKey: gcalPrivateKey,
+          calendarId: gcalCalendarId,
+        }),
+      });
+
+      if (!credsResponse.ok) throw new Error("Failed to save integration credentials");
       
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -143,7 +172,7 @@ export default function SettingsPage() {
       <header className="mb-10">
         <h1 className="font-display text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)]">Settings</h1>
         <p className="text-[15px] text-[var(--color-text-secondary)] mt-2">
-          Configure your AI receptionist's voice, greetings, and customer recovery triggers.
+          Configure your AI receptionist's voice, greetings, integrations, and customer recovery triggers.
         </p>
       </header>
 
@@ -278,6 +307,52 @@ export default function SettingsPage() {
                   {cloningError || "Cloning failed"}
                 </span>
               )}
+            </div>
+          </div>
+        </section>
+
+        {/* Google Calendar Integration Section (Issue #12) */}
+        <section className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 md:p-8 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
+          <div className="flex items-center gap-3 mb-4">
+            <Calendar className="w-5 h-5 text-[var(--color-accent-cyan)]" />
+            <h2 className="text-[14px] font-mono font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Google Calendar Integration</h2>
+          </div>
+          <p className="text-[14px] text-[var(--color-text-muted)] mb-6">
+            Configure tenant-specific Google Service Account credentials to synchronize reservations directly to your calendar. Credentials are securely encrypted at rest.
+          </p>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">Service Account Email</label>
+              <input
+                type="email"
+                value={gcalEmail}
+                onChange={(e) => setGcalEmail(e.target.value)}
+                className="w-full px-4 py-3 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[14px] text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)]"
+                placeholder="voxera-calendar@project-id.iam.gserviceaccount.com"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">Private Key (PEM format)</label>
+              <textarea
+                value={gcalPrivateKey}
+                onChange={(e) => setGcalPrivateKey(e.target.value)}
+                rows={4}
+                className="w-full px-4 py-3 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[13px] font-mono text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)] resize-none"
+                placeholder="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7...\n-----END PRIVATE KEY-----"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">Google Calendar ID</label>
+              <input
+                type="text"
+                value={gcalCalendarId}
+                onChange={(e) => setGcalCalendarId(e.target.value)}
+                className="w-full px-4 py-3 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[14px] text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)]"
+                placeholder="primary or calendar-id@group.calendar.google.com"
+              />
             </div>
           </div>
         </section>
