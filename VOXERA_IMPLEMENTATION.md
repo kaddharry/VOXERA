@@ -58,7 +58,9 @@ The system operates across three primary boundaries:
 ## 3. Feature Status Summary
 
 All core features are implemented, tested, and fully integrated:
-* **Multi-Tenant Isolation (FR-23)**: Fully active. Client IDs are securely resolved server-side from Supabase cookies and propagated through database queries, memory retrieval, file uploads, and reservations.
+* **Multi-Tenant Isolation & Security (FR-23)**: Fully active and hardened. Row-Level Security (RLS) is strictly enforced on all tables mapping to `auth.uid()`. Client IDs are securely resolved server-side from Supabase cookies. Tenant integrations (like Google Calendar) use AES-256-GCM encryption for credential storage.
+* **Voice Cloning & TTS (FR-24)**: Supports integration with ElevenLabs for custom tenant voice cloning alongside Deepgram Aura.
+* **Customer Recovery SMS (FR-25)**: Automated post-call SMS follow-ups are triggered for conversations ending with negative sentiments using Twilio/Resend.
 * **Telephony & Real-Time Codecs (FR-1, FR-19)**: Inbound Twilio streams are processed in-process via custom WebSockets. Supports queue routing, wait metric estimations, and status logging.
 * **Emotion-Aware Routing (FR-11, FR-18)**: Dynamically injects voice coaching rules into system prompts. Triggers human-escalation flags upon sustained customer negativity or extreme anger.
 * **Vector Memory & Document Ingestion (FR-10, FR-16)**: Supports paginated document table, error detail drawer, cascade deletions, and automatic duplicate prevention (superseding old document chunks).
@@ -76,6 +78,7 @@ All core features are implemented, tested, and fully integrated:
   - Uses `@supabase/ssr` to instantiate cookie-based clients.
   - Layout-level middleware (`app/admin/layout.tsx`) intercepts unauthenticated routes and redirects users to `/login`.
   - Backend API endpoints extract the authenticated client credentials directly from the session cookie instead of trusting client-supplied URL parameters.
+  - Supabase backend enforces multi-tenant isolation directly via RLS policies mapping to `auth.uid()`. `SERVICE_ROLE_KEY` usage has been deprecated in favor of secure user contexts.
 * **Files & Directories**:
   - [server.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/server.ts) — Server-side Supabase client initialization.
   - [page.tsx](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/login/page.tsx) & [actions.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/login/actions.ts) — Server actions for login, logout, and signup.
@@ -146,7 +149,7 @@ All core features are implemented, tested, and fully integrated:
 * **Purpose**: Schedules customer bookings while ensuring thread-safe calendars and notifications.
 * **Implementation Logic**:
   - **Thread Safety**: Booking execution runs via the `create_reservation_atomic` Postgres function. This RPC acquires a transactional advisory lock (`pg_advisory_xact_lock`) on the hash of the slot (`clientId + date + time`), preventing race-condition double bookings.
-  - **Google Calendar Sync**: Employs a custom REST client to issue signed JSON Web Tokens (RS256 signature using `crypto`) to Google's OAuth2 endpoints on behalf of a Service Account. FreeBusy calls check external conflicts before updating events.
+  - **Google Calendar Sync**: Employs a custom REST client to issue signed JSON Web Tokens (RS256 signature using `crypto`) to Google's OAuth2 endpoints on behalf of a Service Account. Tenant credentials are AES-256 encrypted at rest in the `tenant_credentials` table. FreeBusy calls check external conflicts before updating events.
   - **Email Alerts**: Uses the Resend SDK to dynamically send html emails based on state: Confirmations (Green), Rescheduled modifications (Blue), and Cancellations (Red).
 * **Files & Directories**:
   - [reservations.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/reservations.ts) — Reservation queries, cancellation logs, and atomic RPC invoker.
@@ -315,3 +318,15 @@ CREATE TABLE public.call_logs (
 
 **Final Outcome:**
 All CI-blocking errors are resolved. The existing Pull Request on `feature/improve-emotion-analysis` is now ready to merge.
+
+### 2026-07-09 — Voice Cloning & Security Hardening (Issues #16 & #12)
+
+**Features Implemented:**
+1. **Custom Voice Cloning (Issue #16)**: Integrated ElevenLabs TTS engine, allowing tenants to configure custom voice personas.
+2. **Automated Recovery SMS (Issue #16)**: Added logic to `TelephonyStreamHandler` to detect negative ending sentiments (anger, frustration) and trigger an automated SMS recovery workflow to the caller via configured templates.
+3. **Database Security & RLS (Issue #12)**: Implemented Row-Level Security (RLS) across `session_logs`, `reservations`, `memories`, `knowledge_documents`, and `call_logs`. Refactored backend routes to use `auth.uid()` rather than bypassing security via `SERVICE_ROLE_KEY`.
+4. **Credential Encryption (Issue #12)**: Developed an AES-256-GCM encryption utility (`lib/util/crypto.ts`) and a new `tenant_credentials` table. Google Calendar private keys are now securely encrypted at rest.
+5. **Compound Indexing (Issue #12)**: Added crucial compound indices via `migration_v8.sql` for analytical dashboards (`idx_session_logs_client_ts`, `idx_reservations_client_slot`), ensuring O(log N) scale performance.
+
+**Final Outcome:**
+Core database security vulnerabilities are patched. The platform now supports multi-tenant secure isolation, encrypted integration keys, and scalable read queries.
