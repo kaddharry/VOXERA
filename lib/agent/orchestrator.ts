@@ -58,25 +58,36 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     emotion: fused,
     ts,
   };
-  stm.push(input.sessionId, userTurn);
+  await stm.push(input.sessionId, userTurn, input.clientId);
 
   const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
 
-  // ── Phase 1: Parallel DB fetches ──────────────────────────────────────────
-  // LTM_user and MTM are independent — fetch them concurrently.
-  const queryEmbedding = embed(input.transcript);
-  const [ltmUserAll, mtmExisting] = await Promise.all([
-    vectorStore.byTier("LTM_user", input.userId, input.clientId),
-    vectorStore.byTier("MTM", input.userId, input.clientId),
+  const queryEmbedding = await embed(input.transcript);
+  const [ltmUserResults, mtmSearchResults] = await Promise.all([
+    vectorStore.search({
+      tier: "LTM_user",
+      userId: input.userId,
+      clientId: input.clientId,
+      query: queryEmbedding,
+      topK: 10,
+    }),
+    vectorStore.search({
+      tier: "MTM",
+      userId: input.userId,
+      clientId: input.clientId,
+      query: queryEmbedding,
+      topK: 20,
+    }),
   ]);
+  const ltmUserAll = ltmUserResults.map((r) => r.rec);
+  const mtmExisting = mtmSearchResults.map((r) => r.rec);
 
   const emotionCtx = buildEmotionContext({
     current: fused,
-    stm: stm.get(input.sessionId),
+    stm: await stm.get(input.sessionId),
     ltmUser: ltmUserAll,
   });
 
-  // ── Fire-and-forget logging (never blocks the response path) ──────────────
   void logSessionEvent(makeEvent(evBase, "utterance", {
     utteranceId: userTurn.id,
     role: userTurn.role,
@@ -95,12 +106,10 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     flags: emotionCtx.flags,
   }));
 
-  // FR-20: Calculate Commitment Acoustic Index (CAI)
   const responseLength = input.transcript.split(/\s+/).length;
-  // Approximations since we don't have true acoustic feature extractors yet
   const cai = calculateCAI({
     pitchVariation: fused.vad.a > 0.3 ? 0.8 : 0.4,
-    speakingRate: 140, // assume normal
+    speakingRate: 140,
     interruptions: 0,
     pauseDurationMs: 500,
     responseLength,
@@ -112,7 +121,6 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     explanation: cai.explanation
   }));
 
-  // ── Phase 2: Importance scoring (uses mtmExisting from Phase 1) ───────────
   const I = importanceScore({
     text: input.transcript,
     emotion: emotionCtx,
@@ -122,8 +130,6 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     policyFlag: policyFlag(emotionCtx),
   });
 
-  // ── Phase 3: Memory write + retrieval in parallel ─────────────────────────
-  // These are independent: writeMemory writes a new record, retrieve reads existing ones.
   const [memoryWrite, retrieved] = await Promise.all([
     writeMemory({
       utterance: userTurn,
@@ -143,7 +149,6 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
 
   const policy = decidePolicy(emotionCtx);
 
-  // Fire-and-forget logging for memory, retrieval, and policy events
   void logSessionEvent(makeEvent(evBase, "memory_write", {
     tier: memoryWrite.tier,
     recordId: memoryWrite.recordId,
@@ -173,7 +178,6 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     }));
   }
 
-  // ── Phase 4: LLM call (the only truly blocking external call) ─────────────
   const llmContext = buildLLMContext({
     userId: input.userId,
     clientId: input.clientId,
@@ -207,9 +211,8 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     text: guarded.cleaned,
     ts: Date.now(),
   };
-  stm.push(input.sessionId, agentTurn);
+  await stm.push(input.sessionId, agentTurn, input.clientId);
 
-  // Fire-and-forget final logging
   void logSessionEvent(makeEvent(evBase, "guard", {
     ok: guarded.ok,
     reasons: guarded.reasons,

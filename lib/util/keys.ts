@@ -1,10 +1,30 @@
 /**
- * API Key Rotation Manager
+ * API Key Rotation Manager with Resilient Retry Logic
+ *
+ * Issue #7: Enhanced with timeout handling, exponential backoff,
+ * and retry on transient server errors (500/502/503).
  *
  * Allows supplying multiple API keys (comma-separated) via environment variables.
  * When a key hits a rate limit (429) or runs out of credits (401/403), the rotator
  * switches to the next available key automatically.
  */
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(
+        () => reject(Object.assign(new Error(`Request timed out after ${ms}ms`), { name: "TimeoutError" })),
+        ms,
+      ),
+    ),
+  ]);
+}
+
 export class KeyRotator {
   private keys: string[];
   private currentIndex: number = 0;
@@ -22,7 +42,7 @@ export class KeyRotator {
       console.warn(`[KeyRotator] No keys found in process.env.${envVarName}`);
     } else {
       console.log(
-        `[KeyRotator] Initialized ${this.name} with ${this.keys.length} keys.`,
+        `[KeyRotator] Initialized ${this.name} with ${this.keys.length} key(s).`,
       );
     }
   }
@@ -47,20 +67,17 @@ export class KeyRotator {
       `[KeyRotator] Rotating ${this.name} key... (was index ${this.currentIndex})`,
     );
     this.currentIndex = (this.currentIndex + 1) % this.keys.length;
-
-    // If we have wrapped around back to 0, it means all keys in the pool failed
-    // in this rapid succession. We still return true because maybe the rate limit
-    // on key 0 has reset, but the caller should be aware of a potential infinite loop
-    // if not capped by a maxRetries counter.
     return true;
   }
 
   /**
-   * Helper to execute a function with automatic key rotation on API errors.
+   * Execute an operation with automatic key rotation on API errors,
+   * exponential backoff, and configurable timeout.
    */
   public async executeWithRotation<T>(
     operation: (key: string) => Promise<T>,
     maxRetries: number = 3,
+    timeoutMs: number = 15_000,
   ): Promise<T> {
     let attempts = 0;
     let lastError: unknown;
@@ -72,37 +89,46 @@ export class KeyRotator {
       }
 
       try {
-        return await operation(key);
+        return await withTimeout(operation(key), timeoutMs);
       } catch (error: any) {
         lastError = error;
         const status = error?.status || error?.response?.status;
         const isQuotaError = status === 429 || status === 401 || status === 403;
         const isTimeoutError =
+          error?.name === "TimeoutError" ||
           error?.code === "ETIMEDOUT" ||
           error?.code === "ECONNABORTED" ||
           error?.message?.includes("timed out") ||
           error?.message?.includes("timeout") ||
-          error?.message?.includes("Request timed out") ||
           status === 408 ||
+          status === 500 ||
           status === 502 ||
           status === 503 ||
           status === 504;
 
-        if ((isQuotaError || isTimeoutError) && this.keys.length > 1) {
-          const reason = isQuotaError ? `quota (${status})` : `timeout/transient (${status ?? error?.code ?? "unknown"})`;
-          console.warn(
-            `[KeyRotator] ${reason} for ${this.name}. Rotating key (attempt ${attempts + 1}/${maxRetries}).`,
-          );
-          this.rotate();
+        const isRetryable = isQuotaError || isTimeoutError;
+
+        if (isRetryable) {
+          if ((isQuotaError || isTimeoutError) && this.keys.length > 1) {
+            const reason = isQuotaError ? `quota (${status})` : `timeout/transient (${status ?? error?.code ?? "unknown"})`;
+            console.warn(
+              `[KeyRotator] ${reason} for ${this.name}. Rotating key (attempt ${attempts + 1}/${maxRetries}).`,
+            );
+            this.rotate();
+          } else if (isTimeoutError && this.keys.length === 1) {
+            console.warn(
+              `[KeyRotator] Timeout for ${this.name} (single key). Retrying (attempt ${attempts + 1}/${maxRetries}).`,
+            );
+          }
           attempts++;
-        } else if (isTimeoutError && this.keys.length === 1) {
-          // Single key — still retry in case the timeout is transient
-          console.warn(
-            `[KeyRotator] Timeout for ${this.name} (single key). Retrying (attempt ${attempts + 1}/${maxRetries}).`,
-          );
-          attempts++;
+          if (attempts < maxRetries) {
+            const backoffMs = Math.pow(2, attempts - 1) * 1000; // 1s, 2s, 4s
+            console.warn(
+              `[KeyRotator] Backing off for ${backoffMs}ms...`,
+            );
+            await sleep(backoffMs);
+          }
         } else {
-          // Non-retryable error — bubble up immediately
           throw error;
         }
       }
@@ -116,5 +142,4 @@ export class KeyRotator {
   }
 }
 
-// Global singletons for the rotators.
 export const llmKeys = new KeyRotator("GROQ_API_KEYS");

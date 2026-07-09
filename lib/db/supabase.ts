@@ -8,11 +8,11 @@ import { createClient } from "@supabase/supabase-js";
  * NOTE: NEVER expose this key to a frontend client like the browser.
  */
 function getSupabaseUrl() {
-  return process.env.SUPABASE_URL || "";
+  return process.env.SUPABASE_URL || "https://placeholder-project-id.supabase.co";
 }
 
 function getSupabaseKey() {
-  return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "";
+  return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "placeholder-key";
 }
 
 // ─── Circuit Breaker ─────────────────────────────────────────────────────────

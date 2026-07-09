@@ -49,7 +49,7 @@ export async function writeMemory(input: WriteInput): Promise<{
     return { tier: "STM" };
   }
 
-  const embedding = embed(utterance.text);
+  const embedding = await embed(utterance.text);
   const topic = inferTopic(utterance.text);
 
   const mtmCandidates = await vectorStore.byTier("MTM", userId, clientId);
@@ -125,7 +125,7 @@ export async function seedClientMemory(args: {
   importance?: number;
   documentId?: string;
 }) {
-  const embedding = embed(args.text);
+  const embedding = await embed(args.text);
   const rec: MemoryRecord = {
     id: nanoid(10),
     tier: "LTM_client",

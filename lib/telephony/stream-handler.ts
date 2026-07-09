@@ -1,10 +1,12 @@
 import { nanoid } from "nanoid";
 import WebSocket from "ws";
 import { DeepgramLiveWrapper } from "../deepgram/live";
-import { synthesize } from "../deepgram/tts";
+import { synthesizeLinear16 } from "../deepgram/tts";
 import { handleTurn } from "../agent/orchestrator";
 import { supabase } from "../db/supabase";
 import { callQueue } from "../queue/manager";
+import { stm } from "../memory/stm";
+import { sendSMS } from "./sms";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
@@ -88,7 +90,11 @@ export class TelephonyStreamHandler {
   private streamSid: string | null = null;
   private startedAt: number;
   private isBusy = false; // prevent overlapping LLM turns
+<<<<<<< HEAD
   private hasEnded = false; // prevent double-invocation of onCallEnded
+=======
+  private isSpeaking = false; // Issue #8: track if TTS is playing for barge-in
+>>>>>>> origin/main
 
   constructor(opts: StreamHandlerOptions) {
     this.ws = opts.ws;
@@ -99,7 +105,7 @@ export class TelephonyStreamHandler {
     this.userId = `caller-${opts.callerNumber.replace(/\D/g, "")}`;
     this.startedAt = Date.now();
 
-    this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this));
+    this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), { sampleRate: 8000 });
     this.init();
   }
 
@@ -143,6 +149,13 @@ export class TelephonyStreamHandler {
         if (media?.payload) {
           const mulawBuf = Buffer.from(media.payload as string, "base64");
           const pcmBuf = decodeMulaw(mulawBuf);
+
+          // Issue #8: Barge-in — if caller speaks while TTS is playing, stop playback
+          if (this.isSpeaking) {
+            this.isSpeaking = false;
+            this.sendClearMessage();
+          }
+
           this.deepgram.sendAudio(pcmBuf);
         }
         break;
@@ -187,6 +200,7 @@ export class TelephonyStreamHandler {
     if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
 
     try {
+<<<<<<< HEAD
       // Request Linear16 PCM from Deepgram for Twilio Media Streams
       const pcmBytes = await synthesize(text, {
         encoding: "linear16",
@@ -197,6 +211,17 @@ export class TelephonyStreamHandler {
       const mulawAudio = pcmToMulaw(Buffer.from(pcmBytes));
       const base64Audio = mulawAudio.toString("base64");
 
+=======
+      // Issue #4: Get linear16 PCM at 8kHz directly from Deepgram (not mp3)
+      const pcmBuffer = await synthesizeLinear16(text, { clientId: this.clientId });
+
+      // PCM is now correct 8kHz linear16 — encode to mulaw for Twilio
+      const mulawAudio = pcmToMulaw(pcmBuffer);
+      const base64Audio = mulawAudio.toString("base64");
+
+      // Twilio Media Stream expects this JSON format to play audio
+      this.isSpeaking = true;
+>>>>>>> origin/main
       const mediaMessage = JSON.stringify({
         event: "media",
         streamSid: this.streamSid,
@@ -208,7 +233,21 @@ export class TelephonyStreamHandler {
       this.ws.send(mediaMessage);
     } catch (err) {
       console.error(`[TelephonyStream] TTS error:`, err);
+      this.isSpeaking = false;
     }
+  }
+
+  /**
+   * Issue #8: Send a clear message to Twilio to stop any in-progress audio playback (barge-in).
+   */
+  private sendClearMessage() {
+    if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
+    const clearMsg = JSON.stringify({
+      event: "clear",
+      streamSid: this.streamSid,
+    });
+    this.ws.send(clearMsg);
+    console.log(`[TelephonyStream] Barge-in: cleared TTS playback for ${this.callSid}`);
   }
 
   private async onCallEnded() {
@@ -228,6 +267,47 @@ export class TelephonyStreamHandler {
       endedAt,
       durationMs,
     });
+
+    // Post-Call SMS Recovery Trigger (Issue #16)
+    try {
+      const { data: tenant } = await supabase
+        .from("tenants")
+        .select("id")
+        .eq("auth_user_id", this.clientId)
+        .single();
+
+      if (tenant) {
+        const { data: settings } = await supabase
+          .from("business_settings")
+          .select("sms_recovery_enabled, sms_recovery_template, sms_recovery_link")
+          .eq("tenant_id", tenant.id)
+          .single();
+
+        if (settings?.sms_recovery_enabled && this.callerNumber && this.callerNumber !== "unknown") {
+          const utterances = await stm.get(this.sessionId);
+          const userUtterances = utterances.filter((u) => u.role === "user");
+          const lastUserUtterance = userUtterances[userUtterances.length - 1];
+          const lastEmotion = lastUserUtterance?.emotion?.label || "neutral";
+
+          const NEGATIVE_EMOTIONS = new Set(["anger", "frustration", "sadness", "distress", "disappointment"]);
+
+          if (NEGATIVE_EMOTIONS.has(lastEmotion)) {
+            console.log(`[TelephonyStream] Call ended with negative emotion "${lastEmotion}". Triggering recovery SMS to ${this.callerNumber}`);
+            
+            const template = settings.sms_recovery_template || "We noticed you had a bad experience. Use {{link}} to get in touch.";
+            const link = settings.sms_recovery_link || "";
+            const body = template.replace("{{link}}", link);
+
+            await sendSMS({
+              to: this.callerNumber,
+              body,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[TelephonyStream] Error checking/triggering recovery SMS:", err);
+    }
   }
 
   private async updateCallLog(updates: Record<string, unknown>) {
