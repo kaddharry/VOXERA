@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "../../../../lib/db/server";
-import { supabase } from "../../../../lib/db/supabase";
 import { cloneVoiceElevenLabs } from "../../../../lib/tts/voice-clone";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +14,7 @@ export async function GET() {
   const clientId = user.id;
 
   try {
-    const { data: tenant } = await supabase
+    const { data: tenant } = await supabaseServer
       .from("tenants")
       .select("id")
       .eq("auth_user_id", clientId)
@@ -25,7 +24,7 @@ export async function GET() {
       return NextResponse.json({ error: "Tenant not found" }, { status: 404 });
     }
 
-    const { data: settings } = await supabase
+    const { data: settings } = await supabaseServer
       .from("business_settings")
       .select("voice_provider, custom_voice_id, voice_persona, greeting")
       .eq("tenant_id", tenant.id)
@@ -47,7 +46,7 @@ export async function POST(request: NextRequest) {
   const clientId = user.id;
 
   try {
-    const { data: tenant } = await supabase
+    const { data: tenant } = await supabaseServer
       .from("tenants")
       .select("id")
       .eq("auth_user_id", clientId)
@@ -61,7 +60,7 @@ export async function POST(request: NextRequest) {
     const action = formData.get("action") as string;
 
     if (action === "clear") {
-      await supabase
+      await supabaseServer
         .from("business_settings")
         .update({
           voice_provider: null,
@@ -75,7 +74,7 @@ export async function POST(request: NextRequest) {
 
     if (action === "select-persona") {
       const persona = formData.get("persona") as string;
-      await supabase
+      await supabaseServer
         .from("business_settings")
         .update({
           voice_provider: null,
@@ -102,7 +101,7 @@ export async function POST(request: NextRequest) {
       mimeType: file.type,
     });
 
-    await supabase
+    await supabaseServer
       .from("business_settings")
       .update({
         voice_provider: "elevenlabs",

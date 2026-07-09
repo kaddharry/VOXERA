@@ -7,35 +7,70 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET } from "../../app/api/analytics/route";
-import { callQueue } from "../../lib/queue/manager";
-import { supabase } from "../../lib/db/supabase";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
-const mockGetUser = vi.fn();
-const mockSupabaseServer = {
-  auth: {
-    getUser: mockGetUser,
-  },
-};
+vi.mock("../../lib/db/supabase", () => {
+  const mockChain = {
+    select: () => mockChain,
+    eq: () => mockChain,
+    order: () => mockChain,
+    limit: () => mockChain,
+    then: (onfulfilled: any) => {
+      if ((global as any).supabaseMockThen) {
+        return (global as any).supabaseMockThen(onfulfilled);
+      }
+      return Promise.resolve({ data: [], error: null }).then(onfulfilled);
+    },
+  };
+  const fromFn = (table: string) => {
+    if ((global as any).supabaseFromSpy) {
+      return (global as any).supabaseFromSpy(table);
+    }
+    return mockChain;
+  };
+  return {
+    supabase: {
+      from: fromFn,
+    },
+  };
+});
 
-vi.mock("../../lib/db/server", () => ({
-  createClient: vi.fn().mockImplementation(() => Promise.resolve(mockSupabaseServer)),
-}));
-
-const mockChain = {
-  select: vi.fn().mockReturnThis(),
-  eq: vi.fn().mockReturnThis(),
-  order: vi.fn().mockReturnThis(),
-  limit: vi.fn().mockReturnThis(),
-  then: vi.fn(),
-};
-
-vi.mock("../../lib/db/supabase", () => ({
-  supabase: {
-    from: vi.fn(() => mockChain),
-  },
-}));
+vi.mock("../../lib/db/server", () => {
+  const mockChain = {
+    select: () => mockChain,
+    eq: () => mockChain,
+    order: () => mockChain,
+    limit: () => mockChain,
+    then: (onfulfilled: any) => {
+      if ((global as any).supabaseMockThen) {
+        return (global as any).supabaseMockThen(onfulfilled);
+      }
+      return Promise.resolve({ data: [], error: null }).then(onfulfilled);
+    },
+  };
+  const fromFn = (table: string) => {
+    if ((global as any).supabaseFromSpy) {
+      return (global as any).supabaseFromSpy(table);
+    }
+    return mockChain;
+  };
+  const mockGetUser = () => {
+    if ((global as any).supabaseGetUserMock) {
+      return (global as any).supabaseGetUserMock();
+    }
+    return Promise.resolve({ data: { user: null } });
+  };
+  const mockSupabaseServer = {
+    auth: {
+      getUser: mockGetUser,
+    },
+    from: fromFn,
+  };
+  return {
+    createClient: () => Promise.resolve(mockSupabaseServer),
+  };
+});
 
 vi.mock("../../lib/queue/manager", () => ({
   callQueue: {
@@ -115,10 +150,13 @@ const mockCallLogs = [
 describe("GET /api/analytics", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete (global as any).supabaseGetUserMock;
+    delete (global as any).supabaseFromSpy;
+    delete (global as any).supabaseMockThen;
   });
 
   it("returns 401 Unauthorized if no authenticated user is found", async () => {
-    mockGetUser.mockResolvedValueOnce({ data: { user: null } });
+    (global as any).supabaseGetUserMock = vi.fn().mockResolvedValue({ data: { user: null } });
 
     const response = await GET();
     expect(response.status).toBe(401);
@@ -128,14 +166,21 @@ describe("GET /api/analytics", () => {
   });
 
   it("calculates and returns all operational metrics correctly for a valid client", async () => {
-    mockGetUser.mockResolvedValueOnce({ data: { user: { id: "test-client-id" } } });
+    (global as any).supabaseGetUserMock = vi.fn().mockResolvedValue({ data: { user: { id: "test-client-id" } } });
 
-    // Implement conditional DB query mock resolver based on tableName
-    mockChain.then.mockImplementation((onfulfilled) => {
-      // Find what table we are querying by inspecting the mock call history or using a simple stateful mock
-      // Since supabase.from is called sequentially: session_logs, reservations, call_logs
-      // Let's resolve depending on the call count of supabase.from.
-      const fromCalls = vi.mocked(supabase.from).mock.calls;
+    const mockChainInstance = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      then: vi.fn(),
+    };
+
+    const fromSpy = vi.fn(() => mockChainInstance);
+    (global as any).supabaseFromSpy = fromSpy;
+
+    mockChainInstance.then.mockImplementation((onfulfilled: any) => {
+      const fromCalls = (fromSpy as any).mock.calls;
       const lastCallTable = fromCalls[fromCalls.length - 1][0];
 
       if (lastCallTable === "session_logs") {
@@ -169,9 +214,6 @@ describe("GET /api/analytics", () => {
     expect(body.metrics.missedBookings).toBe(1); // 1 failed create_booking event
 
     // 3. Peak Hours Heatmap
-    // session-1 starts at ts1 (10:00 UTC -> local hour depends on local timezone. Since date parsing is local in the controller:
-    // hour1 = new Date(ts1).getHours()
-    // hour2 = new Date(ts3).getHours()
     const expectedHour1 = new Date(ts1).getHours();
     const expectedHour2 = new Date(ts3).getHours();
     
@@ -191,10 +233,10 @@ describe("GET /api/analytics", () => {
   });
 
   it("handles database errors gracefully and returns 500 status", async () => {
-    mockGetUser.mockResolvedValueOnce({ data: { user: { id: "test-client-id" } } });
+    (global as any).supabaseGetUserMock = vi.fn().mockResolvedValue({ data: { user: { id: "test-client-id" } } });
     
     // Simulate error on session_logs query
-    mockChain.then.mockImplementationOnce((onfulfilled) => {
+    (global as any).supabaseMockThen = vi.fn((onfulfilled: any) => {
       return Promise.resolve({ data: null, error: new Error("Database connection failure") }).then(onfulfilled);
     });
 

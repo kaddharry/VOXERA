@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { supabase } from "../../../lib/db/supabase";
 import { createClient } from "../../../lib/db/server";
 import { callQueue } from "../../../lib/queue/manager";
 
@@ -15,8 +14,8 @@ export async function GET() {
     }
     const clientId = user.id;
 
-    // 1. Fetch Session Events
-    const { data: events, error: eventsError } = await supabase
+    // 1. Fetch Session Events (Using user-authenticated client)
+    const { data: events, error: eventsError } = await supabaseServer
       .from("session_logs")
       .select("*")
       .eq("clientId", clientId)
@@ -81,8 +80,8 @@ export async function GET() {
         };
       });
 
-    // 2. Fetch Bookings
-    const { data: bookings, error: bookingsError } = await supabase
+    // 2. Fetch Bookings (Using user-authenticated client)
+    const { data: bookings, error: bookingsError } = await supabaseServer
       .from("reservations")
       .select("status")
       .eq("clientId", clientId);
@@ -92,8 +91,8 @@ export async function GET() {
     const activeBookings = (bookings || []).filter((b) => b.status === "confirmed").length;
     const cancelledBookings = (bookings || []).filter((b) => b.status === "cancelled").length;
 
-    // 3. Fetch Phone Call Metrics (FR-1, FR-19)
-    const { data: callLogs } = await supabase
+    // 3. Fetch Phone Call Metrics (Using user-authenticated client)
+    const { data: callLogs } = await supabaseServer
       .from("call_logs")
       .select("id, status, durationMs")
       .eq("clientId", clientId);
@@ -202,17 +201,15 @@ export async function GET() {
     return NextResponse.json({
       metrics: {
         totalCalls,
-        totalToolInvocations: successfulToolEvents.length, // Count successful/executed calls
+        totalToolInvocations: successfulToolEvents.length,
         activeBookings,
         cancelledBookings,
         escalations: escalationEvents.length,
         avgCai,
-        // Telephony metrics
         totalPhoneCalls,
         activeCalls: queueMetrics.activeCallCount,
         callQueueLength: queueMetrics.queueLength,
         avgCallDurationMs,
-        // Sprint 5 advanced metrics
         conversionRate,
         avgSessionDurationMs,
         missedBookings,
