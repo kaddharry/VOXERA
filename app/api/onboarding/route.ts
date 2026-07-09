@@ -34,6 +34,13 @@ export async function POST(req: NextRequest) {
       workflow: body.workflow,
       callGoal: body.callGoal || "",
       escalation: body.escalation || "",
+
+      openingTime: body.openingTime || "",
+      closingTime: body.closingTime || "",
+      
+      language: body.language || "English",
+      tone: body.tone || "Professional",
+      greeting: body.greeting || "",
     });
 
     return NextResponse.json(result);

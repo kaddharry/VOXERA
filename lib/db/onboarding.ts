@@ -6,8 +6,12 @@ export interface OnboardingPayload {
   workflow: string;
   callGoal: string;
   escalation: string;
+  openingTime: string;
+  closingTime: string;
+  language: string;
+  tone: string;
+  greeting: string;
 }
-
 export async function processOnboarding(userId: string, payload: OnboardingPayload) {
   // 1. Check if tenant already exists for this user
   let tenantId: string;
@@ -80,6 +84,11 @@ export async function processOnboarding(userId: string, payload: OnboardingPaylo
       name: agentName,
       type: payload.workflow,
       status: "draft",
+
+      opening_time: payload.openingTime,
+      closing_time: payload.closingTime,
+
+      greeting: payload.greeting,
     });
   }
 
