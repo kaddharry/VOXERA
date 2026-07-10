@@ -33,7 +33,7 @@ The next phases of development will transition the codebase from a highly comple
 | **Knowledge Base (RAG)** | 🟢 Complete | High | 95% | Cascading deletion, status polling, and version superseding are stable. |
 | **Booking & Integrations** | 🟢 Complete | High | 100% | Advisory locks, calendar JWT sync, and AES-256 credential encryption are stable. |
 | **Analytics Dashboard** | 🟢 Complete | Low | 95% | Lightweight SVG graphs and tool invocation logging are fully integrated. |
-| **Acoustic CAI Processing**| 🟠 In Progress | Medium | 40% | Currently uses duration/pitch heuristics. Needs raw DSP waveform extraction. |
+| **Acoustic CAI Processing**| 🟢 Complete | Medium | 95% | Real DSP extraction (pitch, energy, ZCR, pauses) from PCM. Barge-in uses energy thresholds. |
 | **AI Orchestrator** | ✅ Stable | High | 95% | Parallelized pipeline, fire-and-forget logging. Latency reduced from ~29s to ~3-5s. |
 | **Supabase Resilience** | 🟢 Complete | High | 100% | Circuit breaker, timeout fetch, graceful degradation. |
 | **SaaS Builder & Billing**| 🔴 Not Started | High | 0% | Stripe subscription gates and self-serve onboarding wizard are unbuilt. |
@@ -97,10 +97,10 @@ The next phases of development will transition the codebase from a highly comple
 * [ ] Standardize local font assets to remove remote Google Web Fonts dependencies from build chains.
 
 ### 5.2 Phase II: Voice & Scaling (Weeks 3 - 5)
-* [ ] Integrate real audio packet DSP parser to calculate physical pitch variation and vocal intensity.
-* [ ] Implement Redis-backed distributed telephony queues to support multi-node hosting.
-* [ ] Implement interruption triggers to halt agent TTS output immediately if user speech is detected.
-* [ ] Externalize circuit breaker state to Redis for multi-node deployments.
+* [x] Integrate real audio packet DSP parser to calculate physical pitch variation and vocal intensity. (Issue #14)
+* [x] Implement Redis-backed distributed telephony queues to support multi-node hosting. (Issue #13)
+* [x] Implement interruption triggers to halt agent TTS output immediately if user speech is detected. (Issue #14)
+* [x] Externalize circuit breaker state to Redis for multi-node deployments. (Issue #13)
 * [ ] Replace lexicon-based emotion detection with a trained ML model (RoBERTa or similar) via the existing `detectTextEmotion` interface.
 
 ### 5.3 Phase III: SaaS Portal (Weeks 6 - 10)

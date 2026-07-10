@@ -96,11 +96,9 @@ export function detectTextEmotion(text: string): EmotionSignal {
   };
 }
 
-// Stub for audio emotion (Wav2Vec2 head). In production, replace with a real
-// model call; the rest of the pipeline is indifferent to where the VAD came from.
-export function detectAudioEmotionStub(_audioMeta: { durationMs?: number; rmsDb?: number }): EmotionSignal | null {
-  return null;
-}
+// Note: Audio emotion detection has been moved to lib/emotion/audio-emotion.ts (Issue #14).
+// The real `detectAudioEmotion()` replaces the previous stub that returned null.
+
 
 // Late fusion per §3.1: confidence-weighted mix of VAD and label distributions.
 export function fuseEmotion(text: EmotionSignal, audio: EmotionSignal | null): EmotionSignal {

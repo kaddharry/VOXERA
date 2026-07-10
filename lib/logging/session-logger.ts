@@ -12,7 +12,9 @@ export type SessionEventType =
   | "cai"
   | "escalation"
   | "calendar_sync"
-  | "email_dispatch";
+  | "email_dispatch"
+  | "input_guard"
+  | "acoustic";
 
 export interface SessionEvent {
   ts: number;
