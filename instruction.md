@@ -23,7 +23,10 @@ Once the user approves your implementation plan, you may modify the application 
 ## 5. RIGOROUS TESTING
 After implementation, write and run a rigorous test suite to check the features or bug fixes you implemented.
 Fix any files that fail the tests.
-Once everything passes and is verified, create a `test_results.md` file to document the exact tests run, their results, and how they verify the PR. (This helps other LLMs verify your PR results easily).
+Once everything passes and is verified, you MUST log your test results by updating the **`VOXERA_TEST_RESULTS.md`** file. 
+- Add your new test results to the **TOP** of the file (just below the main intro paragraph), pushing older results down.
+- Your entry must start with a heading that specifies the Issue Number, Issue Name, and the current Date (e.g., `## Issue #99: Feature Name`).
+- Document the exact validation steps, key technologies used, and test outcomes.
 
 ## 6. PR PREPARATION
 Ensure the code will pass CI build tests on GitHub (e.g. run `npm run build` and `npm run lint`).
