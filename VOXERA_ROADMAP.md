@@ -27,7 +27,7 @@ The next phases of development will transition the codebase from a highly comple
 | Module | Status | Priority | Completion | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | **Multi-Tenant Isolation** | 🟢 Complete | High | 100% | RLS policies implemented using auth.uid(). |
-| **Telephony & WebSockets** | ✅ Stable | Medium | 95% | Queue is currently in-process memory; needs redis for horizontal scaling. |
+| **Telephony & WebSockets** | 🟢 Complete | Medium | 100% | Queue is now backed by Redis sorted sets; fully scaled via Pub/Sub. |
 | **Speech Emotion (SER)** | ✅ Stable | Medium | 98% | Expanded to 11 labels, 35+ lexicon entries, context-aware punctuation, positivity safety net. CI lint and build issues resolved. |
 | **Memory (Vector Store)** | ✅ Stable | High | 100% | Circuit breaker integration. Compound indexes implemented. |
 | **Knowledge Base (RAG)** | 🟢 Complete | High | 95% | Cascading deletion, status polling, and version superseding are stable. |

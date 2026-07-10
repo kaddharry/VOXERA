@@ -61,6 +61,7 @@ All core features are implemented, tested, and fully integrated:
 * **Multi-Tenant Isolation & Security (FR-23)**: Fully active and hardened. Row-Level Security (RLS) is strictly enforced on all tables mapping to `auth.uid()`. Client IDs are securely resolved server-side from Supabase cookies. Tenant integrations (like Google Calendar) use AES-256-GCM encryption for credential storage.
 * **Voice Cloning & TTS (FR-24)**: Supports integration with ElevenLabs for custom tenant voice cloning alongside Deepgram Aura.
 * **Customer Recovery SMS (FR-25)**: Automated post-call SMS follow-ups are triggered for conversations ending with negative sentiments using Twilio/Resend.
+* **Distributed State & Redis (FR-26)**: Core telephony queues and circuit breaker states are synchronized across horizontal instances using `ioredis` and Pub/Sub.
 * **Telephony & Real-Time Codecs (FR-1, FR-19)**: Inbound Twilio streams are processed in-process via custom WebSockets. Supports queue routing, wait metric estimations, and status logging.
 * **Emotion-Aware Routing (FR-11, FR-18)**: Dynamically injects voice coaching rules into system prompts. Triggers human-escalation flags upon sustained customer negativity or extreme anger.
 * **Vector Memory & Document Ingestion (FR-10, FR-16)**: Supports paginated document table, error detail drawer, cascade deletions, and automatic duplicate prevention (superseding old document chunks).
@@ -184,7 +185,7 @@ All core features are implemented, tested, and fully integrated:
 * **Purpose**: Prevents cascading timeouts when the Supabase database is temporarily unreachable.
 * **Implementation Logic**:
   - **Timeout Fetch**: All Supabase HTTP requests are wrapped with a 5-second `AbortController` timeout, preventing DNS failures (`ENOTFOUND`) from blocking the pipeline for 10+ seconds.
-  - **Circuit Breaker Pattern**: After 3 consecutive Supabase failures, the circuit opens and all database operations immediately return empty/no-op results for a 30-second cooldown period. A successful operation resets the circuit.
+  - **Distributed Circuit Breaker**: After 3 consecutive Supabase failures, the circuit opens for a 30-second cooldown period. The failure state is pushed asynchronously to Redis (`voxera:cb:consecutive_failures`) and broadcasted via Pub/Sub, updating the local cache of all distributed instances instantly without incurring network penalty on read.
   - **Graceful Degradation**: When the circuit is open, the orchestrator continues to function using in-memory STM data and the local lexicon-based emotion engine. Logging is silently skipped. The system self-heals when connectivity is restored.
 * **Files & Directories**:
   - [supabase.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/supabase.ts) — Timeout fetch wrapper, circuit breaker state, and health check API.
@@ -280,10 +281,8 @@ CREATE TABLE public.call_logs (
 
 ## 7. Current Limitations
 
-* **Single-Node Queue**: The telephony queue is processed in-memory. If server nodes scale horizontally, queue locks must be migrated to redis or db queues.
 * **Acoustic Metrics Estimation**: Pitch variation and interruption tracking are estimated. True acoustic measurements require routing raw audio waveforms through a node-level processing pipe prior to STT.
 * **Lexicon-Based Emotion Detection**: The text emotion classifier uses a keyword lexicon rather than a trained ML model (e.g., RoBERTa). While the lexicon now covers 35+ patterns across 11 labels, edge cases involving sarcasm, irony, or highly ambiguous language may still be misclassified. The architecture is designed for drop-in replacement with a real model via the `detectTextEmotion` signature.
-* **In-Memory Circuit Breaker State**: The Supabase circuit breaker state is held in process memory. If the Next.js server restarts, the circuit resets. This is acceptable for single-node operation but should be externalized (e.g., to Redis) for multi-node deployments.
 
 ---
 
@@ -328,5 +327,13 @@ All CI-blocking errors are resolved. The existing Pull Request on `feature/impro
 4. **Credential Encryption (Issue #12)**: Developed an AES-256-GCM encryption utility (`lib/util/crypto.ts`) and a new `tenant_credentials` table. Google Calendar private keys are now securely encrypted at rest.
 5. **Compound Indexing (Issue #12)**: Added crucial compound indices via `migration_v8.sql` for analytical dashboards (`idx_session_logs_client_ts`, `idx_reservations_client_slot`), ensuring O(log N) scale performance.
 
+### 2026-07-10 — Distributed Architecture & Redis Scaling (Issue #13)
+
+**Features Implemented:**
+1. **Redis Infrastructure**: Integrated `ioredis` with an in-memory `MockRedis` fallback to keep local dev environments stable without requiring a Docker container.
+2. **Distributed Queue Manager**: Rebuilt the `CallQueueManager` using Redis Sorted Sets (`zadd`) to guarantee FIFO ordering within priority bands. Wait times and queue positions are now shared across all horizontal nodes.
+3. **Pub/Sub Synchronization**: Real-time slot availability is broadcast via Redis Pub/Sub (`voxera:slot_available`), triggering all scale-out instances simultaneously.
+4. **Distributed Circuit Breaker**: Supabase database failures are written to Redis asynchronously and broadcasted via Pub/Sub, updating the local fast-cache of all instances immediately.
+
 **Final Outcome:**
-Core database security vulnerabilities are patched. The platform now supports multi-tenant secure isolation, encrypted integration keys, and scalable read queries.
+VOXERA is now capable of horizontal scaling. Critical telephony queues and state management are centralized in Redis, solving all single-node limitations.
