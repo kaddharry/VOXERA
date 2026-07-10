@@ -100,6 +100,10 @@ All core features are implemented, tested, and fully integrated:
   - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/stream/route.ts) — WebSocket upgrade endpoint.
   - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/status/route.ts) — Twilio callback endpoint to update call durations.
   - [server.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/server.ts) — Standalone WebSocket server running on port 3001 for browser/script testing.
+  - **Issue #14 Enhancements**:
+    - **Energy-Based Barge-In**: Incoming audio packets compute RMS energy via `computeRmsEnergy()`. TTS playback is only interrupted when RMS exceeds `CONFIG.telephony.bargeInEnergyThreshold` (default: 500), preventing false triggers from background noise.
+    - **PCM Accumulation**: Decoded PCM chunks are buffered in `turnAudioChunks[]` during each speech turn and concatenated for acoustic feature extraction upon final transcript.
+    - **Interruption Tracking**: Barge-in events increment `turnInterruptionCount`, which is passed to the CAI calculator for engagement scoring.
 
 ### 4.3 Speech Emotion Recognition (SER) & Emotion Engine
 * **Purpose**: Dynamically adjusts agent speaking tone, policies, and safeguards based on the caller's feeling states.
@@ -116,6 +120,7 @@ All core features are implemented, tested, and fully integrated:
   - [persona.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/emotion/persona.ts) — 11 full persona definitions with tone rules, warnings, and priority overrides.
   - [context.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/context.ts) — System prompt builder incorporating emotion coach blocks.
   - [policy.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/policy.ts) — Escalation, pacing, and upsell directive engine.
+  - [audio-emotion.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/emotion/audio-emotion.ts) — Issue #14: Maps physical acoustic features (pitch, energy, rate, pauses) to EmotionSignal with `source: "audio"`. Replaces the previous null-returning stub.
 
 ### 4.4 Memory & Vector Store (RAG)
 * **Purpose**: Stores and retrieves semantic memories and client documents.
@@ -189,6 +194,29 @@ All core features are implemented, tested, and fully integrated:
   - **Graceful Degradation**: When the circuit is open, the orchestrator continues to function using in-memory STM data and the local lexicon-based emotion engine. Logging is silently skipped. The system self-heals when connectivity is restored.
 * **Files & Directories**:
   - [supabase.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/supabase.ts) — Timeout fetch wrapper, circuit breaker state, and health check API.
+
+### 4.10 Acoustic Feature Extraction & Voice Intelligence
+* **Purpose**: Extracts physical acoustic properties from raw PCM audio to power real emotion analysis, CAI scoring, and barge-in detection.
+* **Implementation Logic**:
+  - Operates on 8kHz mono linear16 PCM buffers accumulated during each caller speech turn.
+  - **RMS Energy**: Root-mean-square amplitude via `Buffer.readInt16LE()`. Used for barge-in energy thresholds (prevents false interrupts from noise) and vocal intensity.
+  - **Zero-Crossing Rate (ZCR)**: Counts sign changes per 20ms frame. Discriminates voiced/unvoiced speech.
+  - **Pitch Estimation**: Autocorrelation on windowed PCM frames to estimate F0 in Hz. Returns median pitch and coefficient of variation (pitch dynamics).
+  - **Speaking Rate**: Words-per-minute from transcript word count and audio duration.
+  - **Pause Detection**: Scans for contiguous silence regions (RMS below threshold for >300ms). Returns pause count and total pause duration.
+  - All computations are pure JavaScript — no FFT libraries, no native bindings, no external dependencies.
+* **Files & Directories**:
+  - [acoustic.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/audio/acoustic.ts) — Pure-JS DSP feature extractor.
+
+### 4.11 Input Guardrails & AI Safety
+* **Purpose**: Pre-LLM defense layer that detects and blocks prompt injection and jailbreak attempts in voice transcripts before they reach the AI orchestrator.
+* **Implementation Logic**:
+  - **Multi-Pattern Detection**: 12+ regex patterns covering role-assumption attacks ("ignore previous instructions"), system prompt extraction ("reveal your system prompt"), delimiter injection (`<<<SYSTEM>>>`), DAN/jailbreak tropes, encoding evasion, and hypothetical framing.
+  - **Weighted Scoring**: Each pattern contributes a calibrated weight (0.5–0.9) to a composite threat score. Inputs scoring ≥0.6 are blocked.
+  - **Safe Deflection**: Blocked inputs receive natural-sounding voice-appropriate responses (randomized from 5 templates) without ever reaching the LLM.
+  - **Defense-in-Depth**: This pre-LLM guard complements the existing post-LLM `guardOutput()` filter. The two layers operate independently.
+* **Files & Directories**:
+  - [input-guard.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/input-guard.ts) — Pattern matching, scoring, and deflection engine.
 
 ---
 
@@ -281,8 +309,8 @@ CREATE TABLE public.call_logs (
 
 ## 7. Current Limitations
 
-* **Acoustic Metrics Estimation**: Pitch variation and interruption tracking are estimated. True acoustic measurements require routing raw audio waveforms through a node-level processing pipe prior to STT.
 * **Lexicon-Based Emotion Detection**: The text emotion classifier uses a keyword lexicon rather than a trained ML model (e.g., RoBERTa). While the lexicon now covers 35+ patterns across 11 labels, edge cases involving sarcasm, irony, or highly ambiguous language may still be misclassified. The architecture is designed for drop-in replacement with a real model via the `detectTextEmotion` signature.
+* **Pitch Estimation Accuracy**: The autocorrelation-based pitch estimator works well for clean speech but may produce inaccurate results in very noisy telephony environments. A Wav2Vec2/HuBERT-based feature extractor would improve robustness.
 
 ---
 
@@ -337,3 +365,32 @@ All CI-blocking errors are resolved. The existing Pull Request on `feature/impro
 
 **Final Outcome:**
 VOXERA is now capable of horizontal scaling. Critical telephony queues and state management are centralized in Redis, solving all single-node limitations.
+
+### 2026-07-10 — Advanced Voice Intelligence & Telephony Experience (Issue #14)
+
+**Features Implemented:**
+1. **Acoustic Feature Extraction**: New pure-JS DSP module (`lib/audio/acoustic.ts`) that extracts RMS energy, zero-crossing rate, pitch (autocorrelation), speaking rate, and pause patterns from raw 8kHz PCM audio — zero external dependencies.
+2. **Energy-Based Barge-In**: Upgraded `TelephonyStreamHandler` to compute RMS energy on incoming audio. TTS playback only stops when caller audio exceeds the configurable energy threshold (`CONFIG.telephony.bargeInEnergyThreshold`), eliminating false barge-ins from background noise.
+3. **Acoustic Emotion Analysis**: New `detectAudioEmotion()` in `lib/emotion/audio-emotion.ts` maps physical acoustic features to EmotionSignal (pitch→arousal, energy→intensity, rate→valence). Replaces the previous null-returning stub.
+4. **Text+Audio Emotion Fusion**: The existing `fuseEmotion()` now receives real audio emotion signals, enabling confidence-weighted VAD fusion between text and acoustic channels.
+5. **Real CAI Metrics**: The orchestrator passes actual pitch variation, speaking rate, barge-in count, and pause duration to `calculateCAI()` instead of heuristic placeholders.
+6. **Prompt Injection Guardrail**: New `guardInput()` in `lib/agent/input-guard.ts` runs before the LLM. Detects 12+ jailbreak/injection pattern families (role assumption, prompt extraction, delimiter injection, DAN mode, etc.) with weighted scoring and natural voice deflections.
+
+**Files Created:**
+- `lib/audio/acoustic.ts` — PCM acoustic feature extraction
+- `lib/emotion/audio-emotion.ts` — Acoustic-to-emotion mapper
+- `lib/agent/input-guard.ts` — Pre-LLM prompt injection guardrail
+- `__tests__/e2e/voice-intelligence.test.ts` — 31 integration tests
+
+**Files Modified:**
+- `lib/telephony/stream-handler.ts` — Energy barge-in, PCM accumulation, interruption tracking
+- `lib/agent/orchestrator.ts` — Input guard, acoustic emotion, real CAI metrics
+- `lib/emotion/detect.ts` — Removed audio emotion stub
+- `lib/types.ts` — Added AcousticFeatures interface
+- `lib/config.ts` — Energy thresholds
+- `lib/logging/session-logger.ts` — New event types (input_guard, acoustic)
+
+**Validation Performed:**
+- `npx vitest run` → **184 tests passed, 0 failures** across 16 test files
+- `npm run lint` → **0 errors, 0 warnings**
+- `npm run build` → **Build succeeded** (TypeScript type checking passed, all pages generated)

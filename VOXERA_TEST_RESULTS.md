@@ -4,6 +4,26 @@ This document records the exact test suites, validation steps, and outcomes for 
 
 ---
 
+## 2026-07-10 — Issue #14: Advanced Voice Intelligence & Telephony Experience (PR #TBD)
+**Status:** ✅ VERIFIED
+**Key Technologies:** Pure-JS DSP (PCM Buffer math), Autocorrelation Pitch Estimation, Pre-LLM Input Guard, Acoustic Emotion Fusion
+
+**Validation Steps:**
+1. **Acoustic Feature Extraction:** Verified `computeRmsEnergy()` returns exact RMS values for known constant-amplitude buffers. Confirmed `extractAcousticFeatures()` correctly computes speaking rate (WPM), detects pauses in silence-interleaved audio, and handles sub-frame (<10ms) edge cases gracefully.
+2. **Energy-Based Barge-In:** Validated that loud speech PCM (amplitude 15000) exceeds the 500-RMS barge-in threshold while low-amplitude noise (~10) and moderate ambient noise (~200) stay below threshold. This prevents false TTS interruptions from background noise.
+3. **Acoustic Emotion Analysis:** Confirmed `detectAudioEmotion()` correctly maps high-energy+high-pitch+fast-rate+high-variation to "excitement", low variation to "anger", low-energy+slow-rate to "sadness", and high-pause-ratio to "confusion". Verified confidence scales proportionally with audio duration (<2s = low, >5s = high).
+4. **Text+Audio Emotion Fusion:** Verified `fuseEmotion()` produces `source: "fused"` output with confidence-weighted VAD blending when both text and audio signals are present. Confirmed text-only fallback when audio is null.
+5. **Prompt Injection Guardrail:** Tested 12+ attack vectors: role assumption ("ignore previous instructions"), DAN mode, system prompt extraction, delimiter injection, role override, hypothetical bypass. All blocked with threatScore ≥0.6. Verified 6 normal customer queries pass through safely with no false positives.
+6. **Full Pipeline Integration:** Confirmed `handleTurn()` with acoustic features uses real CAI metrics. Verified injection attempts short-circuit the LLM pipeline — `generateReply()` is never called and a safe deflection is returned.
+
+**E2E Test Execution:**
+- `npx vitest run __tests__/e2e/voice-intelligence.test.ts` → **31 tests passed, 0 failures** (21ms)
+- `npx vitest run` → **184 tests passed, 0 failures** across 16 test files (no regressions)
+- `npm run lint` → **0 errors, 0 warnings**
+- `npm run build` → **Build succeeded** (TypeScript passed, all 12 static pages generated)
+
+---
+
 ## 2026-07-10 — Issue #13: Distributed Architecture & Redis Telephony Scaling (PR #21)
 **Status:** ✅ VERIFIED & MERGED
 **Key Technologies:** `ioredis`, Distributed Pub/Sub, Sorted Sets
