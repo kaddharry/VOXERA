@@ -1,3 +1,5 @@
+import { redis, redisSub } from "../redis/client";
+
 export interface QueuedCaller {
   id: string;
   phoneNumber?: string;
@@ -7,93 +9,117 @@ export interface QueuedCaller {
 }
 
 export class CallQueueManager {
-  private queue: QueuedCaller[] = [];
-  private activeCalls: number = 0;
-  
-  // Assumption for wait time calculation (3 minutes per call)
   private readonly AVERAGE_CALL_DURATION_MS = 3 * 60 * 1000;
-  
-  // Configurable max concurrent calls
-  private maxConcurrentCalls: number;
-  private totalHandled: number = 0;
-  private totalRejected: number = 0;
+  private maxConcurrentCallsFallback: number;
   private onSlotAvailable: (() => void) | null = null;
 
   constructor(maxConcurrent: number = 10) {
-    this.maxConcurrentCalls = maxConcurrent;
+    this.maxConcurrentCallsFallback = maxConcurrent;
+
+    // Listen to slot availability messages from other instances
+    redisSub.subscribe("voxera:slot_available").catch((err: any) => {
+      console.error("[QueueManager] Failed to subscribe to slot channel:", err);
+    });
+
+    redisSub.on("message", (channel: string) => {
+      if (channel === "voxera:slot_available") {
+        if (this.onSlotAvailable) {
+          this.onSlotAvailable();
+        }
+      }
+    });
   }
 
-  public setMaxConcurrent(max: number): void {
-    this.maxConcurrentCalls = max;
+  public async setMaxConcurrent(max: number): Promise<void> {
+    await redis.set("voxera:max_concurrent_calls", max.toString());
   }
 
-  public enqueueCaller(callerId: string, phoneNumber?: string, priority: number = 5, clientId?: string): QueuedCaller {
-    // Reject if queue is excessively deep (prevent unbounded growth)
-    if (this.queue.length >= this.maxConcurrentCalls * 5) {
-      this.totalRejected++;
-      throw new Error(`Queue full: ${this.queue.length} callers waiting`);
+  private async getMaxConcurrentCalls(): Promise<number> {
+    const val = await redis.get("voxera:max_concurrent_calls");
+    return val ? parseInt(val, 10) : this.maxConcurrentCallsFallback;
+  }
+
+  public async enqueueCaller(
+    callerId: string,
+    phoneNumber?: string,
+    priority: number = 5,
+    clientId?: string
+  ): Promise<QueuedCaller> {
+    const length = await this.getQueueLength();
+    const max = await this.getMaxConcurrentCalls();
+
+    if (length >= max * 5) {
+      await redis.incr("voxera:total_rejected");
+      throw new Error(`Queue full: ${length} callers waiting`);
     }
 
+    const joinedAt = Date.now();
     const caller: QueuedCaller = {
       id: callerId,
       phoneNumber,
-      joinedAt: Date.now(),
+      joinedAt,
       priority,
       clientId,
     };
-    this.queue.push(caller);
 
-    // Sort queue by priority (lower = higher), then by join time (FIFO within priority)
-    this.queue.sort((a, b) => a.priority - b.priority || a.joinedAt - b.joinedAt);
+    // Calculate composite score for priority and timestamp:
+    // priority is primary ascending, joinedAt is secondary ascending
+    const score = priority * 1e13 + joinedAt;
+
+    await redis.zadd("voxera:queue", score, callerId);
+    await redis.hset("voxera:caller_metadata", callerId, JSON.stringify(caller));
 
     return caller;
   }
 
-  public dequeueCaller(callerId: string): boolean {
-    const initialLength = this.queue.length;
-    this.queue = this.queue.filter(c => c.id !== callerId);
-    return this.queue.length < initialLength;
+  public async dequeueCaller(callerId: string): Promise<boolean> {
+    const removed = await redis.zrem("voxera:queue", callerId);
+    await redis.hdel("voxera:caller_metadata", callerId);
+    return removed > 0;
   }
 
-  public peekNextCaller(): QueuedCaller | null {
-    if (this.queue.length === 0) return null;
-    return this.queue[0];
+  public async peekNextCaller(): Promise<QueuedCaller | null> {
+    const members = await redis.zrange("voxera:queue", 0, 0);
+    if (members.length === 0) return null;
+
+    const data = await redis.hget("voxera:caller_metadata", members[0]);
+    return data ? JSON.parse(data) : null;
   }
 
-  public getQueuePosition(callerId: string): number {
-    const index = this.queue.findIndex(c => c.id === callerId);
-    return index >= 0 ? index + 1 : -1;
+  public async getQueuePosition(callerId: string): Promise<number> {
+    const rank = await redis.zrank("voxera:queue", callerId);
+    return rank !== null ? rank + 1 : -1;
   }
 
-  public getEstimatedWaitTimeMs(callerId: string): number {
-    const position = this.getQueuePosition(callerId);
+  public async getEstimatedWaitTimeMs(callerId: string): Promise<number> {
+    const position = await this.getQueuePosition(callerId);
     if (position === -1) return 0;
 
-    if (this.activeCalls < this.maxConcurrentCalls && position === 1) {
-      return 0; // Next in line and there is a free agent
+    const active = await this.getActiveCallCount();
+    const max = await this.getMaxConcurrentCalls();
+
+    if (active < max && position === 1) {
+      return 0; // Next in line and there is a free slot
     }
 
-    const capacity = Math.max(1, this.maxConcurrentCalls);
+    const capacity = Math.max(1, max);
     const groupsAhead = Math.ceil(position / capacity);
     
     return groupsAhead * this.AVERAGE_CALL_DURATION_MS;
   }
 
-  // --- Methods to manage active call count for accurate queue wait times ---
-
-  public markCallStarted() {
-    this.activeCalls++;
-    this.totalHandled++;
+  public async markCallStarted(): Promise<void> {
+    await redis.incr("voxera:active_calls");
+    await redis.incr("voxera:total_handled");
   }
 
-  public markCallEnded() {
-    if (this.activeCalls > 0) {
-      this.activeCalls--;
+  public async markCallEnded(): Promise<void> {
+    const active = await this.getActiveCallCount();
+    if (active > 0) {
+      await redis.decr("voxera:active_calls");
     }
-    // Auto-dequeue — notify listener if a slot opened and someone is waiting
-    if (this.queue.length > 0 && this.activeCalls < this.maxConcurrentCalls && this.onSlotAvailable) {
-      this.onSlotAvailable();
-    }
+    // Publish slot availability event to Pub/Sub to trigger all instances
+    await redis.publish("voxera:slot_available", "1");
   }
 
   /**
@@ -103,28 +129,57 @@ export class CallQueueManager {
     this.onSlotAvailable = callback;
   }
 
-  public canAcceptCall(): boolean {
-    return this.activeCalls < this.maxConcurrentCalls;
+  public async canAcceptCall(): Promise<boolean> {
+    const active = await this.getActiveCallCount();
+    const max = await this.getMaxConcurrentCalls();
+    return active < max;
   }
 
-  public getActiveCallCount(): number {
-    return this.activeCalls;
+  public async getActiveCallCount(): Promise<number> {
+    const val = await redis.get("voxera:active_calls");
+    return val ? parseInt(val, 10) : 0;
   }
 
-  public getQueueLength(): number {
-    return this.queue.length;
+  public async getQueueLength(): Promise<number> {
+    return await redis.zcard("voxera:queue");
   }
 
   /**
    * Returns a snapshot of live telephony metrics for the analytics dashboard.
    */
-  public getMetrics(): { activeCallCount: number; queueLength: number; totalHandled: number; totalRejected: number } {
+  public async getMetrics(): Promise<{
+    activeCallCount: number;
+    queueLength: number;
+    totalHandled: number;
+    totalRejected: number;
+  }> {
+    const activeCallCount = await this.getActiveCallCount();
+    const queueLength = await this.getQueueLength();
+    const totalHandled = parseInt((await redis.get("voxera:total_handled")) || "0", 10);
+    const totalRejected = parseInt((await redis.get("voxera:total_rejected")) || "0", 10);
+
     return {
-      activeCallCount: this.activeCalls,
-      queueLength: this.queue.length,
-      totalHandled: this.totalHandled,
-      totalRejected: this.totalRejected,
+      activeCallCount,
+      queueLength,
+      totalHandled,
+      totalRejected,
     };
+  }
+
+  /**
+   * Clear all Redis states (primarily for tests)
+   */
+  public async reset(): Promise<void> {
+    await redis.set("voxera:active_calls", "0");
+    await redis.set("voxera:total_handled", "0");
+    await redis.set("voxera:total_rejected", "0");
+    await redis.set("voxera:max_concurrent_calls", this.maxConcurrentCallsFallback.toString());
+
+    const members = await redis.zrange("voxera:queue", 0, -1);
+    for (const m of members) {
+      await redis.zrem("voxera:queue", m);
+      await redis.hdel("voxera:caller_metadata", m);
+    }
   }
 }
 
