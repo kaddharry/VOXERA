@@ -25,11 +25,23 @@ After implementation, write and run a rigorous test suite to check the features 
 Fix any files that fail the tests.
 Once everything passes and is verified, you MUST log your test results by updating the **`VOXERA_TEST_RESULTS.md`** file. 
 - Add your new test results to the **TOP** of the file (just below the main intro paragraph), pushing older results down.
-- Your entry must start with a heading that specifies the Issue Number, Issue Name, and the current Date (e.g., `## Issue #99: Feature Name`).
-- Document the exact validation steps, key technologies used, and test outcomes.
+- Your entry MUST follow this exact markdown format:
+  ```markdown
+  ## YYYY-MM-DD — Issue #[Number]: [Issue Name] (PR #[Number])
+  **Status:** ✅ VERIFIED
+  **Key Technologies:** [Tech 1], [Tech 2]
 
-## 6. PR PREPARATION
+  **Validation Steps:**
+  1. **[Step Name]:** [Description of what was tested and the outcome]
+  
+  **E2E Test Execution:**
+  - [Commands run or scripts executed]
+  ```
+
+## 6. PR PREPARATION & COMMIT
 Ensure the code will pass CI build tests on GitHub (e.g. run `npm run build` and `npm run lint`).
 Update `VOXERA_ROADMAP.md` and `VOXERA_IMPLEMENTATION.md` at the end to reflect the newly completed features and technical changes.
+
+**CRITICAL RULE:** Do NOT `git commit` or `git push` to `main` without explicitly asking the user for permission first. Show them a summary of the changes and ask: "Are you ready for me to commit and push this to main?"
 
 **IMPORTANT:** You must follow these steps strictly. Once you have acknowledged these instructions, you do not need to be interrupted by the `README.md` warning again during this session.
