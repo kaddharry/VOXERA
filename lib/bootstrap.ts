@@ -8,8 +8,8 @@ let seeded = false;
 
 // Register the slot open callback to dynamically redirect callers out of Twilio Enqueue
 callQueue.onSlotOpen(async () => {
-  while (callQueue.getQueueLength() > 0 && callQueue.canAcceptCall()) {
-    const nextCaller = callQueue.peekNextCaller();
+  while ((await callQueue.getQueueLength()) > 0 && (await callQueue.canAcceptCall())) {
+    const nextCaller = await callQueue.peekNextCaller();
     if (!nextCaller) break;
 
     try {
@@ -21,7 +21,7 @@ callQueue.onSlotOpen(async () => {
       console.log(`[Telephony Queue] Auto-redirecting queued caller ${nextCaller.id} out of Enqueue...`);
       
       // Dequeue first to prevent duplicate processing
-      callQueue.dequeueCaller(nextCaller.id);
+      await callQueue.dequeueCaller(nextCaller.id);
 
       await client.calls(nextCaller.id).update({
         url: redirectUrl,
@@ -32,7 +32,7 @@ callQueue.onSlotOpen(async () => {
     } catch (err: any) {
       console.error(`[Telephony Queue] Failed to redirect queued caller ${nextCaller.id}:`, err?.message ?? err);
       // Remove failed caller from queue to avoid blockages
-      callQueue.dequeueCaller(nextCaller.id);
+      await callQueue.dequeueCaller(nextCaller.id);
     }
   }
 });

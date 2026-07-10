@@ -103,7 +103,7 @@ export class TelephonyStreamHandler {
   }
 
   private async init() {
-    callQueue.markCallStarted();
+    await callQueue.markCallStarted();
     await this.deepgram.connect();
     await this.updateCallLog({ sessionId: this.sessionId });
     console.log(`[TelephonyStream] Call started: ${this.callSid}, session: ${this.sessionId}`);
@@ -236,7 +236,7 @@ export class TelephonyStreamHandler {
 
     console.log(`[TelephonyStream] Call ended: ${this.callSid}, duration: ${durationMs}ms`);
 
-    callQueue.markCallEnded();
+    await callQueue.markCallEnded();
     this.deepgram.close();
 
     await this.updateCallLog({
