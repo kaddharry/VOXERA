@@ -105,8 +105,8 @@ export async function GET() {
         ? Math.round(completedCalls.reduce((s, c) => s + (c.durationMs || 0), 0) / completedCalls.length)
         : 0;
 
-    // 4. Live queue metrics from in-process CallQueueManager
-    const queueMetrics = callQueue.getMetrics();
+    // 4. Live queue metrics from in-process CallQueueManager (now Redis-backed async)
+    const queueMetrics = await callQueue.getMetrics();
 
     // ─── NEW SPRINT 5 METRICS ──────────────────────────────────────────────────
 

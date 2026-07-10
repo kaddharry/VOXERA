@@ -1,43 +1,28 @@
-# VOXERA PR Implementation Summary
+# VOXERA Distributed Architecture Implementation Summary
 
-This document summarizes the engineering logic implemented to resolve Issue #16: Business Voice Personalization & Customer Recovery.
-
----
-
-## 1. Database Migrations (`sql/migration_v7.sql`)
-Added settings columns to the `public.business_settings` table to link custom voice cloning and recovery configurations to individual business tenants:
-* `voice_provider`: Specifies the current custom voice provider (`'elevenlabs'`, `'deepgram'`).
-* `custom_voice_id`: Holds the voice ID returned from the cloning API.
-* `sms_recovery_enabled`: Boolean flag to toggle post-call SMS triggers.
-* `sms_recovery_template`: Text template for recovery SMS with `{{link}}` support placeholder.
-* `sms_recovery_link`: Target URL of the tenant's support or feedback page.
+This document summarizes the changes introduced for **Issue #13: Distributed Architecture & Scaling**.
 
 ---
 
-## 2. ElevenLabs Custom Voice Personalization (`lib/tts/voice-clone.ts`)
-Created a dedicated Voice Personalization service supporting:
-* **Voice Cloning:** Native form data upload of audio samples to the ElevenLabs `/v1/voices/add` API. Falls back to generating a unique mock voice ID in local environments without API keys.
-* **Speech Synthesis:** Calls ElevenLabs `/v1/text-to-speech/{voice_id}` requesting `pcm_8000` (8kHz linear16 PCM) output format, matching Twilio's sample rate specifications.
+## 1. Redis Infrastructure Client (`lib/redis/client.ts`)
+- **General and Subscriber Clients:** Exports `redis` and `redisSub` instances connecting to the Redis URL.
+- **In-Memory Fallback (`MockRedis`):** Implements an in-memory simulation of Redis commands (`zadd`, `zrange`, `zrank`, `hset`, `publish`, `subscribe`, etc.) with a global subscriber event emitter. This ensures local setups and test suites run instantly without needing a running Redis server.
 
 ---
 
-## 3. Dynamic TTS Routing (`lib/deepgram/tts.ts`)
-Upgraded speech generation to check tenant settings:
-* Fetches the client's `business_settings` from the database.
-* If a custom ElevenLabs voice is configured, it synthesizes the audio via ElevenLabs.
-* If the synthesis fails, or if no custom voice is configured, it falls back to the default Deepgram voice, ensuring high reliability and zero downtime.
+## 2. Redis-Backed Call Queue (`lib/queue/manager.ts`)
+Transitioned `CallQueueManager` state management to Redis keys:
+* `voxera:queue` (Sorted Set): Members are caller IDs. The score is computed as `priority * 1e13 + joinedAt`, which guarantees priority sorting (lower = first) with sub-sorting by time (FIFO).
+* `voxera:caller_metadata` (Hash): Field is caller ID, value is serialized `QueuedCaller` JSON data.
+* `voxera:active_calls`, `voxera:total_handled`, `voxera:total_rejected` (Strings): Atomic integer metrics updated via `incr`/`decr`.
+* `voxera:max_concurrent_calls` (String): Configurable max limit synced across instances.
+
+### Pub/Sub Slot Synchronization
+When a call ends (`markCallEnded`), the instance publishes to the `voxera:slot_available` channel. All scale-out instances subscribe to this channel and trigger their slot open listener (to redirect waiting callers out of Twilio Enqueue).
 
 ---
 
-## 4. Post-Call SMS Customer Recovery (`lib/telephony/stream-handler.ts`, `lib/telephony/sms.ts`)
-* **SMS Dispatch Utility:** Uses the Twilio REST client to dispatch messages. Falls back to console log simulation when Twilio keys are absent.
-* **Sentiment recovery trigger:** On call end (`onCallEnded`), the handler retrieves the final user utterance from Short-Term Memory (STM) and checks its emotional state.
-* If the final emotion is negative (`anger`, `frustration`, `sadness`, `distress`, `disappointment`) and recovery is enabled:
-  - Formats the SMS recovery message (replacing the `{{link}}` placeholder with the configured support link).
-  - Triggers the SMS dispatch via Twilio to the customer's phone number.
-
----
-
-## 5. settings Page Dashboard (`app/admin/settings/page.tsx`, `/api/settings/*`)
-* **Settings APIs:** Added REST endpoints `/api/settings/voice` and `/api/settings/recovery` to retrieve and save configurations from the database instead of browser `localStorage`.
-* **Sleek UI:** Enhanced Settings Page UI with dark glassmorphism card components, dropzone file upload capability, custom voice selectors, and toggle switches for customer recovery configurations.
+## 3. Distributed Circuit Breaker (`lib/db/supabase.ts`)
+To prevent network database roundtrip latency on every check, a hybrid state sync architecture was implemented:
+- **Local Memory Cache:** Synchronous checks (`isSupabaseHealthy`) read from local variables for maximum performance.
+- **Redis Sync & Pub/Sub Broadcast:** Success/failure increments are written asynchronously to Redis (`voxera:cb:consecutive_failures`) and published on `voxera:cb:state_change`. Other nodes receive the payload and update their local cache in real time.
