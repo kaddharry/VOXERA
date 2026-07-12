@@ -366,39 +366,6 @@ CREATE TABLE public.call_logs (
 **Final Outcome:**
 All CI-blocking errors are resolved. The existing Pull Request on `feature/improve-emotion-analysis` is now ready to merge.
 
-### Sprint 5 (Issue #15: SaaS Commercialization)
-**Objective**: Transform VOXERA from a single-tenant demo into a production-ready SaaS platform with self-service onboarding, subscription billing, and tenant management.
-
-**Changes Implemented**:
-1. **Stripe Billing Integration**: 
-   - Created Stripe SDK wrapper (`lib/billing/stripe.ts`) defining Starter, Growth, and Enterprise tiers.
-   - Built checkout API route and webhook handler for `checkout.session.completed`, `customer.subscription.updated`, and `deleted` events.
-   - Designed a new `subscriptions` table (Migration v10) with RLS for multi-tenant isolation.
-2. **Onboarding Wizard Upgrade**: 
-   - Added Step 3: Choose Plan to `app/onboarding/planner.tsx`.
-   - Updated `lib/db/onboarding.ts` to properly save business hours and AI settings (`language`, `tone`, `greeting`) into `business_settings`.
-   - Automatically redirect tenants to Stripe Checkout if they choose a paid tier.
-3. **Admin Tenant Dashboard**: 
-   - Built a Super-Admin panel (`/admin/tenants`) summarizing tenant creation, subscription status, call volume, and knowledge document metrics.
-
-**Files Created**:
-- `lib/billing/stripe.ts` — Stripe tier logic and limits
-- `app/api/billing/checkout/route.ts` — Stripe Checkout endpoint
-- `app/api/billing/webhook/route.ts` — Stripe webhook handler
-- `app/admin/tenants/page.tsx` — Admin tenant management dashboard
-- `__tests__/e2e/saas-commercialization.test.ts` — Integration tests for Stripe & billing
-- `sql/migration_v10.sql` — Subscriptions schema and RLS
-
-**Files Modified**:
-- `lib/db/onboarding.ts` — Added logic to save AI settings and operating hours
-- `app/onboarding/planner.tsx` — Added pricing UI and redirection logic
-- `app/admin/layout.tsx` — Added Tenants link to the sidebar
-- `VOXERA_ROADMAP.md` — Updated Phase III completion status
-
-**Validation Performed**:
-- `npx vitest run` → **188 tests passed, 0 failures** across 17 test files
-- `npm run lint` → **0 errors, 0 warnings**
-- `npm run build` → **Build succeeded**
 
 ### 2026-07-09 — Voice Cloning & Security Hardening (Issues #16 & #12)
 
@@ -448,4 +415,38 @@ VOXERA is now capable of horizontal scaling. Critical telephony queues and state
 - `npx vitest run` → **184 tests passed, 0 failures** across 16 test files
 - `npm run lint` → **0 errors, 0 warnings**
 - `npm run build` → **Build succeeded** (TypeScript type checking passed, all pages generated)
+
+### 2026-07-12 — Sprint 5 (Issue #15: SaaS Commercialization)
+**Objective**: Transform VOXERA from a single-tenant demo into a production-ready SaaS platform with self-service onboarding, subscription billing, and tenant management.
+
+**Changes Implemented**:
+1. **Stripe Billing Integration**: 
+   - Created Stripe SDK wrapper (`lib/billing/stripe.ts`) defining Starter, Growth, and Enterprise tiers.
+   - Built checkout API route and webhook handler for `checkout.session.completed`, `customer.subscription.updated`, and `deleted` events.
+   - Designed a new `subscriptions` table (Migration v10) with RLS for multi-tenant isolation.
+2. **Onboarding Wizard Upgrade**: 
+   - Added Step 3: Choose Plan to `app/onboarding/planner.tsx`.
+   - Updated `lib/db/onboarding.ts` to properly save business hours and AI settings (`language`, `tone`, `greeting`) into `business_settings`.
+   - Automatically redirect tenants to Stripe Checkout if they choose a paid tier.
+3. **Admin Tenant Dashboard**: 
+   - Built a Super-Admin panel (`/admin/tenants`) summarizing tenant creation, subscription status, call volume, and knowledge document metrics.
+
+**Files Created**:
+- `lib/billing/stripe.ts` — Stripe tier logic and limits
+- `app/api/billing/checkout/route.ts` — Stripe Checkout endpoint
+- `app/api/billing/webhook/route.ts` — Stripe webhook handler
+- `app/admin/tenants/page.tsx` — Admin tenant management dashboard
+- `__tests__/e2e/saas-commercialization.test.ts` — Integration tests for Stripe & billing
+- `sql/migration_v10.sql` — Subscriptions schema and RLS
+
+**Files Modified**:
+- `lib/db/onboarding.ts` — Added logic to save AI settings and operating hours
+- `app/onboarding/planner.tsx` — Added pricing UI and redirection logic
+- `app/admin/layout.tsx` — Added Tenants link to the sidebar
+- `VOXERA_ROADMAP.md` — Updated Phase III completion status
+
+**Validation Performed**:
+- `npx vitest run` → **188 tests passed, 0 failures** across 17 test files
+- `npm run lint` → **0 errors, 0 warnings**
+- `npm run build` → **Build succeeded**
 
