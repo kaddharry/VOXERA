@@ -20,10 +20,10 @@ export const LEXICON: Array<{
 
   // ── Distress ───────────────────────────────────────────────────────────
   { kw: /\b(desperate|help me|emergency|urgent|scared|afraid)\b/i, label: "distress", vad: { v: -0.8, a: 0.8, d: -0.3 }, w: 1.0 },
-  { kw: /\b(suicid|harm myself|end it)\b/i, label: "distress", vad: { v: -0.95, a: 0.9, d: -0.6 }, w: 1.5 },
+  { kw: /\b(suicid|harm myself|end it|die|kill myself|wanna die)\b/i, label: "distress", vad: { v: -0.95, a: 0.9, d: -0.6 }, w: 1.5 },
 
   // ── Sadness ────────────────────────────────────────────────────────────
-  { kw: /\b(sad|down|depressed|miserable|unhappy|heartbroken|devastated|feeling low|feel low)\b/i, label: "sadness", vad: { v: -0.7, a: -0.3, d: -0.2 }, w: 0.8 },
+  { kw: /\b(sad|down|depressed|miserable|unhappy|heartbroken|devastated|feeling low|feel low|breakup|broken up|dumped)\b/i, label: "sadness", vad: { v: -0.7, a: -0.3, d: -0.2 }, w: 0.8 },
 
   // ── Disappointment ─────────────────────────────────────────────────────
   { kw: /\b(disappoint|let down|let me down|expected (better|more)|not what i (hoped|expected)|unpaid|working for free)\b/i, label: "disappointment", vad: { v: -0.5, a: -0.1, d: -0.2 }, w: 0.8 },

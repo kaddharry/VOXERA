@@ -75,6 +75,9 @@ export interface MemoryRecord {
   vad: VAD;
   intensity: number;
   importance: number;
+  importance_score: number;
+  retrieval_count: number;
+  last_retrieved_at?: number;
   embedding: number[];
   sourceUtteranceIds: string[];
   recurrence: number;
@@ -92,10 +95,52 @@ export interface PolicyDirectives {
   notes: string[];
 }
 
+export interface RetrievalExplanation {
+  memoryId: string;
+  reason: string;
+  metrics: {
+    similarity: number;
+    importance: number;
+    recency: number;
+    retrievalFrequency: number;
+    rawScore: number;
+  };
+}
+
+export interface TimelineEvent {
+  id: string;
+  topic: string;
+  startDate: number;
+  endDate: number;
+  memories: MemoryRecord[];
+  summary: string;
+}
+
 export interface RetrievedContext {
   stm: Utterance[];
   mtm: MemoryRecord[];
   ltmUser: MemoryRecord[];
   ltmClient: MemoryRecord[];
   scores: { id: string; score: number }[];
+  explanations?: Record<string, RetrievalExplanation>;
+  timeline?: TimelineEvent[];
+}
+
+export interface AcousticFeatures {
+  /** Root-mean-square amplitude (0–32768 range for 16-bit PCM). */
+  rmsEnergy: number;
+  /** Zero-crossing rate: fraction of adjacent samples that cross zero (0–1). */
+  zeroCrossingRate: number;
+  /** Estimated fundamental frequency in Hz (median across frames). 0 if unvoiced. */
+  pitchHz: number;
+  /** Pitch coefficient of variation (stddev / mean). Higher = more dynamic. 0–1 clamped. */
+  pitchVariation: number;
+  /** Estimated words-per-minute based on transcript word count and audio duration. */
+  speakingRateWPM: number;
+  /** Total detected silence/pause duration in ms. */
+  pauseDurationMs: number;
+  /** Number of distinct pause segments detected. */
+  pauseCount: number;
+  /** Total audio duration in ms. */
+  durationMs: number;
 }

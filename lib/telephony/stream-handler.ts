@@ -7,7 +7,9 @@ import { supabase } from "../db/supabase";
 import { callQueue } from "../queue/manager";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
- 
+import { CONFIG } from "../config";
+import { computeRmsEnergy, extractAcousticFeatures } from "../audio/acoustic";
+
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
  
@@ -78,6 +80,11 @@ export interface StreamHandlerOptions {
  *  3. On final transcript → handleTurn() (existing orchestrator, zero changes)
  *  4. LLM reply → Deepgram TTS (Linear16 PCM) → μ-law → sent back to Twilio
  *  5. Call ends → DB updated, queue updated
+ *
+ * Issue #14 enhancements:
+ *  - Energy-based barge-in: only interrupts TTS when RMS exceeds threshold
+ *  - PCM accumulation: collects audio for turn-level acoustic analysis
+ *  - Interruption tracking: counts barge-in events for CAI scoring
  */
 export class TelephonyStreamHandler {
   private ws: WebSocket;
@@ -92,7 +99,12 @@ export class TelephonyStreamHandler {
   private isBusy = false; // prevent overlapping LLM turns
   private isSpeaking = false; // Issue #8: track if TTS is playing for barge-in
   private hasEnded = false; // prevent double-invocation of onCallEnded
- 
+
+  // Issue #14: PCM accumulator for acoustic feature extraction
+  private turnAudioChunks: Buffer[] = [];
+  // Issue #14: Barge-in interruption counter (per turn, reset on each transcript)
+  private turnInterruptionCount = 0;
+
   constructor(opts: StreamHandlerOptions) {
     this.ws = opts.ws;
     this.callSid = opts.callSid;
@@ -107,7 +119,7 @@ export class TelephonyStreamHandler {
   }
  
   private async init() {
-    callQueue.markCallStarted();
+    await callQueue.markCallStarted();
     await this.deepgram.connect();
     await this.updateCallLog({ sessionId: this.sessionId });
     console.log(`[TelephonyStream] Call started: ${this.callSid}, session: ${this.sessionId}`);
@@ -146,11 +158,24 @@ export class TelephonyStreamHandler {
         if (media?.payload) {
           const mulawBuf = Buffer.from(media.payload as string, "base64");
           const pcmBuf = decodeMulaw(mulawBuf);
- 
-          // Issue #8: Barge-in — if caller speaks while TTS is playing, stop playback
+
+          // Issue #14: Accumulate PCM for turn-level acoustic analysis
+          this.turnAudioChunks.push(pcmBuf);
+
+          // Issue #14: Energy-based barge-in detection.
+          // Only trigger TTS interruption if caller audio RMS exceeds threshold.
+          // This prevents false barge-ins from background noise.
           if (this.isSpeaking) {
-            this.isSpeaking = false;
-            this.sendClearMessage();
+            const rms = computeRmsEnergy(pcmBuf);
+            if (rms > CONFIG.telephony.bargeInEnergyThreshold) {
+              this.isSpeaking = false;
+              this.turnInterruptionCount++;
+              this.sendClearMessage();
+              console.log(
+                `[TelephonyStream] Barge-in triggered (RMS=${rms.toFixed(0)}, ` +
+                `threshold=${CONFIG.telephony.bargeInEnergyThreshold}) for ${this.callSid}`
+              );
+            }
           }
  
           this.deepgram.sendAudio(pcmBuf);
@@ -172,6 +197,13 @@ export class TelephonyStreamHandler {
     console.log(`[TelephonyStream] Transcript (${this.callSid}): "${text}"`);
  
     try {
+      // Issue #14: Extract acoustic features from accumulated PCM
+      const turnPcm = Buffer.concat(this.turnAudioChunks);
+      const wordCount = text.split(/\s+/).filter(Boolean).length;
+      const acousticFeatures = turnPcm.length > 0
+        ? extractAcousticFeatures(turnPcm, wordCount)
+        : undefined;
+
       const output = await handleTurn({
         sessionId: this.sessionId,
         userId: this.userId,
@@ -179,6 +211,8 @@ export class TelephonyStreamHandler {
         transcript: text,
         sttConfidence: 0.9,
         audioEmotion: null,
+        acousticFeatures,
+        bargeInCount: this.turnInterruptionCount,
       });
  
       console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
@@ -187,6 +221,9 @@ export class TelephonyStreamHandler {
       console.error(`[TelephonyStream] handleTurn error:`, err);
     } finally {
       this.isBusy = false;
+      // Reset turn-level accumulators for next utterance
+      this.turnAudioChunks = [];
+      this.turnInterruptionCount = 0;
     }
   }
  
@@ -236,13 +273,13 @@ export class TelephonyStreamHandler {
   private async onCallEnded() {
     if (this.hasEnded) return;
     this.hasEnded = true;
- 
+
     const endedAt = Date.now();
     const durationMs = endedAt - this.startedAt;
  
     console.log(`[TelephonyStream] Call ended: ${this.callSid}, duration: ${durationMs}ms`);
- 
-    callQueue.markCallEnded();
+
+    await callQueue.markCallEnded();
     this.deepgram.close();
  
     await this.updateCallLog({

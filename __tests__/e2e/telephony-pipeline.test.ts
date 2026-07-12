@@ -262,6 +262,7 @@ describe("Telephony Pipeline Integration (Mocked Services)", () => {
 
       // Trigger "stop" event
       onMessage(Buffer.from(JSON.stringify({ event: "stop" })));
+      await new Promise((resolve) => setTimeout(resolve, 10));
       expect(closeSpy).toHaveBeenCalled();
 
       // Clean up spies

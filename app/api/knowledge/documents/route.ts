@@ -1,6 +1,5 @@
 import { NextRequest } from "next/server";
 import { createClient } from "@/lib/db/server";
-import { supabase } from "@/lib/db/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,8 +26,8 @@ export async function GET(request: NextRequest) {
   const end = start + limit - 1;
 
   try {
-    // 1. Build counts query
-    let countQuery = supabase
+    // 1. Build counts query (Using user-authenticated client)
+    let countQuery = supabaseServer
       .from("knowledge_documents")
       .select("*", { count: "exact", head: true })
       .eq("clientId", clientId);
@@ -40,8 +39,8 @@ export async function GET(request: NextRequest) {
     const { count, error: countError } = await countQuery;
     if (countError) throw countError;
 
-    // 2. Build list query
-    let query = supabase
+    // 2. Build list query (Using user-authenticated client)
+    let query = supabaseServer
       .from("knowledge_documents")
       .select("*")
       .eq("clientId", clientId)
@@ -87,8 +86,8 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    // Verify document belongs to this client
-    const { data: doc, error: getError } = await supabase
+    // Verify document belongs to this client (Using user-authenticated client)
+    const { data: doc, error: getError } = await supabaseServer
       .from("knowledge_documents")
       .select("id, clientId")
       .eq("id", docId)
@@ -102,14 +101,14 @@ export async function DELETE(request: NextRequest) {
       return Response.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Delete chunks (ON DELETE CASCADE should cover it, but we double-verify here)
-    await supabase
+    // Delete chunks (Using user-authenticated client)
+    await supabaseServer
       .from("memories")
       .delete()
       .eq("documentId", docId);
 
-    // Delete document row
-    const { error: deleteError } = await supabase
+    // Delete document row (Using user-authenticated client)
+    const { error: deleteError } = await supabaseServer
       .from("knowledge_documents")
       .delete()
       .eq("id", docId);

@@ -1,11 +1,60 @@
 import crypto from "crypto";
 import type { Booking } from "../db/reservations";
+import { decrypt } from "../util/crypto";
+import { supabase } from "../db/supabase";
 
-function isGoogleConfigured(): boolean {
+interface GoogleConfig {
+  email: string | null;
+  privateKey: string | null;
+  calendarId: string | null;
+}
+
+async function resolveGoogleConfig(clientId?: string): Promise<GoogleConfig> {
+  const fallback = {
+    email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || null,
+    privateKey: process.env.GOOGLE_PRIVATE_KEY || null,
+    calendarId: process.env.GOOGLE_CALENDAR_ID || null,
+  };
+
+  if (!clientId || clientId === "demo") {
+    return fallback;
+  }
+
+  try {
+    const { data: tenant } = await supabase
+      .from("tenants")
+      .select("id")
+      .eq("auth_user_id", clientId)
+      .single();
+
+    if (!tenant) return fallback;
+
+    const { data: creds } = await supabase
+      .from("tenant_credentials")
+      .select("*")
+      .eq("tenant_id", tenant.id)
+      .single();
+
+    if (creds && creds.google_service_account_email && creds.google_private_key && creds.google_calendar_id) {
+      const privateKey = decrypt(creds.google_private_key);
+      return {
+        email: creds.google_service_account_email,
+        privateKey,
+        calendarId: creds.google_calendar_id,
+      };
+    }
+  } catch (err) {
+    console.error("[Calendar] Failed to resolve tenant credentials:", err);
+  }
+
+  return fallback;
+}
+
+function isGoogleConfigured(config: GoogleConfig): boolean {
   return !!(
-    process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL &&
-    process.env.GOOGLE_PRIVATE_KEY &&
-    process.env.GOOGLE_CALENDAR_ID
+    config.email &&
+    config.privateKey &&
+    config.calendarId
   );
 }
 
@@ -35,9 +84,9 @@ function signJwt(payload: object, privateKeyPem: string): string {
   return `${input}.${signatureB64}`;
 }
 
-async function getGoogleAccessToken(): Promise<string> {
-  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL!;
-  const privateKey = process.env.GOOGLE_PRIVATE_KEY!;
+async function getGoogleAccessToken(config: GoogleConfig): Promise<string> {
+  const email = config.email!;
+  const privateKey = config.privateKey!;
 
   const now = Math.floor(Date.now() / 1000);
   const claim = {
@@ -70,7 +119,6 @@ async function getGoogleAccessToken(): Promise<string> {
 
 // Calculate booking end time (+1 hour by default)
 function getStartAndEndTimes(date: string, time: string): { startIso: string; endIso: string } {
-  // Assume date format is YYYY-MM-DD and time format is HH:MM
   const start = new Date(`${date}T${time}:00`);
   const end = new Date(start.getTime() + 60 * 60 * 1000); // Add 1 hour
   return {
@@ -83,14 +131,16 @@ function getStartAndEndTimes(date: string, time: string): { startIso: string; en
  * Creates an event in Google Calendar and returns the event ID.
  */
 export async function createCalendarEvent(booking: Booking): Promise<string> {
-  if (!isGoogleConfigured()) {
+  const config = await resolveGoogleConfig(booking.clientId);
+
+  if (!isGoogleConfigured(config)) {
     console.log(`[Calendar Integration Stub] Created Mock Event for Booking ${booking.id}`);
     return `MOCK-GCAL-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
   }
 
   try {
-    const token = await getGoogleAccessToken();
-    const calendarId = process.env.GOOGLE_CALENDAR_ID!;
+    const token = await getGoogleAccessToken(config);
+    const calendarId = config.calendarId!;
     const { startIso, endIso } = getStartAndEndTimes(booking.date, booking.time);
 
     const eventDetails = {
@@ -123,7 +173,6 @@ export async function createCalendarEvent(booking: Booking): Promise<string> {
     return event.id;
   } catch (err) {
     console.error("[Calendar Integration] Failed to create Google Calendar event:", err);
-    // Return a fallback ID so booking doesn't crash
     return `FALLBACK-GCAL-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
   }
 }
@@ -133,14 +182,16 @@ export async function createCalendarEvent(booking: Booking): Promise<string> {
  */
 export async function updateCalendarEvent(booking: Booking): Promise<void> {
   if (!booking.calendarEventId) return;
-  if (!isGoogleConfigured()) {
+  const config = await resolveGoogleConfig(booking.clientId);
+
+  if (!isGoogleConfigured(config)) {
     console.log(`[Calendar Integration Stub] Updated Mock Event ${booking.calendarEventId} (${booking.date} @ ${booking.time})`);
     return;
   }
 
   try {
-    const token = await getGoogleAccessToken();
-    const calendarId = process.env.GOOGLE_CALENDAR_ID!;
+    const token = await getGoogleAccessToken(config);
+    const calendarId = config.calendarId!;
     const { startIso, endIso } = getStartAndEndTimes(booking.date, booking.time);
 
     const eventDetails = {
@@ -180,16 +231,18 @@ export async function updateCalendarEvent(booking: Booking): Promise<void> {
 /**
  * Deletes a Google Calendar event.
  */
-export async function deleteCalendarEvent(calendarEventId: string): Promise<void> {
+export async function deleteCalendarEvent(calendarEventId: string, clientId?: string): Promise<void> {
   if (!calendarEventId) return;
-  if (!isGoogleConfigured()) {
+  const config = await resolveGoogleConfig(clientId);
+
+  if (!isGoogleConfigured(config)) {
     console.log(`[Calendar Integration Stub] Deleted Mock Event ${calendarEventId}`);
     return;
   }
 
   try {
-    const token = await getGoogleAccessToken();
-    const calendarId = process.env.GOOGLE_CALENDAR_ID!;
+    const token = await getGoogleAccessToken(config);
+    const calendarId = config.calendarId!;
 
     const res = await fetch(
       `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(calendarEventId)}`,
@@ -216,14 +269,16 @@ export async function deleteCalendarEvent(calendarEventId: string): Promise<void
  * Queries Google Calendar FreeBusy endpoint to check for conflicts.
  * Returns true if the slot is busy.
  */
-export async function checkGoogleCalendarConflict(date: string, time: string): Promise<boolean> {
-  if (!isGoogleConfigured()) {
-    return false; // No mock conflicts
+export async function checkGoogleCalendarConflict(date: string, time: string, clientId?: string): Promise<boolean> {
+  const config = await resolveGoogleConfig(clientId);
+
+  if (!isGoogleConfigured(config)) {
+    return false;
   }
 
   try {
-    const token = await getGoogleAccessToken();
-    const calendarId = process.env.GOOGLE_CALENDAR_ID!;
+    const token = await getGoogleAccessToken(config);
+    const calendarId = config.calendarId!;
     const { startIso, endIso } = getStartAndEndTimes(date, time);
 
     const body = {
@@ -252,6 +307,6 @@ export async function checkGoogleCalendarConflict(date: string, time: string): P
     return busyTimes.length > 0;
   } catch (err) {
     console.error("[Calendar Integration] Failed to check Google Calendar conflicts:", err);
-    return false; // Fail open to not block reservations
+    return false;
   }
 }

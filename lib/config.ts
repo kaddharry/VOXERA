@@ -72,5 +72,11 @@ export const CONFIG = {
     // Twilio mulaw audio spec (do not change — Twilio always sends 8kHz mulaw)
     sampleRate: 8000,
     encoding: "mulaw" as const,
+    // Issue #14: Energy threshold for barge-in detection (16-bit PCM RMS).
+    // Only trigger TTS interruption when caller audio exceeds this level.
+    // Prevents false barge-ins from background noise.
+    bargeInEnergyThreshold: 500,
+    // Issue #14: Silence threshold for pause detection in acoustic analysis.
+    silenceEnergyThreshold: 200,
   },
 } as const;

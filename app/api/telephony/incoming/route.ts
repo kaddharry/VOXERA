@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
 
     const clientId = phoneRow?.clientId || process.env.DEFAULT_CLIENT_ID || "demo";
 
-    const activeCount = callQueue.getActiveCallCount();
+    const activeCount = await callQueue.getActiveCallCount();
 
     if (activeCount >= MAX_CONCURRENT_CALLS) {
       console.warn(`[Telephony] Hard limit reached (${activeCount} calls). Rejecting ${callSid}.`);
@@ -60,8 +60,8 @@ export async function POST(req: NextRequest) {
     // Determine priority based on callerNumber (premium numbers get higher priority, e.g. 1)
     const priority = callerNumber.includes("999") || callerNumber.includes("VIP") ? 1 : 5;
 
-    const caller = callQueue.enqueueCaller(callSid, callerNumber, priority, clientId);
-    const waitMs = callQueue.getEstimatedWaitTimeMs(callSid);
+    const caller = await callQueue.enqueueCaller(callSid, callerNumber, priority, clientId);
+    const waitMs = await callQueue.getEstimatedWaitTimeMs(callSid);
 
     if (waitMs > 0) {
       console.log(`[Telephony] Caller ${callSid} enqueued in Twilio queue, wait: ${waitMs}ms`);
@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Accepted immediately — remove from queue, stream-handler will markCallStarted
-    callQueue.dequeueCaller(callSid);
+    await callQueue.dequeueCaller(callSid);
 
     await supabase.from("call_logs").insert([{
       id: callSid,

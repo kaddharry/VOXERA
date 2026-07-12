@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "../../../../lib/db/server";
-import { supabase } from "../../../../lib/db/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +13,7 @@ export async function GET() {
   const clientId = user.id;
 
   try {
-    const { data: tenant } = await supabase
+    const { data: tenant } = await supabaseServer
       .from("tenants")
       .select("id")
       .eq("auth_user_id", clientId)
@@ -24,7 +23,7 @@ export async function GET() {
       return NextResponse.json({ error: "Tenant not found" }, { status: 404 });
     }
 
-    const { data: settings } = await supabase
+    const { data: settings } = await supabaseServer
       .from("business_settings")
       .select("sms_recovery_enabled, sms_recovery_template, sms_recovery_link, greeting")
       .eq("tenant_id", tenant.id)
@@ -46,7 +45,7 @@ export async function POST(request: NextRequest) {
   const clientId = user.id;
 
   try {
-    const { data: tenant } = await supabase
+    const { data: tenant } = await supabaseServer
       .from("tenants")
       .select("id")
       .eq("auth_user_id", clientId)
@@ -65,7 +64,7 @@ export async function POST(request: NextRequest) {
     if (link !== undefined) updateData.sms_recovery_link = link;
     if (greeting !== undefined) updateData.greeting = greeting;
 
-    await supabase
+    await supabaseServer
       .from("business_settings")
       .update(updateData)
       .eq("tenant_id", tenant.id);

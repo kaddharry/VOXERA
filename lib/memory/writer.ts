@@ -58,10 +58,16 @@ export async function writeMemory(input: WriteInput): Promise<{
     if (!cand.embedding || cand.embedding.length === 0) continue;
     const sim = cosine(embedding, cand.embedding);
     if (sim >= mergeSimilarity && cand.emotion === emotion.current.label) {
+      const nextRecurrence = cand.recurrence + 1;
+      const baseImp = Math.max(cand.importance, importance);
+      const recurrenceBoost = 0.1 * Math.log1p(nextRecurrence);
+      const nextScore = Math.min(baseImp + recurrenceBoost, 1.0);
+      
       await vectorStore.update(cand.id, {
-        recurrence: cand.recurrence + 1,
+        recurrence: nextRecurrence,
         ts: utterance.ts,
-        importance: Math.max(cand.importance, importance),
+        importance: baseImp,
+        importance_score: nextScore,
       });
       await maybePromote(cand.id, userId, clientId);
       return { tier: "MTM", recordId: cand.id, merged: true };
@@ -82,6 +88,8 @@ export async function writeMemory(input: WriteInput): Promise<{
     vad: emotion.current.vad,
     intensity: emotion.current.intensity,
     importance,
+    importance_score: importance,
+    retrieval_count: 0,
     embedding,
     sourceUtteranceIds: [utterance.id],
     recurrence: 1,
@@ -140,6 +148,8 @@ export async function seedClientMemory(args: {
     vad: { v: 0, a: 0, d: 0 },
     intensity: 0,
     importance: args.importance ?? 0.9,
+    importance_score: args.importance ?? 0.9,
+    retrieval_count: 0,
     embedding,
     sourceUtteranceIds: [],
     recurrence: 1,
