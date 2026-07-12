@@ -80,4 +80,16 @@ This document records the exact test suites, validation steps, and outcomes for 
 
 ---
 
+## 2026-07-12 — Issue #15: SaaS Commercialization & Tenant Experience
+**Status:** ✅ VERIFIED & MERGED
+**Key Technologies:** Stripe, Next.js App Router, Supabase
+
+**Validation Steps:**
+1. **Stripe Billing Integration:** Verified `stripe` SDK wrapper with Starter, Growth, and Enterprise tier definitions. Tested the checkout session creation route (`/api/billing/checkout`) and confirmed the webhook route securely validates and stores subscription statuses.
+2. **Onboarding Wizard Expansion:** Confirmed that `app/onboarding/planner.tsx` correctly gathers the subscription tier intent and `lib/db/onboarding.ts` accurately maps all configurations, including AI Settings and Operating Hours, into the database.
+3. **Admin Dashboard Analytics:** Validated the new `/admin/tenants` dashboard effectively parses tenant metadata against API call counts and knowledge base sizing directly from Supabase, correctly surfacing subscription constraints.
+4. **End-to-End Suite Expansion:** Confirmed passing integration checks in `__tests__/e2e/saas-commercialization.test.ts`.
+
+---
+
 *(This document is actively maintained by the engineering team and AI assistants. Ensure every new major PR appends its results here).*

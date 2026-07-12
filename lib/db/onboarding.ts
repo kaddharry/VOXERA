@@ -58,6 +58,11 @@ export async function processOnboarding(userId: string, payload: OnboardingPaylo
         workflow_type: payload.workflow,
         call_goal: payload.callGoal,
         escalation_policy: payload.escalation,
+        opening_time: payload.openingTime,
+        closing_time: payload.closingTime,
+        language: payload.language,
+        tone: payload.tone,
+        greeting: payload.greeting,
       },
       { onConflict: "tenant_id" }
     );

@@ -36,7 +36,7 @@ The next phases of development will transition the codebase from a highly comple
 | **Acoustic CAI Processing**| 🟢 Complete | Medium | 95% | Real DSP extraction (pitch, energy, ZCR, pauses) from PCM. Barge-in uses energy thresholds. |
 | **AI Orchestrator** | ✅ Stable | High | 95% | Parallelized pipeline, fire-and-forget logging. Latency reduced from ~29s to ~3-5s. |
 | **Supabase Resilience** | 🟢 Complete | High | 100% | Circuit breaker, timeout fetch, graceful degradation. |
-| **SaaS Builder & Billing**| 🔴 Not Started | High | 0% | Stripe subscription gates and self-serve onboarding wizard are unbuilt. |
+| **SaaS Builder & Billing**| 🟢 Complete | High | 100% | Stripe subscription gates and self-serve onboarding wizard are built and integrated. |
 
 ---
 
@@ -105,6 +105,6 @@ The next phases of development will transition the codebase from a highly comple
 * [ ] Replace lexicon-based emotion detection with a trained ML model (RoBERTa or similar) via the existing `detectTextEmotion` interface.
 
 ### 5.3 Phase III: SaaS Portal (Weeks 6 - 10)
-* [ ] Build Stripe subscription hooks and checkout routes.
-* [ ] Develop the admin onboarding registration wizard.
+* [x] Build Stripe subscription hooks and checkout routes.
+* [x] Develop the admin onboarding registration wizard.
 * [ ] Implement Super-Admin usage and monitoring panels.

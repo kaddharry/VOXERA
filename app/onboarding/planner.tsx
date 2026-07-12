@@ -44,7 +44,7 @@ const knowledgeOptions = [
   "FAQs", "Pricing", "Policies", "Service list", "Booking rules", "Aftercare scripts", "Escalation rules"
 ];
 
-const steps = ["Business", "Workflow", "Context"];
+const steps = ["Business", "Workflow", "Context", "Plan"];
 
 // ==========================================
 // Main Component
@@ -66,8 +66,9 @@ export function OnboardingPlanner() {
   const [language, setLanguage] = useState("English");
   const [tone, setTone] = useState("Professional");
   const [greeting, setGreeting] = useState(
-  "Hello! Thank you for calling. How may I help you today?"
-);
+    "Hello! Thank you for calling. How may I help you today?"
+  );
+  const [plan, setPlan] = useState("free");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,7 +110,21 @@ export function OnboardingPlanner() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save configuration.");
-      router.push("/onboarding/success");
+
+      if (plan !== "free" && data.tenantId) {
+        // Redirect to Stripe checkout
+        const checkoutRes = await fetch("/api/billing/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tier: plan, tenantId: data.tenantId }),
+        });
+        const checkoutData = await checkoutRes.json();
+        if (!checkoutRes.ok) throw new Error(checkoutData.error || "Failed to initiate checkout.");
+        
+        window.location.href = checkoutData.url;
+      } else {
+        router.push("/onboarding/success");
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -287,60 +302,60 @@ export function OnboardingPlanner() {
                   </div>
                 </div>
               </div>
-{/* AI Settings */}
-<div className="space-y-4 pt-4 border-t border-[var(--color-border-subtle)]">
-  <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
-    AI Settings
-  </label>
+              {/* AI Settings */}
+              <div className="space-y-4 pt-4 border-t border-[var(--color-border-subtle)]">
+                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                  AI Settings
+                </label>
 
-  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-    <div>
-      <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
-        Language
-      </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
+                      Language
+                    </label>
 
-      <select
-        value={language}
-        onChange={(e) => setLanguage(e.target.value)}
-        className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)]"
-      >
-        <option value="English">English</option>
-        <option value="Hindi">Hindi</option>
-        <option value="Hinglish">Hinglish</option>
-      </select>
-    </div>
+                    <select
+                      value={language}
+                      onChange={(e) => setLanguage(e.target.value)}
+                      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)]"
+                    >
+                      <option value="English">English</option>
+                      <option value="Hindi">Hindi</option>
+                      <option value="Hinglish">Hinglish</option>
+                    </select>
+                  </div>
 
-    <div>
-      <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
-        Tone
-      </label>
+                  <div>
+                    <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
+                      Tone
+                    </label>
 
-      <select
-        value={tone}
-        onChange={(e) => setTone(e.target.value)}
-        className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)]"
-      >
-        <option value="Professional">Professional</option>
-        <option value="Friendly">Friendly</option>
-        <option value="Formal">Formal</option>
-      </select>
-    </div>
-  </div>
+                    <select
+                      value={tone}
+                      onChange={(e) => setTone(e.target.value)}
+                      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)]"
+                    >
+                      <option value="Professional">Professional</option>
+                      <option value="Friendly">Friendly</option>
+                      <option value="Formal">Formal</option>
+                    </select>
+                  </div>
+                </div>
 
-  <div>
-    <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
-      Greeting Message
-    </label>
+                <div>
+                  <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
+                    Greeting Message
+                  </label>
 
-    <textarea
-      rows={3}
-      value={greeting}
-      onChange={(e) => setGreeting(e.target.value)}
-      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)] resize-none"
-      placeholder="Hello! Thank you for calling. How may I help you today?"
-    />
-  </div>
-</div>
+                  <textarea
+                    rows={3}
+                    value={greeting}
+                    onChange={(e) => setGreeting(e.target.value)}
+                    className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)] resize-none"
+                    placeholder="Hello! Thank you for calling. How may I help you today?"
+                  />
+                </div>
+              </div>
               {/* Escalation Config */}
               <div className="space-y-2 pt-4 border-t border-[var(--color-border-subtle)]">
                 <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)] flex items-center gap-2">
@@ -352,6 +367,42 @@ export function OnboardingPlanner() {
                   onChange={(e) => setEscalation(e.target.value)}
                   className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)]"
                 />
+              </div>
+
+            </div>
+          )}
+
+          {/* STEP 3: Plan */}
+          {step === 3 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                Choose a Subscription Plan
+              </label>
+              
+              <div className="grid gap-4">
+                {[
+                  { id: "free", name: "Free Trial", price: "$0", desc: "10 calls, 1 knowledge doc" },
+                  { id: "starter", name: "Starter", price: "$29/mo", desc: "500 calls, 5 knowledge docs" },
+                  { id: "growth", name: "Growth", price: "$79/mo", desc: "2,000 calls, 25 knowledge docs" },
+                  { id: "enterprise", name: "Enterprise", price: "$199/mo", desc: "Unlimited calls & docs, priority support" }
+                ].map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => setPlan(p.id)}
+                    className={cn(
+                      "flex items-center justify-between p-4 rounded-xl border text-left transition-all",
+                      plan === p.id 
+                        ? "bg-[var(--color-bg-base)] border-[var(--color-border-active)] shadow-[0_0_10px_var(--color-accent-glow)]" 
+                        : "bg-[var(--color-bg-surface)] border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)]"
+                    )}
+                  >
+                    <div>
+                      <div className="text-[15px] font-semibold text-[var(--color-text-primary)]">{p.name}</div>
+                      <div className="text-[13px] text-[var(--color-text-secondary)]">{p.desc}</div>
+                    </div>
+                    <div className="text-[16px] font-bold text-[var(--color-text-primary)]">{p.price}</div>
+                  </button>
+                ))}
               </div>
 
               {error && (
