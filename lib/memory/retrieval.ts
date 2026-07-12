@@ -185,7 +185,7 @@ export function groupMemoriesIntoTimeline(memories: MemoryRecord[]): TimelineEve
   const twoDaysMs = 1000 * 60 * 60 * 24 * 2; // 48 hours proximity
   
   for (const mem of sorted) {
-    let matchedEvent = events.find(
+    const matchedEvent = events.find(
       evt => evt.topic === mem.topic && Math.abs(mem.ts - evt.endDate) <= twoDaysMs
     );
     

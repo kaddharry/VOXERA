@@ -16,9 +16,13 @@ vi.mock("../../lib/deepgram/client", () => ({
 vi.mock("../../lib/db/supabase", () => ({
   supabase: {
     from: vi.fn(() => ({
+      select: vi.fn().mockReturnThis(),
       update: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
       insert: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      single: vi.fn().mockImplementation(() =>
+        Promise.resolve({ data: { id: "test-tenant-id", sms_recovery_enabled: false }, error: null })
+      ),
       then: vi.fn().mockImplementation((onfulfilled) =>
         Promise.resolve({ data: null, error: null }).then(onfulfilled)
       ),
@@ -258,6 +262,7 @@ describe("Telephony Pipeline Integration (Mocked Services)", () => {
 
       // Trigger "stop" event
       onMessage(Buffer.from(JSON.stringify({ event: "stop" })));
+      await new Promise((resolve) => setTimeout(resolve, 10));
       expect(closeSpy).toHaveBeenCalled();
 
       // Clean up spies

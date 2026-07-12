@@ -125,3 +125,22 @@ export interface RetrievedContext {
   explanations?: Record<string, RetrievalExplanation>;
   timeline?: TimelineEvent[];
 }
+
+export interface AcousticFeatures {
+  /** Root-mean-square amplitude (0–32768 range for 16-bit PCM). */
+  rmsEnergy: number;
+  /** Zero-crossing rate: fraction of adjacent samples that cross zero (0–1). */
+  zeroCrossingRate: number;
+  /** Estimated fundamental frequency in Hz (median across frames). 0 if unvoiced. */
+  pitchHz: number;
+  /** Pitch coefficient of variation (stddev / mean). Higher = more dynamic. 0–1 clamped. */
+  pitchVariation: number;
+  /** Estimated words-per-minute based on transcript word count and audio duration. */
+  speakingRateWPM: number;
+  /** Total detected silence/pause duration in ms. */
+  pauseDurationMs: number;
+  /** Number of distinct pause segments detected. */
+  pauseCount: number;
+  /** Total audio duration in ms. */
+  durationMs: number;
+}

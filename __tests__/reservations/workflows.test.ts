@@ -90,7 +90,7 @@ describe("Reservation Workflows", () => {
       vi.mocked(checkGoogleCalendarConflict).mockResolvedValueOnce(true);
       const isAvail = await checkAvailability("2026-12-25", "19:00", "client-xyz");
       expect(isAvail).toBe(false);
-      expect(checkGoogleCalendarConflict).toHaveBeenCalledWith("2026-12-25", "19:00");
+      expect(checkGoogleCalendarConflict).toHaveBeenCalledWith("2026-12-25", "19:00", "client-xyz");
     });
 
     it("returns false if local reservation slots are full", async () => {
@@ -205,7 +205,7 @@ describe("Reservation Workflows", () => {
 
       const success = await cancelBooking("BKG-12345", "client-xyz");
       expect(success).toBe(true);
-      expect(deleteCalendarEvent).toHaveBeenCalledWith("gcal-event-123");
+      expect(deleteCalendarEvent).toHaveBeenCalledWith("gcal-event-123", "client-xyz");
       expect(sendBookingConfirmation).toHaveBeenCalledWith("alice@example.com", expect.objectContaining({
         status: "cancelled",
       }));

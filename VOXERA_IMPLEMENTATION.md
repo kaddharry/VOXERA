@@ -58,7 +58,10 @@ The system operates across three primary boundaries:
 ## 3. Feature Status Summary
 
 All core features are implemented, tested, and fully integrated:
-* **Multi-Tenant Isolation (FR-23)**: Fully active. Client IDs are securely resolved server-side from Supabase cookies and propagated through database queries, memory retrieval, file uploads, and reservations.
+* **Multi-Tenant Isolation & Security (FR-23)**: Fully active and hardened. Row-Level Security (RLS) is strictly enforced on all tables mapping to `auth.uid()`. Client IDs are securely resolved server-side from Supabase cookies. Tenant integrations (like Google Calendar) use AES-256-GCM encryption for credential storage.
+* **Voice Cloning & TTS (FR-24)**: Supports integration with ElevenLabs for custom tenant voice cloning alongside Deepgram Aura.
+* **Customer Recovery SMS (FR-25)**: Automated post-call SMS follow-ups are triggered for conversations ending with negative sentiments using Twilio/Resend.
+* **Distributed State & Redis (FR-26)**: Core telephony queues and circuit breaker states are synchronized across horizontal instances using `ioredis` and Pub/Sub.
 * **Telephony & Real-Time Codecs (FR-1, FR-19)**: Inbound Twilio streams are processed in-process via custom WebSockets. Supports queue routing, wait metric estimations, and status logging.
 * **Emotion-Aware Routing (FR-11, FR-18)**: Dynamically injects voice coaching rules into system prompts. Triggers human-escalation flags upon sustained customer negativity or extreme anger.
 * **Vector Memory & Document Ingestion (FR-10, FR-16)**: Supports paginated document table, error detail drawer, cascade deletions, and automatic duplicate prevention (superseding old document chunks).
@@ -76,6 +79,7 @@ All core features are implemented, tested, and fully integrated:
   - Uses `@supabase/ssr` to instantiate cookie-based clients.
   - Layout-level middleware (`app/admin/layout.tsx`) intercepts unauthenticated routes and redirects users to `/login`.
   - Backend API endpoints extract the authenticated client credentials directly from the session cookie instead of trusting client-supplied URL parameters.
+  - Supabase backend enforces multi-tenant isolation directly via RLS policies mapping to `auth.uid()`. `SERVICE_ROLE_KEY` usage has been deprecated in favor of secure user contexts.
 * **Files & Directories**:
   - [server.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/server.ts) — Server-side Supabase client initialization.
   - [page.tsx](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/login/page.tsx) & [actions.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/login/actions.ts) — Server actions for login, logout, and signup.
@@ -96,6 +100,10 @@ All core features are implemented, tested, and fully integrated:
   - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/stream/route.ts) — WebSocket upgrade endpoint.
   - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/status/route.ts) — Twilio callback endpoint to update call durations.
   - [server.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/server.ts) — Standalone WebSocket server running on port 3001 for browser/script testing.
+  - **Issue #14 Enhancements**:
+    - **Energy-Based Barge-In**: Incoming audio packets compute RMS energy via `computeRmsEnergy()`. TTS playback is only interrupted when RMS exceeds `CONFIG.telephony.bargeInEnergyThreshold` (default: 500), preventing false triggers from background noise.
+    - **PCM Accumulation**: Decoded PCM chunks are buffered in `turnAudioChunks[]` during each speech turn and concatenated for acoustic feature extraction upon final transcript.
+    - **Interruption Tracking**: Barge-in events increment `turnInterruptionCount`, which is passed to the CAI calculator for engagement scoring.
 
 ### 4.3 Speech Emotion Recognition (SER) & Emotion Engine
 * **Purpose**: Dynamically adjusts agent speaking tone, policies, and safeguards based on the caller's feeling states.
@@ -112,6 +120,7 @@ All core features are implemented, tested, and fully integrated:
   - [persona.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/emotion/persona.ts) — 11 full persona definitions with tone rules, warnings, and priority overrides.
   - [context.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/context.ts) — System prompt builder incorporating emotion coach blocks.
   - [policy.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/policy.ts) — Escalation, pacing, and upsell directive engine.
+  - [audio-emotion.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/emotion/audio-emotion.ts) — Issue #14: Maps physical acoustic features (pitch, energy, rate, pauses) to EmotionSignal with `source: "audio"`. Replaces the previous null-returning stub.
 
 ### 4.4 Memory & Vector Store (RAG)
 * **Purpose**: Stores and retrieves semantic memories and client documents.
@@ -146,7 +155,7 @@ All core features are implemented, tested, and fully integrated:
 * **Purpose**: Schedules customer bookings while ensuring thread-safe calendars and notifications.
 * **Implementation Logic**:
   - **Thread Safety**: Booking execution runs via the `create_reservation_atomic` Postgres function. This RPC acquires a transactional advisory lock (`pg_advisory_xact_lock`) on the hash of the slot (`clientId + date + time`), preventing race-condition double bookings.
-  - **Google Calendar Sync**: Employs a custom REST client to issue signed JSON Web Tokens (RS256 signature using `crypto`) to Google's OAuth2 endpoints on behalf of a Service Account. FreeBusy calls check external conflicts before updating events.
+  - **Google Calendar Sync**: Employs a custom REST client to issue signed JSON Web Tokens (RS256 signature using `crypto`) to Google's OAuth2 endpoints on behalf of a Service Account. Tenant credentials are AES-256 encrypted at rest in the `tenant_credentials` table. FreeBusy calls check external conflicts before updating events.
   - **Email Alerts**: Uses the Resend SDK to dynamically send html emails based on state: Confirmations (Green), Rescheduled modifications (Blue), and Cancellations (Red).
 * **Files & Directories**:
   - [reservations.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/reservations.ts) — Reservation queries, cancellation logs, and atomic RPC invoker.
@@ -181,10 +190,33 @@ All core features are implemented, tested, and fully integrated:
 * **Purpose**: Prevents cascading timeouts when the Supabase database is temporarily unreachable.
 * **Implementation Logic**:
   - **Timeout Fetch**: All Supabase HTTP requests are wrapped with a 5-second `AbortController` timeout, preventing DNS failures (`ENOTFOUND`) from blocking the pipeline for 10+ seconds.
-  - **Circuit Breaker Pattern**: After 3 consecutive Supabase failures, the circuit opens and all database operations immediately return empty/no-op results for a 30-second cooldown period. A successful operation resets the circuit.
+  - **Distributed Circuit Breaker**: After 3 consecutive Supabase failures, the circuit opens for a 30-second cooldown period. The failure state is pushed asynchronously to Redis (`voxera:cb:consecutive_failures`) and broadcasted via Pub/Sub, updating the local cache of all distributed instances instantly without incurring network penalty on read.
   - **Graceful Degradation**: When the circuit is open, the orchestrator continues to function using in-memory STM data and the local lexicon-based emotion engine. Logging is silently skipped. The system self-heals when connectivity is restored.
 * **Files & Directories**:
   - [supabase.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/db/supabase.ts) — Timeout fetch wrapper, circuit breaker state, and health check API.
+
+### 4.10 Acoustic Feature Extraction & Voice Intelligence
+* **Purpose**: Extracts physical acoustic properties from raw PCM audio to power real emotion analysis, CAI scoring, and barge-in detection.
+* **Implementation Logic**:
+  - Operates on 8kHz mono linear16 PCM buffers accumulated during each caller speech turn.
+  - **RMS Energy**: Root-mean-square amplitude via `Buffer.readInt16LE()`. Used for barge-in energy thresholds (prevents false interrupts from noise) and vocal intensity.
+  - **Zero-Crossing Rate (ZCR)**: Counts sign changes per 20ms frame. Discriminates voiced/unvoiced speech.
+  - **Pitch Estimation**: Autocorrelation on windowed PCM frames to estimate F0 in Hz. Returns median pitch and coefficient of variation (pitch dynamics).
+  - **Speaking Rate**: Words-per-minute from transcript word count and audio duration.
+  - **Pause Detection**: Scans for contiguous silence regions (RMS below threshold for >300ms). Returns pause count and total pause duration.
+  - All computations are pure JavaScript — no FFT libraries, no native bindings, no external dependencies.
+* **Files & Directories**:
+  - [acoustic.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/audio/acoustic.ts) — Pure-JS DSP feature extractor.
+
+### 4.11 Input Guardrails & AI Safety
+* **Purpose**: Pre-LLM defense layer that detects and blocks prompt injection and jailbreak attempts in voice transcripts before they reach the AI orchestrator.
+* **Implementation Logic**:
+  - **Multi-Pattern Detection**: 12+ regex patterns covering role-assumption attacks ("ignore previous instructions"), system prompt extraction ("reveal your system prompt"), delimiter injection (`<<<SYSTEM>>>`), DAN/jailbreak tropes, encoding evasion, and hypothetical framing.
+  - **Weighted Scoring**: Each pattern contributes a calibrated weight (0.5–0.9) to a composite threat score. Inputs scoring ≥0.6 are blocked.
+  - **Safe Deflection**: Blocked inputs receive natural-sounding voice-appropriate responses (randomized from 5 templates) without ever reaching the LLM.
+  - **Defense-in-Depth**: This pre-LLM guard complements the existing post-LLM `guardOutput()` filter. The two layers operate independently.
+* **Files & Directories**:
+  - [input-guard.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/agent/input-guard.ts) — Pattern matching, scoring, and deflection engine.
 
 ---
 
@@ -296,10 +328,8 @@ CREATE TABLE public.call_logs (
 
 ## 7. Current Limitations
 
-* **Single-Node Queue**: The telephony queue is processed in-memory. If server nodes scale horizontally, queue locks must be migrated to redis or db queues.
-* **Acoustic Metrics Estimation**: Pitch variation and interruption tracking are estimated. True acoustic measurements require routing raw audio waveforms through a node-level processing pipe prior to STT.
 * **Lexicon-Based Emotion Detection**: The text emotion classifier uses a keyword lexicon rather than a trained ML model (e.g., RoBERTa). While the lexicon now covers 35+ patterns across 11 labels, edge cases involving sarcasm, irony, or highly ambiguous language may still be misclassified. The architecture is designed for drop-in replacement with a real model via the `detectTextEmotion` signature.
-* **In-Memory Circuit Breaker State**: The Supabase circuit breaker state is held in process memory. If the Next.js server restarts, the circuit resets. This is acceptable for single-node operation but should be externalized (e.g., to Redis) for multi-node deployments.
+* **Pitch Estimation Accuracy**: The autocorrelation-based pitch estimator works well for clean speech but may produce inaccurate results in very noisy telephony environments. A Wav2Vec2/HuBERT-based feature extractor would improve robustness.
 
 ---
 
@@ -334,3 +364,52 @@ CREATE TABLE public.call_logs (
 
 **Final Outcome:**
 All CI-blocking errors are resolved. The existing Pull Request on `feature/improve-emotion-analysis` is now ready to merge.
+
+### 2026-07-09 — Voice Cloning & Security Hardening (Issues #16 & #12)
+
+**Features Implemented:**
+1. **Custom Voice Cloning (Issue #16)**: Integrated ElevenLabs TTS engine, allowing tenants to configure custom voice personas.
+2. **Automated Recovery SMS (Issue #16)**: Added logic to `TelephonyStreamHandler` to detect negative ending sentiments (anger, frustration) and trigger an automated SMS recovery workflow to the caller via configured templates.
+3. **Database Security & RLS (Issue #12)**: Implemented Row-Level Security (RLS) across `session_logs`, `reservations`, `memories`, `knowledge_documents`, and `call_logs`. Refactored backend routes to use `auth.uid()` rather than bypassing security via `SERVICE_ROLE_KEY`.
+4. **Credential Encryption (Issue #12)**: Developed an AES-256-GCM encryption utility (`lib/util/crypto.ts`) and a new `tenant_credentials` table. Google Calendar private keys are now securely encrypted at rest.
+5. **Compound Indexing (Issue #12)**: Added crucial compound indices via `migration_v8.sql` for analytical dashboards (`idx_session_logs_client_ts`, `idx_reservations_client_slot`), ensuring O(log N) scale performance.
+
+### 2026-07-10 — Distributed Architecture & Redis Scaling (Issue #13)
+
+**Features Implemented:**
+1. **Redis Infrastructure**: Integrated `ioredis` with an in-memory `MockRedis` fallback to keep local dev environments stable without requiring a Docker container.
+2. **Distributed Queue Manager**: Rebuilt the `CallQueueManager` using Redis Sorted Sets (`zadd`) to guarantee FIFO ordering within priority bands. Wait times and queue positions are now shared across all horizontal nodes.
+3. **Pub/Sub Synchronization**: Real-time slot availability is broadcast via Redis Pub/Sub (`voxera:slot_available`), triggering all scale-out instances simultaneously.
+4. **Distributed Circuit Breaker**: Supabase database failures are written to Redis asynchronously and broadcasted via Pub/Sub, updating the local fast-cache of all instances immediately.
+
+**Final Outcome:**
+VOXERA is now capable of horizontal scaling. Critical telephony queues and state management are centralized in Redis, solving all single-node limitations.
+
+### 2026-07-10 — Advanced Voice Intelligence & Telephony Experience (Issue #14)
+
+**Features Implemented:**
+1. **Acoustic Feature Extraction**: New pure-JS DSP module (`lib/audio/acoustic.ts`) that extracts RMS energy, zero-crossing rate, pitch (autocorrelation), speaking rate, and pause patterns from raw 8kHz PCM audio — zero external dependencies.
+2. **Energy-Based Barge-In**: Upgraded `TelephonyStreamHandler` to compute RMS energy on incoming audio. TTS playback only stops when caller audio exceeds the configurable energy threshold (`CONFIG.telephony.bargeInEnergyThreshold`), eliminating false barge-ins from background noise.
+3. **Acoustic Emotion Analysis**: New `detectAudioEmotion()` in `lib/emotion/audio-emotion.ts` maps physical acoustic features to EmotionSignal (pitch→arousal, energy→intensity, rate→valence). Replaces the previous null-returning stub.
+4. **Text+Audio Emotion Fusion**: The existing `fuseEmotion()` now receives real audio emotion signals, enabling confidence-weighted VAD fusion between text and acoustic channels.
+5. **Real CAI Metrics**: The orchestrator passes actual pitch variation, speaking rate, barge-in count, and pause duration to `calculateCAI()` instead of heuristic placeholders.
+6. **Prompt Injection Guardrail**: New `guardInput()` in `lib/agent/input-guard.ts` runs before the LLM. Detects 12+ jailbreak/injection pattern families (role assumption, prompt extraction, delimiter injection, DAN mode, etc.) with weighted scoring and natural voice deflections.
+
+**Files Created:**
+- `lib/audio/acoustic.ts` — PCM acoustic feature extraction
+- `lib/emotion/audio-emotion.ts` — Acoustic-to-emotion mapper
+- `lib/agent/input-guard.ts` — Pre-LLM prompt injection guardrail
+- `__tests__/e2e/voice-intelligence.test.ts` — 31 integration tests
+
+**Files Modified:**
+- `lib/telephony/stream-handler.ts` — Energy barge-in, PCM accumulation, interruption tracking
+- `lib/agent/orchestrator.ts` — Input guard, acoustic emotion, real CAI metrics
+- `lib/emotion/detect.ts` — Removed audio emotion stub
+- `lib/types.ts` — Added AcousticFeatures interface
+- `lib/config.ts` — Energy thresholds
+- `lib/logging/session-logger.ts` — New event types (input_guard, acoustic)
+
+**Validation Performed:**
+- `npx vitest run` → **184 tests passed, 0 failures** across 16 test files
+- `npm run lint` → **0 errors, 0 warnings**
+- `npm run build` → **Build succeeded** (TypeScript type checking passed, all pages generated)

@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import { CONFIG } from "../config";
 import { buildEmotionContext } from "../emotion/context";
 import { detectTextEmotion, fuseEmotion } from "../emotion/detect";
+import { detectAudioEmotion } from "../emotion/audio-emotion";
 import { importanceScore, novelty, policyFlag, taskCriticality } from "../emotion/importance";
 import { calculateCAI, type CAIResult } from "../emotion/cai";
 import { logSessionEvent, makeEvent } from "../logging/session-logger";
@@ -9,10 +10,11 @@ import { retrieve, topScore } from "../memory/retrieval";
 import { stm } from "../memory/stm";
 import { vectorStore } from "../memory/store";
 import { writeMemory } from "../memory/writer";
-import type { Utterance, EmotionSignal } from "../types";
+import type { Utterance, EmotionSignal, AcousticFeatures } from "../types";
 import { embed } from "../util/embed";
 import { buildLLMContext } from "./context";
 import { guardOutput } from "./guard";
+import { guardInput, type InputGuardResult } from "./input-guard";
 import { generateReply } from "./llm";
 import { decidePolicy } from "./policy";
 
@@ -23,6 +25,10 @@ export interface TurnInput {
   transcript: string;
   sttConfidence?: number;
   audioEmotion?: EmotionSignal | null;
+  /** Issue #14: Acoustic features extracted from the caller's PCM audio for this turn. */
+  acousticFeatures?: AcousticFeatures;
+  /** Issue #14: Number of barge-in interruptions detected during this turn. */
+  bargeInCount?: number;
 }
 
 export interface TurnTrace {
@@ -43,6 +49,8 @@ export interface TurnTrace {
   llmModel: string;
   usedLiveLlm: boolean;
   cai?: CAIResult;
+  inputGuardResult?: InputGuardResult;
+  acousticFeatures?: AcousticFeatures;
 }
 
 export interface TurnOutput {
@@ -53,9 +61,54 @@ export interface TurnOutput {
 export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   const ts = Date.now();
   const sttConf = input.sttConfidence ?? 1;
+  const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
 
+  // ── Issue #14: Pre-LLM Input Guard ─────────────────────────────────────
+  const inputGuard = guardInput(input.transcript);
+  if (!inputGuard.safe) {
+    console.warn(
+      `[Orchestrator] Input guard BLOCKED (score=${inputGuard.threatScore.toFixed(2)}, ` +
+      `patterns=[${inputGuard.patterns.join(", ")}]): "${input.transcript.slice(0, 80)}..."`
+    );
+
+    void logSessionEvent(makeEvent(evBase, "input_guard", {
+      safe: false,
+      threatScore: inputGuard.threatScore,
+      patterns: inputGuard.patterns,
+    }));
+
+    const deflection = inputGuard.deflection ?? "I'm sorry, could you rephrase that?";
+    const agentTurn: Utterance = {
+      id: nanoid(8),
+      role: "agent",
+      text: deflection,
+      ts: Date.now(),
+    };
+    await stm.push(input.sessionId, agentTurn, input.clientId);
+
+    return {
+      reply: deflection,
+      trace: {
+        utterance: { id: nanoid(8), role: "user", text: input.transcript, sttConfidence: sttConf, ts },
+        emotion: { current: { label: "neutral", intensity: 0, confidence: 0.5, vad: { v: 0, a: 0, d: 0 }, source: "text", at: ts }, trajectory: { slope_v: 0, slope_a: 0, window: 0 }, zDeviation: 0, flags: { repeated_frustration: false, increasing_distress: false, affect_oscillation: false, chronic_negativity: false }, baseline: { v: 0, a: 0, d: 0, sigma_v: 0.3, sigma_a: 0.3, sigma_d: 0.3 } },
+        importance: 0,
+        memoryWrite: { tier: "STM" as const, recordId: "", merged: false },
+        retrieved: { mtmIds: [], ltmUserIds: [], ltmClientIds: [], scores: [] },
+        policy: { acknowledgeFirst: false, pace: "normal" as const, allowUpsell: false, escalate: "none" as const, notes: ["Input blocked by guardrail"] },
+        guardReasons: ["input_guard_blocked"],
+        llmModel: "none",
+        usedLiveLlm: false,
+        inputGuardResult: inputGuard,
+      },
+    };
+  }
+
+  // ── Issue #14: Acoustic Emotion Analysis ────────────────────────────────
   const textEmo = detectTextEmotion(input.transcript);
-  const fused = fuseEmotion(textEmo, input.audioEmotion ?? null);
+  const audioEmo = input.acousticFeatures
+    ? detectAudioEmotion(input.acousticFeatures)
+    : (input.audioEmotion ?? null);
+  const fused = fuseEmotion(textEmo, audioEmo);
 
   const userTurn: Utterance = {
     id: nanoid(8),
@@ -67,7 +120,6 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   };
   await stm.push(input.sessionId, userTurn, input.clientId);
 
-  const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
 
   const queryEmbedding = await embed(input.transcript);
   const [ltmUserResults, mtmSearchResults] = await Promise.all([
@@ -113,14 +165,29 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     flags: emotionCtx.flags,
   }));
 
+  // Issue #14: Use real acoustic metrics for CAI when available, fall back to heuristics
   const responseLength = input.transcript.split(/\s+/).length;
   const cai = calculateCAI({
-    pitchVariation: fused.vad.a > 0.3 ? 0.8 : 0.4,
-    speakingRate: 140,
-    interruptions: 0,
-    pauseDurationMs: 500,
+    pitchVariation: input.acousticFeatures?.pitchVariation ?? (fused.vad.a > 0.3 ? 0.8 : 0.4),
+    speakingRate: input.acousticFeatures?.speakingRateWPM ?? 140,
+    interruptions: input.bargeInCount ?? 0,
+    pauseDurationMs: input.acousticFeatures?.pauseDurationMs ?? 500,
     responseLength,
   });
+
+  // Issue #14: Log acoustic features if available
+  if (input.acousticFeatures) {
+    void logSessionEvent(makeEvent(evBase, "acoustic", {
+      rmsEnergy: input.acousticFeatures.rmsEnergy,
+      pitchHz: input.acousticFeatures.pitchHz,
+      pitchVariation: input.acousticFeatures.pitchVariation,
+      speakingRateWPM: input.acousticFeatures.speakingRateWPM,
+      pauseDurationMs: input.acousticFeatures.pauseDurationMs,
+      pauseCount: input.acousticFeatures.pauseCount,
+      durationMs: input.acousticFeatures.durationMs,
+      zeroCrossingRate: input.acousticFeatures.zeroCrossingRate,
+    }));
+  }
 
   void logSessionEvent(makeEvent(evBase, "cai", {
     score: cai.score,
@@ -253,6 +320,8 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
       llmModel: llmReply.model,
       usedLiveLlm: llmReply.usedLive,
       cai,
+      inputGuardResult: inputGuard,
+      acousticFeatures: input.acousticFeatures,
     },
   };
 }

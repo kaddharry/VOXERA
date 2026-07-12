@@ -26,14 +26,14 @@ The next phases of development will transition the codebase from a highly comple
 
 | Module | Status | Priority | Completion | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **Multi-Tenant Isolation** | 🟡 Needs Imp. | High | 85% | Needs Row-Level Security (RLS) enforcement at DB level. |
-| **Telephony & WebSockets** | ✅ Stable | Medium | 95% | Queue is currently in-process memory; needs redis for horizontal scaling. |
+| **Multi-Tenant Isolation** | 🟢 Complete | High | 100% | RLS policies implemented using auth.uid(). |
+| **Telephony & WebSockets** | 🟢 Complete | Medium | 100% | Queue is now backed by Redis sorted sets; fully scaled via Pub/Sub. |
 | **Speech Emotion (SER)** | ✅ Stable | Medium | 98% | Expanded to 11 labels, 35+ lexicon entries, context-aware punctuation, positivity safety net. CI lint and build issues resolved. |
-| **Memory (Vector Store)** | ✅ Stable | High | 94% | Circuit breaker integration prevents cascading timeouts. Needs compound indexes. |
+| **Memory (Vector Store)** | ✅ Stable | High | 100% | Circuit breaker integration. Compound indexes implemented. |
 | **Knowledge Base (RAG)** | 🟢 Complete | High | 95% | Cascading deletion, status polling, and version superseding are stable. |
-| **Booking & Integrations** | 🟢 Complete | High | 90% | Advisory locks and calendar JWT sync are stable. Needs client credential encryption. |
+| **Booking & Integrations** | 🟢 Complete | High | 100% | Advisory locks, calendar JWT sync, and AES-256 credential encryption are stable. |
 | **Analytics Dashboard** | 🟢 Complete | Low | 95% | Lightweight SVG graphs and tool invocation logging are fully integrated. |
-| **Acoustic CAI Processing**| 🟠 In Progress | Medium | 40% | Currently uses duration/pitch heuristics. Needs raw DSP waveform extraction. |
+| **Acoustic CAI Processing**| 🟢 Complete | Medium | 95% | Real DSP extraction (pitch, energy, ZCR, pauses) from PCM. Barge-in uses energy thresholds. |
 | **AI Orchestrator** | ✅ Stable | High | 95% | Parallelized pipeline, fire-and-forget logging. Latency reduced from ~29s to ~3-5s. |
 | **Supabase Resilience** | 🟢 Complete | High | 100% | Circuit breaker, timeout fetch, graceful degradation. |
 | **SaaS Builder & Billing**| 🔴 Not Started | High | 0% | Stripe subscription gates and self-serve onboarding wizard are unbuilt. |
@@ -43,24 +43,12 @@ The next phases of development will transition the codebase from a highly comple
 ## 4. Subsystem Roadmap & Technical Details
 
 ### 4.1 Multi-Tenant Data Hardening
-* **Current State**: Authenticated client IDs are resolved server-side using Supabase SSR cookies (`lib/db/server.ts`) and used to scope database filters.
-* **Technical Debt & Known Problems**: 
-  - Database queries leverage the Supabase `SERVICE_ROLE_KEY` in backend files, bypassing Row Level Security (RLS) protections. If an API endpoint fails to apply a `.eq("clientId", clientId)` filter, cross-tenant data exposure can occur.
-* **Testing Needed**: Write integration tests that simulate cross-tenant API requests (e.g., trying to read session logs or call logs using another client's session identifier) to assert that unauthorized requests return `403 Forbidden`.
-* **Deployment Risks**: Modifying RLS schemas in production could disrupt existing database sessions if policies are configured incorrectly.
-* **Roadmap Priority**: **Near-Term**
+* **Current State**: Fully hardened. Row Level Security (RLS) policies enforce `auth.uid()::text = "clientId"` across all primary tables (`session_logs`, `reservations`, `memories`, `knowledge_documents`, `call_logs`).
+* **Roadmap Priority**: **Completed (Issue #12)**
 
 ### 4.2 Database Performance & Compound Indexing
-* **Current State**: Basic single-column indexes exist for primary keys and client lookups.
-* **Technical Debt**:
-  - High-frequency dashboard queries aggregate statistics over time series. Lacking compound indexing will lead to performance degradation as call logs and session logs scale.
-* **Improvement Opportunities**:
-  - Implement compound indices:
-    - `session_logs("clientId", ts desc)`
-    - `session_logs("clientId", "sessionId", ts)`
-    - `reservations("clientId", date, time, status)`
-* **Estimated Complexity**: Low (Simple SQL DDL migration)
-* **Roadmap Priority**: **Near-Term**
+* **Current State**: Compound indices successfully deployed via migration `v8` (`session_logs("clientId", ts desc)` and `reservations("clientId", date, time, status)`).
+* **Roadmap Priority**: **Completed (Issue #12)**
 
 ### 4.3 Real Acoustic Digital Signal Processing (DSP) for CAI
 * **Current State**: The Commitment Acoustic Index (CAI) and audio analytics use duration and pitch-variation approximations inferred from VAD activation.
@@ -81,12 +69,8 @@ The next phases of development will transition the codebase from a highly comple
 * **Roadmap Priority**: **Medium-Term**
 
 ### 4.5 Credentials Encryption for Integrations
-* **Current State**: Google Calendar and Resend tokens/private keys are loaded from static environment variables.
-* **Technical Debt**: In a true SaaS environment, each tenant will connect their own custom calendar/email accounts. Storing third-party keys in `.env` is unscalable and insecure.
-* **Improvement Opportunities**:
-  - Develop a secure database settings vault.
-  - Encrypt third-party JWT credentials using AES-256 before writing to the database, decryption only on context load.
-* **Roadmap Priority**: **Near-Term**
+* **Current State**: Fully hardened. A secure database settings vault (`tenant_credentials`) stores tenant-specific Google Calendar keys. Private keys are encrypted via AES-256-GCM before writing to the database and decrypted only dynamically on context load.
+* **Roadmap Priority**: **Completed (Issue #12)**
 
 ### 4.6 Self-Serve SaaS Builder & Stripe Billing
 * **Current State**: VOXERA is configured for single-tenant operations with default credentials.
@@ -107,16 +91,16 @@ The next phases of development will transition the codebase from a highly comple
 * [x] **Supabase Resilience Layer**: Implemented 5-second timeout fetch wrapper, circuit breaker pattern (3 failures → 30s cooldown), and graceful degradation across all database operations.
 * [x] **Orchestrator Latency Fix**: Converted all 8 `logSessionEvent()` calls from blocking `await` to fire-and-forget `void`. Parallelized independent DB fetches and memory operations. Reduced turn latency from ~29s to ~3-5s.
 * [x] **CI Lint & TypeScript Build Fix** (2026-07-02): Resolved ESLint `no-require-imports` errors by converting compiled CommonJS `.js` files to ES module syntax. Fixed TypeScript strict-mode error in `scripts/test-emotion.ts` by adding safe optional chaining for the optional `confidenceCategory` field. Fixed React Hook `useEffect` dependency warnings in Knowledge Base admin page. All lint errors and build errors eliminated.
-* [ ] Enable Row Level Security (RLS) on all Supabase tables and verify policies.
-* [ ] Create compound indexes for analytical time-series logs.
-* [ ] Encrypt Google Service Account tokens in database-backed tenant configurations.
+* [x] Enable Row Level Security (RLS) on all Supabase tables and verify policies. (Issue #12)
+* [x] Create compound indexes for analytical time-series logs. (Issue #12)
+* [x] Encrypt Google Service Account tokens in database-backed tenant configurations. (Issue #12)
 * [ ] Standardize local font assets to remove remote Google Web Fonts dependencies from build chains.
 
 ### 5.2 Phase II: Voice & Scaling (Weeks 3 - 5)
-* [ ] Integrate real audio packet DSP parser to calculate physical pitch variation and vocal intensity.
-* [ ] Implement Redis-backed distributed telephony queues to support multi-node hosting.
-* [ ] Implement interruption triggers to halt agent TTS output immediately if user speech is detected.
-* [ ] Externalize circuit breaker state to Redis for multi-node deployments.
+* [x] Integrate real audio packet DSP parser to calculate physical pitch variation and vocal intensity. (Issue #14)
+* [x] Implement Redis-backed distributed telephony queues to support multi-node hosting. (Issue #13)
+* [x] Implement interruption triggers to halt agent TTS output immediately if user speech is detected. (Issue #14)
+* [x] Externalize circuit breaker state to Redis for multi-node deployments. (Issue #13)
 * [ ] Replace lexicon-based emotion detection with a trained ML model (RoBERTa or similar) via the existing `detectTextEmotion` interface.
 
 ### 5.3 Phase III: SaaS Portal (Weeks 6 - 10)
