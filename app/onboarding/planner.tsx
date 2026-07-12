@@ -2,8 +2,23 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, ArrowRight, Loader2, Sparkles, Building2, Stethoscope, Briefcase, Phone, AlertCircle, Bot } from "lucide-react";
+import { 
+  Check, 
+  ArrowRight, 
+  Loader2, 
+  Sparkles, 
+  Building2, 
+  Stethoscope, 
+  Briefcase, 
+  Phone, 
+  AlertCircle, 
+  Bot 
+} from "lucide-react";
 import { cn } from "@/lib/utils";
+
+// ==========================================
+// Types & Configuration Definitions
+// ==========================================
 
 type Industry = "healthcare" | "hospitality" | "local-services" | "sales" | "other";
 type Workflow = "receptionist" | "booking" | "aftercare" | "support" | "sales" | "reminders";
@@ -29,27 +44,41 @@ const knowledgeOptions = [
   "FAQs", "Pricing", "Policies", "Service list", "Booking rules", "Aftercare scripts", "Escalation rules"
 ];
 
-const steps = ["Business", "Workflow", "Context"];
+const steps = ["Business", "Workflow", "Context", "Plan"];
+
+// ==========================================
+// Main Component
+// ==========================================
 
 export function OnboardingPlanner() {
   const router = useRouter();
   const [step, setStep] = useState(0);
   
+  // Form State
   const [industry, setIndustry] = useState<Industry>("healthcare");
   const [workflow, setWorkflow] = useState<Workflow>("aftercare");
   const [businessName, setBusinessName] = useState("");
   const [callGoal, setCallGoal] = useState("");
   const [selectedKnowledge, setSelectedKnowledge] = useState<string[]>(["FAQs", "Policies"]);
   const [escalation, setEscalation] = useState("Human handoff for urgent cases");
-  
+  const [openingTime, setOpeningTime] = useState("09:00");
+  const [closingTime, setClosingTime] = useState("18:00");
+  const [language, setLanguage] = useState("English");
+  const [tone, setTone] = useState("Professional");
+  const [greeting, setGreeting] = useState(
+    "Hello! Thank you for calling. How may I help you today?"
+  );
+  const [plan, setPlan] = useState("free");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Computed AI Recommendations
   const recommendation = useMemo(
     () => getRecommendation(industry, workflow, selectedKnowledge.length),
     [industry, workflow, selectedKnowledge.length],
   );
 
+  // Helper Handlers
   function toggleKnowledge(item: string) {
     setSelectedKnowledge((current) =>
       current.includes(item) ? current.filter((v) => v !== item) : [...current, item],
@@ -66,11 +95,36 @@ export function OnboardingPlanner() {
       const res = await fetch("/api/onboarding", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ businessName, industry, workflow, callGoal, escalation }),
+        body: JSON.stringify({ 
+          businessName, 
+          industry, 
+          workflow, 
+          callGoal, 
+          escalation, 
+          openingTime,
+          closingTime,
+          language,
+          tone,
+          greeting,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save configuration.");
-      router.push("/onboarding/success");
+
+      if (plan !== "free" && data.tenantId) {
+        // Redirect to Stripe checkout
+        const checkoutRes = await fetch("/api/billing/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tier: plan, tenantId: data.tenantId }),
+        });
+        const checkoutData = await checkoutRes.json();
+        if (!checkoutRes.ok) throw new Error(checkoutData.error || "Failed to initiate checkout.");
+        
+        window.location.href = checkoutData.url;
+      } else {
+        router.push("/onboarding/success");
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -82,28 +136,39 @@ export function OnboardingPlanner() {
     <div className="flex flex-col lg:flex-row gap-8 items-start">
       {/* Wizard Form Area */}
       <div className="flex-1 w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 md:p-10 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
+        
         {/* Progress Tracker */}
         <div className="flex items-center gap-2 mb-8">
           {steps.map((s, i) => (
             <div key={i} className="flex-1 flex flex-col gap-2">
               <div className="h-1 rounded-full bg-[var(--color-bg-base)] overflow-hidden border border-[var(--color-border-subtle)]">
                 <div 
-                  className={cn("h-full transition-all duration-300", i <= step ? "bg-[var(--color-accent-cyan)] shadow-[0_0_8px_var(--color-accent-cyan)]" : "bg-transparent")}
+                  className={cn(
+                    "h-full transition-all duration-300", 
+                    i <= step ? "bg-[var(--color-accent-cyan)] shadow-[0_0_8px_var(--color-accent-cyan)]" : "bg-transparent"
+                  )}
                   style={{ width: i <= step ? "100%" : "0%" }}
                 />
               </div>
-              <span className={cn("font-mono text-[10px] font-bold uppercase tracking-widest", i <= step ? "text-[var(--color-accent-cyan)]" : "text-[var(--color-text-muted)]")}>
+              <span className={cn(
+                "font-mono text-[10px] font-bold uppercase tracking-widest", 
+                i <= step ? "text-[var(--color-accent-cyan)]" : "text-[var(--color-text-muted)]"
+              )}>
                 {s}
               </span>
             </div>
           ))}
         </div>
 
+        {/* Form Wizard Step Controls */}
         <div className="min-h-[360px]">
+          {/* STEP 0: Business Info */}
           {step === 0 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               <div className="space-y-2">
-                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">What is your business name?</label>
+                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                  What is your business name?
+                </label>
                 <input
                   value={businessName}
                   onChange={(e) => setBusinessName(e.target.value)}
@@ -112,7 +177,9 @@ export function OnboardingPlanner() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">Select your industry</label>
+                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                  Select your industry
+                </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {industryOptions.map((opt) => (
                     <button
@@ -134,10 +201,13 @@ export function OnboardingPlanner() {
             </div>
           )}
 
+          {/* STEP 1: Agent Goal */}
           {step === 1 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               <div className="space-y-2">
-                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">What is the primary goal of this AI agent?</label>
+                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                  What is the primary goal of this AI agent?
+                </label>
                 <div className="grid gap-2">
                   {workflowOptions.map((opt) => (
                     <button
@@ -150,7 +220,10 @@ export function OnboardingPlanner() {
                           : "bg-[var(--color-bg-surface)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-active)] hover:text-[var(--color-text-primary)]"
                       )}
                     >
-                      <div className={cn("w-4 h-4 rounded-full border flex items-center justify-center", workflow === opt.value ? "border-[var(--color-accent-cyan)]" : "border-[var(--color-border-subtle)]")}>
+                      <div className={cn(
+                        "w-4 h-4 rounded-full border flex items-center justify-center", 
+                        workflow === opt.value ? "border-[var(--color-accent-cyan)]" : "border-[var(--color-border-subtle)]"
+                      )}>
                         {workflow === opt.value && <div className="w-2 h-2 rounded-full bg-[var(--color-accent-cyan)] shadow-[0_0_5px_var(--color-accent-cyan)]" />}
                       </div>
                       <span className="text-[14px] font-semibold">{opt.label}</span>
@@ -160,7 +233,9 @@ export function OnboardingPlanner() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">Describe the specific call scenario (Optional)</label>
+                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                  Describe the specific call scenario (Optional)
+                </label>
                 <textarea
                   value={callGoal}
                   onChange={(e) => setCallGoal(e.target.value)}
@@ -172,10 +247,13 @@ export function OnboardingPlanner() {
             </div>
           )}
 
+          {/* STEP 2: Context / Operations */}
           {step === 2 && (
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               <div className="space-y-3">
-                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">What knowledge do you have ready to upload?</label>
+                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                  What knowledge do you have ready to upload?
+                </label>
                 <div className="flex flex-wrap gap-2">
                   {knowledgeOptions.map((item) => (
                     <button
@@ -194,6 +272,91 @@ export function OnboardingPlanner() {
                 </div>
               </div>
 
+              {/* Operating Hours */}
+              <div className="space-y-3 pt-4 border-t border-[var(--color-border-subtle)]">
+                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                  Operating Hours
+                </label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
+                      Opening Time
+                    </label>
+                    <input
+                      type="time"
+                      value={openingTime}
+                      onChange={(e) => setOpeningTime(e.target.value)}
+                      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
+                      Closing Time
+                    </label>
+                    <input
+                      type="time"
+                      value={closingTime}
+                      onChange={(e) => setClosingTime(e.target.value)}
+                      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px]"
+                    />
+                  </div>
+                </div>
+              </div>
+              {/* AI Settings */}
+              <div className="space-y-4 pt-4 border-t border-[var(--color-border-subtle)]">
+                <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                  AI Settings
+                </label>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
+                      Language
+                    </label>
+
+                    <select
+                      value={language}
+                      onChange={(e) => setLanguage(e.target.value)}
+                      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)]"
+                    >
+                      <option value="English">English</option>
+                      <option value="Hindi">Hindi</option>
+                      <option value="Hinglish">Hinglish</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
+                      Tone
+                    </label>
+
+                    <select
+                      value={tone}
+                      onChange={(e) => setTone(e.target.value)}
+                      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)]"
+                    >
+                      <option value="Professional">Professional</option>
+                      <option value="Friendly">Friendly</option>
+                      <option value="Formal">Formal</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[12px] text-[var(--color-text-secondary)] mb-2">
+                    Greeting Message
+                  </label>
+
+                  <textarea
+                    rows={3}
+                    value={greeting}
+                    onChange={(e) => setGreeting(e.target.value)}
+                    className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)] resize-none"
+                    placeholder="Hello! Thank you for calling. How may I help you today?"
+                  />
+                </div>
+              </div>
+              {/* Escalation Config */}
               <div className="space-y-2 pt-4 border-t border-[var(--color-border-subtle)]">
                 <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)] flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 text-amber-500" />
@@ -202,19 +365,56 @@ export function OnboardingPlanner() {
                 <input
                   value={escalation}
                   onChange={(e) => setEscalation(e.target.value)}
-                  className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] transition-colors placeholder:text-[var(--color-text-muted)]"
+                  className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)]"
                 />
               </div>
+
+            </div>
+          )}
+
+          {/* STEP 3: Plan */}
+          {step === 3 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
+                Choose a Subscription Plan
+              </label>
+              
+              <div className="grid gap-4">
+                {[
+                  { id: "free", name: "Free Trial", price: "$0", desc: "10 calls, 1 knowledge doc" },
+                  { id: "starter", name: "Starter", price: "$29/mo", desc: "500 calls, 5 knowledge docs" },
+                  { id: "growth", name: "Growth", price: "$79/mo", desc: "2,000 calls, 25 knowledge docs" },
+                  { id: "enterprise", name: "Enterprise", price: "$199/mo", desc: "Unlimited calls & docs, priority support" }
+                ].map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => setPlan(p.id)}
+                    className={cn(
+                      "flex items-center justify-between p-4 rounded-xl border text-left transition-all",
+                      plan === p.id 
+                        ? "bg-[var(--color-bg-base)] border-[var(--color-border-active)] shadow-[0_0_10px_var(--color-accent-glow)]" 
+                        : "bg-[var(--color-bg-surface)] border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)]"
+                    )}
+                  >
+                    <div>
+                      <div className="text-[15px] font-semibold text-[var(--color-text-primary)]">{p.name}</div>
+                      <div className="text-[13px] text-[var(--color-text-secondary)]">{p.desc}</div>
+                    </div>
+                    <div className="text-[16px] font-bold text-[var(--color-text-primary)]">{p.price}</div>
+                  </button>
+                ))}
+              </div>
+
+              {error && (
+                <p className="text-[13px] text-red-500 font-medium pt-2 flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4" /> {error}
+                </p>
+              )}
             </div>
           )}
         </div>
 
-        {error && (
-          <div className="mt-4 p-3 bg-red-950/30 border border-red-900/50 rounded-xl text-[13px] text-red-400 font-medium">
-            {error}
-          </div>
-        )}
-
+        {/* Footer Navigation Buttons */}
         <div className="flex justify-between items-center pt-8 mt-4 border-t border-[var(--color-border-subtle)]">
           <button
             onClick={handleBack}
@@ -252,13 +452,17 @@ export function OnboardingPlanner() {
           <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-[var(--color-text-secondary)]">AI Recommendation</span>
         </div>
         
-        <h3 className="font-display font-bold text-2xl text-[var(--color-text-primary)] mb-2 tracking-tight text-gradient">{recommendation.agentName}</h3>
-        <p className="text-[14px] text-[var(--color-text-secondary)] leading-relaxed mb-6">{recommendation.summary}</p>
+        <h3 className="font-display font-bold text-2xl text-[var(--color-text-primary)] mb-2 tracking-tight text-gradient">
+          {recommendation.agentName}
+        </h3>
+        <p className="text-[14px] text-[var(--color-text-secondary)] leading-relaxed mb-6">
+          {recommendation.summary}
+        </p>
         
         <div className="space-y-3">
           <div className="bg-[var(--color-bg-base)] rounded-xl p-4 border border-[var(--color-border-subtle)]">
             <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-[var(--color-text-muted)] mb-1">Target Business</p>
-            <p className="text-[14px] text-[var(--color-text-primary)] font-semibold">{businessName || "Your Business"}</p>
+            <p className="text-[14px] text-[var(--color-text-primary)] font-semibold truncate">{businessName || "Your Business"}</p>
           </div>
           
           <div className="bg-[var(--color-bg-base)] rounded-xl p-4 border border-[var(--color-border-subtle)]">
@@ -279,8 +483,12 @@ export function OnboardingPlanner() {
   );
 }
 
+// ==========================================
+// Helper Engine Functions
+// ==========================================
+
 function getRecommendation(industry: Industry, workflow: Workflow, knowledgeCount: number) {
-  if (industry === "healthcare" || workflow === "aftercare") {
+  if (workflow === "aftercare" || (industry === "healthcare" && workflow === "receptionist")) {
     return {
       agentName: "Aftercare Agent",
       workflow: "Outbound recovery calls, red-flag triage, and staff escalation.",

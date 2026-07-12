@@ -1,6 +1,13 @@
--- Migration v9: Adaptive memory scoring fields + RAG explainability fields
--- Add importance_score, retrieval_count, last_retrieved_at to memories table
+-- Migration v9: Business Operating Hours + Adaptive Memory Scoring + RAG Explainability
 
+-- Sprint 5: Business Operating Hours
+ALTER TABLE public.business_settings
+ADD COLUMN IF NOT EXISTS opening_time TEXT;
+
+ALTER TABLE public.business_settings
+ADD COLUMN IF NOT EXISTS closing_time TEXT;
+
+-- Adaptive memory scoring fields
 ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS importance_score real NOT NULL DEFAULT 0.5;
 ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS retrieval_count integer NOT NULL DEFAULT 0;
 ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS last_retrieved_at bigint;
