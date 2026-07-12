@@ -127,15 +127,16 @@ All core features are implemented, tested, and fully integrated:
 * **Implementation Logic**:
   - Stores memory records in a flat Postgres table `memories`.
   - Semantic lookup uses the `match_memories` Supabase RPC, computing cosine similarity over OpenAI-compatible 1536-dimensional embeddings.
-  - Memory classes:
-    - **Short-Term Memory (STM)**: In-session conversation details.
-    - **Medium-Term Memory (MTM)**: Recent summaries and customer preferences.
-    - **Long-Term User Memory (LTM_user)**: Historical interaction records across call sessions.
-    - **Long-Term Client Memory (LTM_client)**: Ingested business manuals and knowledge documents.
+  - Automatically deduplicates and merges similar memories using cosine similarity (`>= 0.85`).
+  - Implements **Adaptive Memory Ranking & Time-Decay**: 
+    - Stored memories maintain an `importance_score` that decays dynamically based on a **7-day half-life** since last retrieval or edit activity.
+    - Critical user details (such as allergies, permanent preferences, VIP status, language) are preserved with a score floor of `0.70`, ensuring they never decay out of priority.
+    - Retrieving a memory adds a logarithmic boost `+ 0.1 * ln(1 + retrieval_count)` and updates `last_retrieved_at`.
+  - Implements **Selection Explainability**: Every retrieved memory calculates its score components (similarity, dynamic importance, recency, retrieval frequency) and generates a detailed explanation for RAG evaluation.
+  - **Timeline Chronological Grouping**: Retrieved memories are grouped into event buckets based on time proximity (within 48 hours) and topic sharing, formatting memory context as a narrative sequence.
 * **Files & Directories**:
-  - [store.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/memory/store.ts) — Explicit column serializers (`toRow` and `fromRow`) for Supabase database interaction. Integrates with the Supabase circuit breaker to gracefully degrade when the database is unreachable.
-  - [retrieval.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/memory/retrieval.ts) — Distance matches and decay scoring.
-  - [writer.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/memory/writer.ts) — Seed and commit methods for memory states.
+  - [retrieval.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/memory/retrieval.ts) — Semantic search via pgvector, adaptive exponential decay ranking, and timeline clustering.
+  - [writer.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/memory/writer.ts) — Memory extraction, recurrence tracking, and LTM promotion.
 
 ### 4.5 Knowledge Base Ingestion Pipeline
 * **Purpose**: Transforms raw uploaded files into searchable vector knowledge chunks.

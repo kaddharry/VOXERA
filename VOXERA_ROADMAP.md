@@ -29,7 +29,7 @@ The next phases of development will transition the codebase from a highly comple
 | **Multi-Tenant Isolation** | 🟢 Complete | High | 100% | RLS policies implemented using auth.uid(). |
 | **Telephony & WebSockets** | 🟢 Complete | Medium | 100% | Queue is now backed by Redis sorted sets; fully scaled via Pub/Sub. |
 | **Speech Emotion (SER)** | ✅ Stable | Medium | 98% | Expanded to 11 labels, 35+ lexicon entries, context-aware punctuation, positivity safety net. CI lint and build issues resolved. |
-| **Memory (Vector Store)** | ✅ Stable | High | 100% | Circuit breaker integration. Compound indexes implemented. |
+| **Memory (Vector Store)** | 🟢 Complete | High | 100% | Circuit breaker, compound indexes, and adaptive importance decay with chronological explainability. |
 | **Knowledge Base (RAG)** | 🟢 Complete | High | 95% | Cascading deletion, status polling, and version superseding are stable. |
 | **Booking & Integrations** | 🟢 Complete | High | 100% | Advisory locks, calendar JWT sync, and AES-256 credential encryption are stable. |
 | **Analytics Dashboard** | 🟢 Complete | Low | 95% | Lightweight SVG graphs and tool invocation logging are fully integrated. |
@@ -101,6 +101,7 @@ The next phases of development will transition the codebase from a highly comple
 * [x] Implement Redis-backed distributed telephony queues to support multi-node hosting. (Issue #13)
 * [x] Implement interruption triggers to halt agent TTS output immediately if user speech is detected. (Issue #14)
 * [x] Externalize circuit breaker state to Redis for multi-node deployments. (Issue #13)
+* [x] Implement adaptive memory importance scoring, time-decay, and retrieval explainability. (Issue #9/17)
 * [ ] Replace lexicon-based emotion detection with a trained ML model (RoBERTa or similar) via the existing `detectTextEmotion` interface.
 
 ### 5.3 Phase III: SaaS Portal (Weeks 6 - 10)
