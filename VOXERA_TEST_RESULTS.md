@@ -4,23 +4,6 @@ This document records the exact test suites, validation steps, and outcomes for 
 
 ---
 
-## 2026-07-12 — Issue #17: Adaptive Memory Importance Scoring & Explainability (PR #17)
-**Status:** ✅ VERIFIED
-**Key Technologies:** Exponential Time-Decay, Logarithmic Frequency Boosting, Chronological Timeline Clustering
-
-**Validation Steps:**
-1. **Core Heuristic Verification:** Ran isolated node scripts (`scripts/rank-test.ts`) mapping the old similarity-only heuristic against the new dynamic scoring heuristic. 
-2. **Ranking Improvements:** Calculated that the new system heavily penalizes trivial facts with up to a 28.5% weight penalty when unused, and boosts highly recurrent critical facts (like allergies or VIP status) by up to 11%, allowing them to safely override more recent but less relevant semantic matches.
-3. **Automated Integration Tests:** Ran `npx vitest run __tests__/memory/adaptive-retrieval.test.ts` → **6 tests passed**. Tests effectively validate that:
-   - High initial importance items are promoted.
-   - Recency score decays appropriately based on `DAYS_TO_DECAY` logic.
-   - `importance_score` is capped securely at `1.0`.
-
-**E2E Test Execution:**
-- `npx vitest run` → **184 tests passed, 0 failures** across 16 test files (no regressions)
-
----
-
 ## 2026-07-12 — Issue #15: SaaS Commercialization & Tenant Experience (PR #TBD)
 **Status:** ✅ VERIFIED
 **Key Technologies:** Stripe, Next.js App Router, Supabase
@@ -36,6 +19,23 @@ This document records the exact test suites, validation steps, and outcomes for 
 - `npx vitest run` → **188 tests passed, 0 failures** across 17 test files (no regressions)
 - `npm run lint` → **0 errors, 0 warnings**
 - `npm run build` → **Build succeeded**
+
+---
+
+## 2026-07-12 — Issue #17: Adaptive Memory Importance Scoring & Explainability (PR #17)
+**Status:** ✅ VERIFIED
+**Key Technologies:** Exponential Time-Decay, Logarithmic Frequency Boosting, Chronological Timeline Clustering
+
+**Validation Steps:**
+1. **Core Heuristic Verification:** Ran isolated node scripts (`scripts/rank-test.ts`) mapping the old similarity-only heuristic against the new dynamic scoring heuristic. 
+2. **Ranking Improvements:** Calculated that the new system heavily penalizes trivial facts with up to a 28.5% weight penalty when unused, and boosts highly recurrent critical facts (like allergies or VIP status) by up to 11%, allowing them to safely override more recent but less relevant semantic matches.
+3. **Automated Integration Tests:** Ran `npx vitest run __tests__/memory/adaptive-retrieval.test.ts` → **6 tests passed**. Tests effectively validate that:
+   - High initial importance items are promoted.
+   - Recency score decays appropriately based on `DAYS_TO_DECAY` logic.
+   - `importance_score` is capped securely at `1.0`.
+
+**E2E Test Execution:**
+- `npx vitest run` → **184 tests passed, 0 failures** across 16 test files (no regressions)
 
 ---
 
