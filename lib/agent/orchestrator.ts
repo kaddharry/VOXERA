@@ -36,7 +36,14 @@ export interface TurnTrace {
   emotion: ReturnType<typeof buildEmotionContext>;
   importance: number;
   memoryWrite: Awaited<ReturnType<typeof writeMemory>>;
-  retrieved: { mtmIds: string[]; ltmUserIds: string[]; ltmClientIds: string[]; scores: { id: string; score: number }[] };
+  retrieved: {
+    mtmIds: string[];
+    ltmUserIds: string[];
+    ltmClientIds: string[];
+    scores: { id: string; score: number }[];
+    explanations?: Record<string, any>;
+    timeline?: any[];
+  };
   policy: ReturnType<typeof decidePolicy>;
   guardReasons: string[];
   llmModel: string;
@@ -228,6 +235,8 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     ltmUserIds: retrieved.ltmUser.map((m) => m.id),
     ltmClientIds: retrieved.ltmClient.map((m) => m.id),
     scores: retrieved.scores,
+    explanations: retrieved.explanations,
+    timeline: retrieved.timeline,
   }));
 
   void logSessionEvent(makeEvent(evBase, "policy", {
@@ -303,6 +312,8 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
         ltmUserIds: retrieved.ltmUser.map((m) => m.id),
         ltmClientIds: retrieved.ltmClient.map((m) => m.id),
         scores: retrieved.scores,
+        explanations: retrieved.explanations,
+        timeline: retrieved.timeline,
       },
       policy,
       guardReasons: guarded.reasons,

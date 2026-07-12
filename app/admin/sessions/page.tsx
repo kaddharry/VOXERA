@@ -234,9 +234,60 @@ export default function SessionsPage() {
                             </span>
                           )}
                         </div>
-                        <pre className="text-[12px] text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono break-all bg-[var(--color-bg-base)] p-3 rounded-lg border border-[var(--color-border-subtle)] max-h-32 overflow-hidden">
-                          {JSON.stringify(ev.payload, null, 2)}
-                        </pre>
+                        {ev.type === "retrieval" ? (
+                          <div className="space-y-3 mt-2">
+                            {/* Summary counts */}
+                            <div className="flex items-center gap-2 text-[10px] font-mono">
+                              <span className="bg-cyan-500/10 text-cyan-400 px-2 py-0.5 rounded border border-cyan-500/20">MTM: {(ev.payload.mtmIds as string[])?.length ?? 0}</span>
+                              <span className="bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20">LTM User: {(ev.payload.ltmUserIds as string[])?.length ?? 0}</span>
+                              <span className="bg-purple-500/10 text-purple-400 px-2 py-0.5 rounded border border-purple-500/20">LTM Client: {(ev.payload.ltmClientIds as string[])?.length ?? 0}</span>
+                            </div>
+                            {/* Timeline if present */}
+                            {!!ev.payload.timeline && (ev.payload.timeline as any[]).length > 0 && (
+                              <div className="bg-[var(--color-bg-base)] border border-[var(--color-border-subtle)] rounded-lg p-3 space-y-1.5">
+                                <span className="text-[9px] font-mono font-bold text-zinc-500 block uppercase">Grouped Timeline Events</span>
+                                <div className="space-y-2">
+                                  {(ev.payload.timeline as any[]).map((evt, idx) => (
+                                    <div key={idx} className="border-l border-[var(--color-accent-cyan)] pl-2">
+                                      <span className="font-bold text-white text-[11px] uppercase tracking-wider">{evt.topic}</span>
+                                      <p className="text-[11px] text-[var(--color-text-secondary)] italic">"{evt.summary}"</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {/* Explanations if present */}
+                            {!!ev.payload.scores && (ev.payload.scores as any[]).length > 0 && (
+                              <div className="space-y-2">
+                                {(ev.payload.scores as any[]).slice(0, 4).map((sObj, idx) => {
+                                  const exp = (ev.payload.explanations as Record<string, any>)?.[sObj.id];
+                                  return (
+                                    <div key={idx} className="bg-[var(--color-bg-base)] border border-[var(--color-border-subtle)] rounded-lg p-2.5 space-y-1">
+                                      <div className="flex justify-between items-center text-[10px]">
+                                        <span className="font-mono text-zinc-400">ID: {sObj.id}</span>
+                                        <span className="font-mono font-bold text-[var(--color-accent-cyan)]">Score: {sObj.score}</span>
+                                      </div>
+                                      {!!exp && (
+                                        <p className="text-[11px] text-[var(--color-text-secondary)] leading-relaxed">
+                                          {exp.reason}
+                                        </p>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {(ev.payload.scores as any[]).length > 4 && (
+                                  <div className="text-[10px] font-mono text-zinc-500 text-center">
+                                    + {(ev.payload.scores as any[]).length - 4} more records...
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <pre className="text-[12px] text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono break-all bg-[var(--color-bg-base)] p-3 rounded-lg border border-[var(--color-border-subtle)] max-h-32 overflow-hidden">
+                            {JSON.stringify(ev.payload, null, 2)}
+                          </pre>
+                        )}
                       </div>
                     </div>
                   ))}

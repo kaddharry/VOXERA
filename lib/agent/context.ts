@@ -25,8 +25,18 @@ export function buildLLMContext(args: {
     formatRecords("CLIENT", retrieved.ltmClient, ["brand_voice", "compliance", "escalation"]),
     1600,
   );
-  const userLtmBlock = truncate(formatRecords("USER_PROFILE", retrieved.ltmUser), 1200);
-  const evidenceBlock = truncate(formatEvidence(retrieved.mtm), 6000);
+  const timelineBlock = retrieved.timeline && retrieved.timeline.length > 0
+    ? truncate(formatTimeline(retrieved.timeline), 7200)
+    : "";
+
+  const userLtmBlock = timelineBlock
+    ? "" // Grouped in timeline instead of isolated records
+    : truncate(formatRecords("USER_PROFILE", retrieved.ltmUser), 1200);
+
+  const evidenceBlock = timelineBlock
+    ? timelineBlock
+    : truncate(formatEvidence(retrieved.mtm), 6000);
+
   const emotionBlock = formatEmotion(emotion);
   const policyBlock = policyToPrompt(policy);
   const stmBlock = truncate(formatStm(retrieved.stm, userTurn.id), 8000);
@@ -58,8 +68,8 @@ export function buildLLMContext(args: {
   const citations = retrieved.mtm.map((m) => m.id);
 
   const user = [
-    "=== EVIDENCE ===",
-    evidenceBlock || "(no user-specific evidence)",
+    timelineBlock ? "=== CHRONOLOGICAL EVENT TIMELINE ===" : "=== EVIDENCE ===",
+    evidenceBlock || (timelineBlock ? "(no timeline events)" : "(no user-specific evidence)"),
     "",
     "=== EMOTION ===",
     emotionBlock,
@@ -92,12 +102,32 @@ function formatRecords(kind: string, recs: MemoryRecord[], preferredTopics?: str
   return `=== ${kind} ===\n${lines.join("\n")}`;
 }
 
+function formatTimeline(events: any[]): string {
+  if (events.length === 0) return "";
+  return events
+    .map((evt) => {
+      const startStr = new Date(evt.startDate).toLocaleDateString();
+      const endStr = new Date(evt.endDate).toLocaleDateString();
+      const dateRange = startStr === endStr ? startStr : `${startStr} to ${endStr}`;
+      const memLines = evt.memories
+        .map((m: any) => {
+          const ageDays = Math.round((Date.now() - m.ts) / (1000 * 60 * 60 * 24));
+          const scoreStr = (m.importance_score ?? m.importance).toFixed(2);
+          return `  - [MEM_ID=${m.id}] (${ageDays}d ago, topic=${m.topic}, emotion=${m.emotion}, importance_score=${scoreStr}) ${m.summary}`;
+        })
+        .join("\n");
+      return `=== Event: ${evt.topic.toUpperCase()} (${dateRange}) ===\n${memLines}`;
+    })
+    .join("\n\n");
+}
+
 function formatEvidence(recs: MemoryRecord[]): string {
   if (recs.length === 0) return "";
   return recs
     .map((r) => {
       const ageDays = Math.round((Date.now() - r.ts) / (1000 * 60 * 60 * 24));
-      return `[MEM_ID=${r.id}] (${ageDays}d ago, topic=${r.topic}, emotion=${r.emotion}, I=${r.importance.toFixed(2)}, recurrence=${r.recurrence})\n  ${r.summary}`;
+      const scoreStr = (r.importance_score ?? r.importance).toFixed(2);
+      return `[MEM_ID=${r.id}] (${ageDays}d ago, topic=${r.topic}, emotion=${r.emotion}, I=${scoreStr}, recurrence=${r.recurrence})\n  ${r.summary}`;
     })
     .join("\n");
 }
