@@ -21,6 +21,18 @@ This document records the exact test suites, validation steps, and outcomes for 
 
 ---
 
+## 2026-07-12 — Issue #15: SaaS Commercialization & Tenant Experience
+**Status:** ✅ VERIFIED & MERGED
+**Key Technologies:** Stripe, Next.js App Router, Supabase
+
+**Validation Steps:**
+1. **Stripe Billing Integration:** Verified `stripe` SDK wrapper with Starter, Growth, and Enterprise tier definitions. Tested the checkout session creation route (`/api/billing/checkout`) and confirmed the webhook route securely validates and stores subscription statuses.
+2. **Onboarding Wizard Expansion:** Confirmed that `app/onboarding/planner.tsx` correctly gathers the subscription tier intent and `lib/db/onboarding.ts` accurately maps all configurations, including AI Settings and Operating Hours, into the database.
+3. **Admin Dashboard Analytics:** Validated the new `/admin/tenants` dashboard effectively parses tenant metadata against API call counts and knowledge base sizing directly from Supabase, correctly surfacing subscription constraints.
+4. **End-to-End Suite Expansion:** Confirmed passing integration checks in `__tests__/e2e/saas-commercialization.test.ts`.
+
+---
+
 ## 2026-07-10 — Issue #14: Advanced Voice Intelligence & Telephony Experience (PR #TBD)
 **Status:** ✅ VERIFIED
 **Key Technologies:** Pure-JS DSP (PCM Buffer math), Autocorrelation Pitch Estimation, Pre-LLM Input Guard, Acoustic Emotion Fusion
@@ -77,18 +89,6 @@ This document records the exact test suites, validation steps, and outcomes for 
 1. **Voice Cloning Integration:** Verified the addition of the ElevenLabs TTS provider integration. Confirmed fallback resilience and proper stream handling logic matching the Deepgram implementations.
 2. **Post-Call SMS Recovery:** Audited `TelephonyStreamHandler` logic. When a call completes with a negative emotional trajectory (anger, frustration), verified that it correctly dispatches an automated retention SMS / Email via the configured templates.
 3. **Emotion Engine Triggers:** Verified that the newly introduced 11-label emotion engine correctly maps intense negative states to the recovery triggers without firing false positives on neutral interactions.
-
----
-
-## 2026-07-12 — Issue #15: SaaS Commercialization & Tenant Experience
-**Status:** ✅ VERIFIED & MERGED
-**Key Technologies:** Stripe, Next.js App Router, Supabase
-
-**Validation Steps:**
-1. **Stripe Billing Integration:** Verified `stripe` SDK wrapper with Starter, Growth, and Enterprise tier definitions. Tested the checkout session creation route (`/api/billing/checkout`) and confirmed the webhook route securely validates and stores subscription statuses.
-2. **Onboarding Wizard Expansion:** Confirmed that `app/onboarding/planner.tsx` correctly gathers the subscription tier intent and `lib/db/onboarding.ts` accurately maps all configurations, including AI Settings and Operating Hours, into the database.
-3. **Admin Dashboard Analytics:** Validated the new `/admin/tenants` dashboard effectively parses tenant metadata against API call counts and knowledge base sizing directly from Supabase, correctly surfacing subscription constraints.
-4. **End-to-End Suite Expansion:** Confirmed passing integration checks in `__tests__/e2e/saas-commercialization.test.ts`.
 
 ---
 
