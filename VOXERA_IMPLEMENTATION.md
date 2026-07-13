@@ -450,3 +450,20 @@ VOXERA is now capable of horizontal scaling. Critical telephony queues and state
 - `npm run lint` → **0 errors, 0 warnings**
 - `npm run build` → **Build succeeded**
 
+### 2026-07-13 — Sprint 6 (Issue #23: Emotion Detection Bug & UI Warning)
+**Objective**: Fix the colloquial negative emotion classification bug and the `[object Object]` rendering display warning.
+
+**Changes Implemented**:
+1. **Lexicon Colloquial Contractions**:
+   - Redefined the regex for sadness to `feel(?:ing?|s|in'?)? low` to capture `"feelin low"` and other forms.
+   - Updated all occurrences of `ing` words in the lexicon (such as `working`, `breaking`, `falling`) to match their contracted versions (e.g., `workin`, `breakin`, `fallin`).
+   - Converted all regex capture groups to non-capturing groups `(?:...)` and added the global `/g` flag. This correctly fixes the bug where `matches.length` was biased by the number of capturing groups in the pattern rather than the true match count.
+   - Boosted the `distress` lexicon weight for `"breaking down"` from `0.8` to `0.9` to properly override `sadness` tie-breakers.
+2. **Confidence Category Rendering Fix**:
+   - Updated the `TurnTrace` TypeScript interface to support `confidenceCategory` as an object.
+   - Fixed `app/_components/VoiceAgent.tsx` which was coercing the object to a string resulting in `[object Object]`. It now securely extracts the `.level` property.
+
+**Validation Performed**:
+- `npx vitest run` → **194 tests passed, 0 failures** across 18 test files (including new detection suite)
+- `npm run build` → **Build succeeded**
+
