@@ -4,7 +4,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, Send, Square, Activity, Loader2 } from "lucide-react";
 
 interface TurnTrace {
-  utterance: { id: string; text: string; emotion?: { label: string; intensity: number; confidence: number; confidenceCategory?: string } };
+  utterance: {
+    id: string;
+    text: string;
+    emotion?: {
+      label: string;
+      intensity: number;
+      confidence: number;
+      confidenceCategory?: string | { level: string; explanation?: string };
+    };
+  };
   emotion: {
     current: { label: string; intensity: number; confidence: number; vad: { v: number; a: number; d: number } };
     trajectory: { slope_v: number; slope_a: number };
@@ -245,7 +254,14 @@ function TurnCard({ entry }: { entry: TurnEntry }) {
         <div className="text-[10px] font-mono font-bold uppercase tracking-widest text-[var(--color-text-secondary)] mb-4">Acoustic Trace & Policy</div>
         <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-4 text-[12px]">
           <Cell label="Emotion" value={`${t.emotion.current.label} · ${t.emotion.current.intensity.toFixed(2)}`} highlight />
-          <Cell label="Confidence" value={`${t.emotion.current.confidence.toFixed(2)} (${t.utterance.emotion?.confidenceCategory ?? confCategory(t.emotion.current.confidence)})`} />
+          <Cell
+            label="Confidence"
+            value={`${t.emotion.current.confidence.toFixed(2)} (${(() => {
+              const rawCat = t.utterance.emotion?.confidenceCategory;
+              const level = (typeof rawCat === "object" && rawCat) ? rawCat.level : (rawCat ?? confCategory(t.emotion.current.confidence));
+              return level.charAt(0).toUpperCase() + level.slice(1);
+            })()}`}
+          />
           <Cell label="Importance" value={t.importance.toFixed(2)} />
           <Cell label="Memory" value={`${t.memoryWrite.tier}${t.memoryWrite.merged ? " (merged)" : ""}`} />
           <Cell
