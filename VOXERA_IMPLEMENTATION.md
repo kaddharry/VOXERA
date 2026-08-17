@@ -1614,3 +1614,37 @@ not-yet-uploaded files are uploaded first, then their extracted text is concaten
   and is used by the LLM, not just passed through inertly
 - Could not click through the dialog itself in this sandbox (behind login, no credentials available) —
   recommend a manual pass attaching a real file and confirming the generated draft reflects it
+
+### 2026-08-17 — Dashboard Redesign: Flat Colors, Real Analytics Clarity
+
+**Objective**: User's screenshot of `/admin` (the main Dashboard page) called it out as looking bad —
+gradient bar charts and KPI cards, a raw-JSON "Recent Events" panel that read as a debug view, and an
+apparent data inconsistency (KPI card said "Avg CAI: 16" while the live monitor above it said "CAI:
+50"). Explicit direction: flat colors only, no gradients, "real dashboard" quality.
+
+**The "16 vs 50" wasn't a bug** — confirmed by reading `/api/analytics/route.ts`: the KPI card's
+`avgCai` is the average CAI score across *all* historical session events; `LiveCallMonitor`'s number is
+the current/latest live call's own score. Two different, both-correct metrics that happened to share a
+label. Relabeled the KPI card "Avg CAI (All Time)" to make the distinction legible instead of looking
+like conflicting data.
+
+**Changes**: Removed every `bg-gradient-to-*`/`text-gradient` usage on the page — the heatmap's
+"high volume" bars, the daily-trend bars, the emotion-distribution bars, and the H1 all now use flat,
+solid per-metric colors (cyan/violet/amber/emerald/red), matching the flat design language already
+established on the other restyled admin pages. Replaced the decorative hover-lift-and-glow KPI card
+effect with a plain border-color hover, consistent with the rest of the admin UI. Added an explicit
+empty state for the heatmap/trend charts when there's no data yet, instead of a lone bar floating in
+an otherwise-blank box. Rewrote "Recent Events" from a raw `JSON.stringify(payload)` dump into
+human-readable one-line summaries per event type (e.g. `llm_reply` → "gpt-4o-mini · 340 chars",
+`tool_invocation` → "create_booking · succeeded") — a debug view isn't an analytics view; falls back to
+compact JSON only for event types without a dedicated summary.
+
+**Files Modified**: `app/admin/page.tsx`
+
+**Validation Performed**:
+- `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (316 passing), `npm run build` — all clean
+- Grepped the final file for `gradient` — zero remaining CSS gradient usages (only appears once, in a
+  code comment explaining the deliberate absence)
+- Could not click through with real account data in this sandbox (behind login, no credentials
+  available) — recommend a manual pass to confirm the flat styling and event-summary rewrite render
+  correctly against real session data
