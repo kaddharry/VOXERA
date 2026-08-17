@@ -62,7 +62,18 @@ export async function generateReply(args: {
             ...reasoningOpt,
           } as any);
 
-          const message = resp.choices[0].message;
+          const choice = resp.choices?.[0];
+          if (!choice?.message) {
+            // Content-filter rejections and overload responses can come back with
+            // an empty choices array. Throw a named error so the provider loop
+            // logs why this provider failed instead of a bare TypeError.
+            // NB: the message must not contain "timeout"/"timed out" — KeyRotator
+            // string-matches those (lib/util/keys.ts) and would retry 3x with backoff.
+            throw new Error(
+              `Provider "${provider.name}" returned no message (choices=${resp.choices?.length ?? 0})`
+            );
+          }
+          const message = choice.message;
           messages.push(message);
 
           if (message.tool_calls && message.tool_calls.length > 0) {
