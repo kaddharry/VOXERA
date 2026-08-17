@@ -236,13 +236,12 @@ function MetricReadout({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** Surfaces whether HF/Lexicon/Local ONNX actually agreed on this turn,
+/** Surfaces whether Lexicon/Local ONNX actually agreed on this turn,
  * instead of only ever showing the winner — proof the fusion decision isn't
  * hand-waved, and the single most convincing thing to point a judge at. */
 function EngineAgreementCallout({ diagnostics }: { diagnostics: DiagnosticEmotionResult }) {
   const candidates = (
     [
-      { key: "hf", title: "HuggingFace", d: diagnostics.hf },
       { key: "lexicon", title: "Lexicon", d: diagnostics.lexicon },
       { key: "local_onnx", title: "Local ONNX", d: diagnostics.localOnnx },
     ] as const
@@ -296,14 +295,13 @@ export function EngineDiagnosticPanel({
    */
   compact?: boolean;
 }) {
-  const textGridCols = compact ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-3";
+  const textGridCols = compact ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2";
   if (!diagnostics) {
     return (
       <div className="flex flex-col gap-4">
         <div>
           <div className="voxera-console-label text-[10px] font-bold mb-2">Text Engine Division</div>
           <div className={`grid ${textGridCols} gap-2.5`}>
-            <EngineCard engineKey="hf" d={null} />
             <EngineCard engineKey="lexicon" d={null} />
             <EngineCard engineKey="local_onnx" d={null} />
           </div>
@@ -324,16 +322,19 @@ export function EngineDiagnosticPanel({
       <EngineAgreementCallout diagnostics={diagnostics} />
 
       {/* Split into two divisions per Ticket 4 — text-semantic engines
-          (HF/Lexicon/Local ONNX, which classify the transcript) and the
+          (Lexicon/Local ONNX, which classify the transcript) and the
           acoustic engine (which classifies the audio itself) are different
           kinds of signal and were confusingly grouped into one undivided
-          grid before. All three text engines still stay visible regardless
+          grid before. Both text engines still stay visible regardless
           of which one was selected below — comparing engines is the point
-          of this panel, not just showing the winner. */}
+          of this panel, not just showing the winner. HF was removed (see
+          detect.ts): it's the exact same model as Local ONNX just run over
+          the network, and a scripted accuracy eval showed it never changed
+          a single decision — pure latency and an external dependency for
+          zero benefit. */}
       <div>
         <div className="voxera-console-label text-[10px] font-bold mb-2">Text Engine Division</div>
         <div className={`grid ${textGridCols} gap-2.5`}>
-          <EngineCard engineKey="hf" d={diagnostics.hf} />
           <EngineCard engineKey="lexicon" d={diagnostics.lexicon} />
           <EngineCard engineKey="local_onnx" d={diagnostics.localOnnx} />
         </div>

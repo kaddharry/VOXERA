@@ -2164,3 +2164,103 @@ back on. `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (316 passing, incl
 **Files Modified**: `lib/telephony/stream-handler.ts`, `lib/telephony/twilio.ts`,
 `app/api/telephony/incoming/route.ts`, `app/api/telephony/dequeue/route.ts`,
 `__tests__/telephony/twiml-builders.test.ts`
+
+## Emotion Engine Accuracy Eval + Latency Fix (Scripted Before/After)
+
+**Objective**: `handleTurn()` in `lib/agent/orchestrator.ts` `await`s `detectTextEmotion()` synchronously
+before any LLM work starts on every turn, and `detectTextEmotion()` unconditionally `Promise.all`s Local
+ONNX (raced against a 500ms budget, `CONFIG.emotion.localOnnxLatencyBudgetMs`) and a real HuggingFace
+network call alongside the instant Lexicon engine — even on turns where Lexicon's own selection logic
+already deterministically wins regardless of what the ML engines say. Before touching latency, the user
+asked for a scripted accuracy pass first: build a labeled test set, run it against the *current*
+pipeline, identify which engine is the source of any wrong final answers, decide (my call, explicitly
+delegated) whether any engine should be scrapped, implement the latency fix, and re-run the identical
+script to prove the fix didn't cost accuracy.
+
+**Test harness**: a 24-case labeled set (2 examples per each of the 12 `EmotionLabel` values, deliberately
+mixing captions with obvious lexicon keywords and more naturalistic phrasing meant to fall through to the
+ML engines) run through the real, unmodified `detectTextEmotion()` — not a mock — recording each engine's
+individual answer, the final selected label/engine, correctness against the ground-truth label, and
+latency.
+
+**Before-changes results**: 12/24 correct (50.0%). Breaking down by which engine actually decided the
+turn: Lexicon 7/13 correct (53.8%), Local ONNX 5/11 correct (45.5%), HF never decided a single turn — its
+mocked-in-eval-env latency was ~0ms because no `HUGGINGFACE_API_KEY`/`HF_TOKEN` was set, meaning it
+returned `signal: null` immediately every time, exactly like its documented "no token" degraded state.
+
+**Root-cause breakdown of the misses — two structurally distinct failure sources, not one**:
+1. **Lexicon keyword-matching gaps** (not an ML problem): "I don't understand"/"a bit lost" both matched
+   *frustration* keywords instead of confusion keywords (0/2 on confusion); "ridiculous...forty minutes"
+   matched frustration when the ground truth was anger; "scared this charge...stole" matched a distress
+   keyword ("desperate"-adjacent) over fear; joy vs. excitement keyword overlap caused two flips in both
+   directions. These are lexicon keyword-list tuning gaps, not something the ML engines or a latency
+   change could fix.
+2. **A structural ceiling on the ML engines, not a tuning bug**: the model behind Local ONNX/HF
+   (`j-hartmann/emotion-english-distilroberta-base`) natively outputs 7 classes mapped via
+   `HF_LABEL_MAP` to only 6 of VOXERA's 12 `EmotionLabel`s — it has **no output class at all** for
+   `calm`, `distress`, `confusion`, `gratitude`, or `disappointment`. Every time Lexicon abstained (no
+   keyword match) on a turn whose ground truth was one of those 5 labels, the ML engine was
+   **guaranteed** to answer with the wrong label, because the right answer isn't in its vocabulary. This
+   happened 4 times in the 24-case set (2× `calm`→`neutral`, 1× `distress`→`sadness`, 1×
+   `disappointment`→`excitement`) — a 100% miss rate on that specific subset, exactly matching the
+   pre-existing doc comment in `detect.ts` that already called this out as a known limitation, now
+   confirmed empirically rather than just asserted.
+
+**Engine-scrapping decision (delegated to me by the user)**: scrapped HF (`detectTextEmotionHF`) from the
+live pipeline entirely. Reasoning: HF and Local ONNX are the exact same model
+(`j-hartmann/emotion-english-distilroberta-base`) — HF just runs it over the network instead of
+in-process — so removing it costs zero accuracy diversity by construction, not just per this eval; the
+code's own pre-existing doc comment already described HF as "a fallback for environments where the local
+model failed to load, not a genuinely independent second opinion." In this eval it decided 0/24 turns.
+Kept: Local ONNX and Lexicon — they're complementary (Lexicon reaches the 5 labels ONNX structurally
+can't; ONNX covers turns Lexicon has no keyword for), so scrapping either would be a real accuracy
+regression, not a latency win. Removed per the user's explicit instruction ("remove it from analysis page
+too"): the HF `EngineCard` from `EngineDiagnosticPanel`'s Text Engine Division grid and from
+`EngineAgreementCallout`'s comparison list in `app/_components/EngineDashboard.tsx` (grid now 2-up
+instead of 3-up); the `detectTextEmotionHF` call sites in `lib/emotion/detect.ts` and
+`lib/emotion/emotion-debug.ts` (the diagnostics-panel builder, which had its own duplicate HF-calling
+path for the non-precomputed case). `TextEmotionResult.hf`/`EngineDiagnostic` keep their `hf` field/`"hf"`
+engine-key shape unchanged (now always a fixed always-unavailable stub,
+`{ signal: null, latencyMs: 0, timedOut: false }`) rather than removing the field outright, so every
+existing consumer of these types keeps compiling without a ripple of unrelated changes for a field that's
+simply now permanently empty.
+
+**Latency fix (Option 1 — short-circuit, chosen over the session's other proposed option of a
+per-session emotional-baseline/reuse scheme, which was deferred pending exactly this kind of
+measurement)**: `detectTextEmotion()` now runs Lexicon (synchronous, instant) *first*, and only pays for
+Local ONNX's up-to-500ms latency budget when Lexicon's answer would actually be used — i.e. when Lexicon
+found no real keyword match. On the two paths where Lexicon's answer already wins outright (small-talk
+guard, real keyword match), the function returns immediately without ever calling `detectTextEmotionLocalONNX`
+at all. Previously these two paths still paid the full concurrent `Promise.all` wait alongside Lexicon —
+pure latency waste, since the selection logic was already structured to discard whatever Local ONNX (or
+HF) returned in those cases. This is a correctness-preserving refactor, not a behavior change: the
+selection *decision* is identical, only the amount of pipeline it's forced to wait through before
+returning changed.
+
+**After-changes results**: 12/24 correct (50.0%) — bit-for-bit identical to the before-changes run,
+confirming the latency fix cost zero accuracy, exactly as predicted from reading the selection logic
+before touching any code (Lexicon's early-return branches never depended on Local ONNX's/HF's answer in
+the first place). Latency: average `detectTextEmotion()` call dropped from 21ms to 10ms across the full
+24-case set; more specifically, the 13/24 turns where Lexicon matched a real keyword dropped from paying
+Local ONNX's full ~5-15ms model-inference cost (it still ran and was awaited, just discarded) down to
+~0ms (never invoked at all) — this is the subset that matters most in production, since real caller
+utterances hit an explicit lexicon keyword a majority of the time in this test set. The remaining 11/24
+turns (where Lexicon abstains and Local ONNX's answer is actually used) see no latency change, as
+expected — that work was never wasted to begin with.
+
+**Verification**: `npx tsc --noEmit`, `npm run lint`, `npm run build` all clean. `npx vitest run`: 4
+pre-existing tests in `__tests__/emotion/concurrent-engines.test.ts` and
+`__tests__/emotion/emotion-diagnostic.test.ts` failed after the change because they asserted the old
+HF-fallback selection behavior (`selection.engine === "hf"`) that no longer exists by design — rewrote
+both files (concurrent-engines.test.ts fully, emotion-diagnostic.test.ts's HF-specific assertions) to
+mock only Local ONNX (HF is no longer called at all, so nothing to mock) and assert the new short-circuit
+behavior instead (e.g. `expect(mockDetectTextEmotionLocalONNX).not.toHaveBeenCalled()` on a real-keyword
+turn). Full suite: 314 passing, 0 failing. The before/after scripted comparison itself was run via a
+standalone `tsx` harness (not checked into the repo — a throwaway eval script) that imports the real
+`detectTextEmotion()` directly and diffs its output against the 24-case labeled set; both runs used the
+exact same script and cases, only the `detect.ts`/`emotion-debug.ts` code under test changed between
+them.
+
+**Files Modified**: `lib/emotion/detect.ts`, `lib/emotion/emotion-debug.ts`,
+`app/_components/EngineDashboard.tsx`, `__tests__/emotion/concurrent-engines.test.ts`,
+`__tests__/emotion/emotion-diagnostic.test.ts`
