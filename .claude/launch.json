@@ -4,7 +4,7 @@
     {
       "name": "voxera-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": ["run", "dev:full"],
       "port": 3000
     }
   ]
