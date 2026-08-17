@@ -1,4 +1,5 @@
-import type { EmotionContext, MemoryRecord, PolicyDirectives, RetrievedContext, Utterance } from "../types";
+import type { EmotionContext, EmotionLabel, MemoryRecord, PolicyDirectives, RetrievedContext, Utterance } from "../types";
+import { CONFIG } from "../config";
 import { policyToPrompt } from "./policy";
 import { getEmotionPersona, formatPersonaBlock } from "../emotion/persona";
 
@@ -27,8 +28,14 @@ export function buildLLMContext(args: {
    * of the baseline rules, never a replacement for them. Undefined for the
    * hardcoded demo agent. */
   customInstructions?: string;
+  /** Persona-lock result from lib/emotion/persona-lock.ts's resolvePersonaLock()
+   * — when present, the persona/tone block uses this sticky label instead of
+   * `emotion.current.label` directly, so the LLM's tone doesn't flip on a
+   * single noisy turn. Omit to fall back to the old unlocked-every-turn
+   * behavior (e.g. for callers that haven't adopted session-scoped locking). */
+  personaLock?: { label: EmotionLabel; justShifted: boolean; pendingStreak: number };
 }): LLMContext {
-  const { retrieved, emotion, policy, userTurn, customInstructions } = args;
+  const { retrieved, emotion, policy, userTurn, customInstructions, personaLock } = args;
 
   // Uses full record `text`, not the 180-char `summary` — `summary` exists
   // to keep conversational-memory listings compact, but knowledge-base
@@ -60,9 +67,16 @@ export function buildLLMContext(args: {
   const policyBlock = policyToPrompt(policy, alreadyOfferedHandoff);
   const stmBlock = truncate(formatStm(retrieved.stm, userTurn.id), 8000);
 
-  // FR-11: Build dynamic emotion persona for this turn
-  const persona = getEmotionPersona(emotion);
-  const personaBlock = formatPersonaBlock(persona, emotion);
+  // FR-11: Build dynamic emotion persona for this turn — uses the locked
+  // label (if a lock was resolved this turn) rather than the raw per-turn
+  // read, so tone doesn't flip on single-turn noise. See persona-lock.ts.
+  const persona = getEmotionPersona(emotion, personaLock?.label);
+  const personaBlock = formatPersonaBlock(persona, emotion, personaLock ? {
+    label: personaLock.label,
+    isLocked: true,
+    pendingStreak: personaLock.pendingStreak,
+    streakThreshold: CONFIG.emotion.personaLockStreakThreshold,
+  } : undefined);
 
   const system = [
     "You are VOXERA, talking on a live phone call. You sound like a warm, sharp, likeable person — " +
@@ -95,6 +109,16 @@ export function buildLLMContext(args: {
       "the same thing as something you already said in this session, say something different instead — " +
       "vary your wording and, if the conversation has stalled, ask one specific, genuine question that moves " +
       "it forward instead of repeating a generic offer to help.",
+    "8. The EMOTIONAL PERSONA block and the EVIDENCE block answer two different questions — never let one " +
+      "substitute for the other. EMOTIONAL PERSONA governs HOW you say something: your tone, pacing, word " +
+      "choice, how much you acknowledge feelings before moving on. EVIDENCE/CLIENT/USER_PROFILE below governs " +
+      "WHAT you're allowed to say as fact. A caller's emotional state is never itself a source of factual " +
+      "information — being de-escalating with an angry caller doesn't mean inventing a price or menu item " +
+      "you don't actually have grounded; being warm with a happy caller doesn't mean skipping the lookup for " +
+      "something they asked you to check. If a question is purely factual (a price, an order, a policy " +
+      "detail), answer it strictly from EVIDENCE per rule 1, but SAY it in the register EMOTIONAL PERSONA " +
+      "specifies. If a question is about how the caller feels or what's going on with them, that's the " +
+      "EMOTIONAL PERSONA's territory and EVIDENCE has nothing relevant to add.",
     "",
     customInstructions?.trim()
       ? "=== AGENT-SPECIFIC INSTRUCTIONS (from this agent's creator) ===\n" +

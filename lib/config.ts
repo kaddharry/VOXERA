@@ -183,5 +183,17 @@ export const CONFIG = {
     fusionConfidenceMargin: 0.15,
     /** Below this confidence, both engines are effectively guessing → default to neutral. */
     fusionMinConfidence: 0.3,
+    /**
+     * Persona hysteresis (see lib/emotion/persona-lock.ts): how many
+     * consecutive turns must show the OPPOSITE valence direction from the
+     * currently locked tone before the agent's persona actually shifts.
+     * E.g. a caller who started angry (negative) stays getting the
+     * de-escalating persona until 4 turns in a row read positive — not on
+     * the first positive-sounding turn, which is exactly the "don't flip
+     * tone on noise" behavior this was built for. Distress always
+     * overrides this immediately regardless of streak — see the safety
+     * override in resolvePersonaLock().
+     */
+    personaLockStreakThreshold: 4,
   },
 } as const;

@@ -2495,3 +2495,120 @@ explicitly rather than claimed as fully verified.
 `lib/agent/orchestrator.ts`, `lib/knowledge/ingest.ts`, `lib/config.ts`, `lib/agent/llm.ts`,
 `lib/deepgram/live.ts`, `app/_components/TestAgentDrawer.tsx`, `sql/migration_v13.sql` (new),
 `sql/migration.sql`, `sql/migration_consolidated.sql`, `__tests__/agent/llm-provider-fallback.test.ts`
+
+## Real-Call Fallout: DB Timeout Amplification, TTS Latency Regression, Emotional Persona Hysteresis
+
+**Objective**: user ran a real end-to-end call through `npm run server` (the browser realtime demo) and reported
+5 issues from the actual terminal log + transcript: (1) TTS audio arrived noticeably after the text reply, (2)
+RAG got weaker mid-conversation — couldn't find menu prices or a dish list from a 1-page, ~15-dish PDF it had
+just referenced successfully, (3) overall latency was still slow, (4) the agent should clearly know when to
+lean on the emotion engine (tone) vs. RAG (facts) rather than blur the two, and (5) the biggest ask: the
+agent's TONE should lock onto the caller's initial emotional read and hold steady — not re-decide it every
+turn — changing only once the emotion engine shows a SUSTAINED shift (an explicit example: 4-5 consecutive
+turns reading the opposite direction), with distress as the one thing that should always interrupt immediately.
+
+**Root cause of issues 2 & 3, found directly in the user's pasted terminal log — not assumed**: repeated
+`[Logger] Failed to write session event: AbortError` and `[VectorStore] Search Error: AbortError` lines.
+Traced to `lib/db/supabase.ts`: every Supabase call goes through `timeoutFetch()`, which was hard-aborting at
+`FETCH_TIMEOUT_MS = 2_000` (despite the file's own comment always having claimed "5-second") — too tight for
+3 concurrent RPC searches (MTM/LTM_user/LTM_client, all fired via `Promise.all` on every turn) under ordinary
+network jitter. Worse, and the real amplifier: the circuit breaker's `threshold: 1` meant a SINGLE such
+timeout — not a genuine outage, just one slow request — tripped `isSupabaseHealthy()` to false for a full
+30-second `cooldownMs`, during which `vectorStore.search()`/`byTier()` short-circuit to `[]` immediately
+without even attempting a request. One transient blip early in a call was enough to make the agent fully
+"amnesiac" (zero memory/knowledge retrieval) for the next 30 real seconds — exactly matching the observed
+pattern of a PDF that worked for the first question and then silently stopped working for menu prices and a
+dish list moments later. The `threshold: 1` design was original written to fail-fast specifically for DNS
+`ENOTFOUND` (genuinely deterministic — retrying won't help), but ended up applying the same all-or-nothing
+policy to ordinary transient timeouts too, which are NOT deterministic and often would have succeeded a
+moment later. Fixed: `FETCH_TIMEOUT_MS` raised to 6000ms (a real DNS failure still fails in well under 100ms
+regardless — this only helps the "actually slow but working" case), `threshold` raised to 3 (still trips fast
+on a real sustained outage, no longer trips on one blip).
+
+**Root cause of issue 1 (TTS lag) — a regression from this session's own earlier voice-persona fix**: an
+earlier fix in this same session started passing `clientId` into `synthesize()`/`synthesizeLinear16()` (needed
+so a custom agent's own Deepgram `voice_persona` could be resolved through `TurnTrace.agent`) — but this also
+unlocked `lib/deepgram/tts.ts`'s previously-dead `getClientVoiceSettings(clientId)` path, which does TWO
+sequential, uncached Supabase queries (`tenants` then `business_settings`, checking for a tenant-level
+ElevenLabs override) on every single `synthesize()` call, i.e. every spoken reply — regardless of whether
+ElevenLabs was even configured for that tenant, and now also exposed to the same AbortError/circuit-breaker
+risk above. Fixed with a 5-minute in-memory cache keyed by `clientId` (a `__clearVoiceSettingsCacheForTesting()`
+escape hatch was needed for `__tests__/e2e/voice-personalization-recovery.test.ts`, which changes mocked
+Supabase data for the same clientId across cases — a real cross-test contamination bug this caching change
+introduced, caught by re-running the suite, not assumed safe) and an `isSupabaseHealthy()` gate so a known
+outage skips the lookup entirely instead of risking the round trip.
+
+**Issue 4 (emotion engine vs. RAG)**: added Core Rule 8 to `lib/agent/context.ts`'s system prompt, explicit
+about the division of labor: EMOTIONAL PERSONA governs HOW something is said (tone, pacing, word choice),
+EVIDENCE/CLIENT/USER_PROFILE governs WHAT is allowed to be stated as fact — a caller's emotional state is
+never itself a source of factual information, and a purely factual question still needs the EVIDENCE-only
+answer from Core Rule 1, just delivered in whatever register the persona specifies.
+
+**Issue 5 — persona hysteresis, the substantial new feature**: new `lib/emotion/persona-lock.ts`. Emotion
+detection itself still runs every turn as before (unchanged) — two things still genuinely need it every turn:
+the distress safety-escalation path, and simply having an accurate signal to decide whether a turn extends or
+breaks a pending streak. What's new is that the LLM's TONE no longer comes from that raw per-turn read
+directly; it comes from a locked/sticky label that only changes on a sustained shift. Implementation:
+- **State machine**: per-session state (`{ lockedLabel, lockedSign, pendingSign, pendingStreak }`) in Redis
+  (or MockRedis in dev, same pattern the Supabase circuit breaker already uses for cross-instance state), 2h
+  TTL. On the session's first turn, adopts that turn's label/sign as the initial lock outright. Each turn
+  after: classify the turn's `vad.v` into `neg`/`pos`/`neu` with a ±0.15 deadband (near-zero valence is
+  ambiguous, doesn't count either way). If it matches the locked sign (or is neutral) — reinforces the lock,
+  resets any pending streak. If it's the OPPOSITE sign — builds (or continues) `pendingStreak`; hitting
+  `CONFIG.emotion.personaLockStreakThreshold` (default 4, matching the user's "4-5 times" example) commits a
+  new lock using that turn's actual label (not just the sign, so the persona is concrete — "joy", not merely
+  "positive"). This is a valence-DIRECTION state machine, not a per-label one, matching the actual product
+  ask: "angry" vs. "frustrated" vs. "distressed" are all still "negative" and don't reset each other's streak
+  progress toward "positive" — what matters is whether the caller has durably moved to the other side.
+- **Safety override**: genuine distress (`current.label === "distress"` or `flags.increasing_distress`) always
+  breaks through immediately and unconditionally, regardless of streak state — checked against the REAL
+  unlocked reading every time, never gated behind a multi-turn streak. A caller in real distress must never
+  wait on 4 turns before the agent's tone catches up.
+- **Wiring**: `lib/emotion/persona.ts`'s `getEmotionPersona()` gained an optional `overrideLabel` param (falls
+  back to `current.label` when omitted, so nothing breaks for callers that don't use the lock) —
+  `formatPersonaBlock()` now also takes an optional `lockInfo` and, when locked, prints both the turn's real
+  raw read (`CALLER EMOTIONAL STATE (this turn's raw read)`) AND which persona is actually governing tone
+  right now (`LOCKED PERSONA: ...`), with streak progress, so the model has full situational awareness rather
+  than a value that silently diverges from what it can see. `lib/agent/orchestrator.ts` resolves the lock
+  concurrently with retrieval/LLM prep (same "kick off, await right before it's needed" pattern used for the
+  emotion-diagnostics promise) and threads the result into `buildLLMContext()`'s new `personaLock` param;
+  exposed on `TurnTrace.personaLock` for the UI/debugging, mirroring `emotionDiagnostics`.
+- **A real bug found and fixed while building this, not a hypothetical one**: live-testing the lock (multi-turn
+  session via `/api/turn`, starting angry then turning increasingly positive) showed the pending streak
+  staying stuck at 0 across 3 turns that were obviously positive. Root cause: `lib/emotion/lexicon.ts` had
+  `absolutely` grouped into the same standalone-positive keyword pattern as `amazing`/`awesome`/`incredible` —
+  but "absolutely" is an INTENSIFIER, not a sentiment word ("absolutely ridiculous" and "absolutely wonderful"
+  are opposite in valence, yet both matched and contributed the same +0.8 valence regardless of what they were
+  intensifying). This flipped "This is absolutely ridiculous..." (unambiguously negative) to a net-POSITIVE
+  fused `vad.v = +0.15` once blended with the correctly-negative "ridiculous" match — locking the session's
+  INITIAL sign as "positive" from an angry opening line, so every subsequent negative turn read as "opposite
+  direction" and every positive turn read as "same direction, no streak needed." Removed `absolutely` from
+  that pattern; verified live afterward: "This is absolutely ridiculous..." now correctly scores `v = -0.5`,
+  `isMixed: false`, and the full streak-then-commit sequence was verified end-to-end via `/api/turn` — locked
+  "frustration" held through 3 consecutive positive turns (streak 1→2→3), then correctly committed to
+  "gratitude" exactly on the 4th consecutive positive turn (`justShifted: true`).
+- **Also observed, not something this fix controls**: during live testing, individual Groq API calls
+  occasionally took 6-15s (vs. the usual ~1.3-3.4s) with no error and no retry-loop in the logs — this reads
+  as Groq's own shared-tier queueing variance, not a bug in this codebase, and is called out here rather than
+  silently omitted from the latency picture.
+
+**Verification**: `npx tsc --noEmit`, `npm run lint`, `npm run build` all clean. `npx vitest run`: 3
+pre-existing tests failed after these changes and were fixed, not routed around — `context-prompt.test.ts`
+(stale string match for the renamed "CALLER EMOTIONAL STATE" line), `redis-scaling.test.ts` (asserted the old
+threshold=1 circuit-breaker behavior — updated to verify 1 failure does NOT trip it but 3 does), and
+`voice-personalization-recovery.test.ts` (the real cross-test cache-contamination bug described above, fixed
+with the new testing escape hatch, not by loosening the assertion). New `__tests__/emotion/persona-lock.test.ts`
+(9 tests) covers the state machine directly: initial lock, holding steady across same-direction turns, single
+opposite-turn building a streak without shifting, streak reset on reversion, commit exactly at threshold,
+deadband/neutral handling, distress override (including mid-streak), and session isolation. Full suite: 324
+passing, 0 failing. Live-verified end-to-end via `/api/turn` (real Groq calls, not mocked): the persona-lock
+streak-then-commit sequence exactly as designed, and the lexicon fix's before/after (`v: +0.15, isMixed: true`
+-> `v: -0.5, isMixed: false`) confirmed directly. AbortError/circuit-breaker and TTS-caching fixes verified via
+code review + the updated test suite; not independently reproduced under real network latency in this
+environment (would need an actual slow/flaky Supabase connection to trigger, which isn't something this
+sandbox can simulate on demand).
+
+**Files Modified**: `lib/db/supabase.ts`, `lib/deepgram/tts.ts`, `lib/emotion/persona-lock.ts` (new),
+`lib/emotion/persona.ts`, `lib/emotion/lexicon.ts`, `lib/agent/context.ts`, `lib/agent/orchestrator.ts`,
+`lib/config.ts`, `__tests__/emotion/persona-lock.test.ts` (new), `__tests__/emotion/context-prompt.test.ts`,
+`__tests__/scaling/redis-scaling.test.ts`, `__tests__/e2e/voice-personalization-recovery.test.ts`

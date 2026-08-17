@@ -80,7 +80,7 @@ describe("buildLLMContext — system prompt contains persona section", () => {
       emotion: makeEmotion("anger", 0.82),
       policy: defaultPolicy,
     });
-    expect(ctx.system).toContain("CALLER EMOTIONAL STATE: ANGER");
+    expect(ctx.system).toContain("CALLER EMOTIONAL STATE (this turn's raw read): ANGER");
   });
 
   it("system prompt contains intensity value", () => {

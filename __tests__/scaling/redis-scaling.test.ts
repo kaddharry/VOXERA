@@ -80,18 +80,27 @@ describe("Distributed Redis Architecture & Telephony Scaling (Issue #13)", () =>
       // Verify healthy initially
       expect(isSupabaseHealthy()).toBe(true);
 
-      // Trigger failure on current node (which writes to Redis and broadcasts)
+      // Threshold is 3 (raised from 1 — a single transient timeout used to
+      // black out the whole session's DB access for 30s, see lib/db/supabase.ts).
+      // A lone failure should NOT yet open the circuit...
+      recordSupabaseFailure();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(isSupabaseHealthy()).toBe(true);
+
+      // ...but 3 consecutive failures (which writes to Redis and broadcasts
+      // each time) should.
+      recordSupabaseFailure();
       recordSupabaseFailure();
 
       // Yield to allow Pub/Sub state sync to update other nodes
       await new Promise((resolve) => setTimeout(resolve, 20));
 
-      // Verify circuit is now open (fails since threshold is 1)
+      // Verify circuit is now open
       expect(isSupabaseHealthy()).toBe(false);
 
       // Verify Redis contains the failures
       const redisFailures = await redis.get("voxera:cb:consecutive_failures");
-      expect(redisFailures).toBe("1");
+      expect(redisFailures).toBe("3");
     });
   });
 });

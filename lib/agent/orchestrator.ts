@@ -6,6 +6,7 @@ import { detectAudioEmotion } from "../emotion/audio-emotion";
 import { importanceScore, novelty, policyFlag, taskCriticality } from "../emotion/importance";
 import { calculateCAI, type CAIResult } from "../emotion/cai";
 import { runDiagnosticEmotion, type DiagnosticEmotionResult } from "../emotion/emotion-debug";
+import { resolvePersonaLock, type PersonaLockResult } from "../emotion/persona-lock";
 import { logSessionEvent, makeEvent } from "../logging/session-logger";
 import { emitSessionEvent } from "../realtime/emitter";
 import { supabase as supabaseService } from "../db/supabase";
@@ -100,6 +101,12 @@ export interface TurnTrace {
    * stream-handler.ts) synthesize with the agent's own chosen voice instead
    * of silently falling back to the global default. */
   agent?: { id: string; name: string; voicePersona?: string | null };
+  /** Persona-hysteresis result for this turn (lib/emotion/persona-lock.ts)
+   * — which label actually shaped the reply's tone, whether that's a fresh
+   * commit this turn, and how far into a pending direction-shift streak the
+   * session currently is. Exposed for the UI/debugging, mirroring how
+   * emotionDiagnostics surfaces the raw engine breakdown. */
+  personaLock?: PersonaLockResult;
   /** Wall-clock ms spent in each server-side stage of this turn — real
    * measurements, not estimates, wired into the Live Engine Console's
    * pipeline visual. sttMs/ttsMs are filled in by server.ts for realtime
@@ -239,6 +246,13 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     ltmUser: ltmUserAll,
   });
   const emotionMs = Date.now() - turnStart;
+
+  // Persona hysteresis (lib/emotion/persona-lock.ts) — kicked off here but
+  // not awaited yet, same "run concurrently with retrieval/LLM prep, only
+  // await right before it's actually needed" pattern as the diagnostics
+  // promise below. It's a single small Redis round trip, but there's no
+  // reason to serialize it ahead of the retrieval/memory-write work either.
+  const personaLockPromise: Promise<PersonaLockResult> = resolvePersonaLock(input.sessionId, emotionCtx);
 
   // ── Phase 1 diagnostic instrumentation (off by default, see CONFIG.emotion.diagnosticMode) ──
   // Fired here but NOT awaited yet — kicked off concurrently with the
@@ -393,6 +407,8 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     }));
   }
 
+  const personaLock = await personaLockPromise;
+
   const llmContext = buildLLMContext({
     userId: input.userId,
     clientId: input.clientId,
@@ -401,6 +417,7 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     emotion: emotionCtx,
     policy,
     customInstructions,
+    personaLock,
   });
 
   const llmStart = Date.now();
@@ -499,6 +516,7 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
       acousticFeatures: input.acousticFeatures,
       emotionDiagnostics,
       agent: resolvedAgent,
+      personaLock,
     },
   };
 }

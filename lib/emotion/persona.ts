@@ -278,25 +278,39 @@ const PERSONA_MAP: Record<EmotionLabel, EmotionPersona> = {
  * Returns the voice persona for the current emotional state.
  *
  * Priority logic:
- *  1. Distress/increasing_distress → always distress persona (safety first)
+ *  1. Distress/increasing_distress → always distress persona (safety first,
+ *     checked against the REAL current reading regardless of `overrideLabel`)
  *  2. repeated_frustration + anger → anger persona (most intense active flag)
- *  3. Otherwise → map directly from current emotion label
+ *  3. Otherwise → map from `overrideLabel` if given, else the current emotion label
+ *
+ * `overrideLabel` is how lib/emotion/persona-lock.ts's hysteresis feeds in —
+ * the TONE this call returns can come from a locked/sticky label instead of
+ * this turn's raw noisy read, while `emotion.current`/`flags` (used for the
+ * safety override and the mixed-signal check) always reflect the real,
+ * unlocked turn so a genuine distress signal or a real mixed-signal moment
+ * is never masked by a stale lock.
  */
-export function getEmotionPersona(emotion: EmotionContext): EmotionPersona {
+export function getEmotionPersona(emotion: EmotionContext, overrideLabel?: EmotionLabel): EmotionPersona {
   const { current, flags } = emotion;
 
-  // Safety override — distress always takes priority
+  // Safety override — distress always takes priority, and always reflects
+  // the REAL current reading, never the locked one.
   if (flags.increasing_distress || current.label === "distress") {
     return PERSONA_MAP.distress;
   }
 
+  const effectiveLabel = overrideLabel ?? current.label;
+
   // Sustained anger is stronger signal than mild frustration
-  if (flags.repeated_frustration && current.label === "anger") {
+  if (flags.repeated_frustration && effectiveLabel === "anger") {
     return PERSONA_MAP.anger;
   }
 
-  // Mixed signals override (e.g. good news but user is sad)
-  if (current.isMixed) {
+  // Mixed signals override (e.g. good news but user is sad) — only applies
+  // to the unlocked/raw case; a locked persona has already resolved which
+  // direction to hold, so it shouldn't get second-guessed by this turn's
+  // own mixed-signal read.
+  if (current.isMixed && !overrideLabel) {
     return {
       tone: "Empathetic, curious, and sensitive to contradictions.",
       openingStyle: "Acknowledge the positive news but gently question the negative tone or explicitly ask how they are feeling about the mixed situation.",
@@ -310,25 +324,41 @@ export function getEmotionPersona(emotion: EmotionContext): EmotionPersona {
     };
   }
 
-  return PERSONA_MAP[current.label] ?? PERSONA_MAP.neutral;
+  return PERSONA_MAP[effectiveLabel] ?? PERSONA_MAP.neutral;
 }
 
 /**
  * Formats an EmotionPersona into a structured LLM coaching block.
  * Injected directly into the system prompt.
+ *
+ * `lockInfo`, when provided, surfaces the persona-lock state (see
+ * lib/emotion/persona-lock.ts) so the model sees both the real-time detected
+ * emotion (for situational awareness — someone can be locked into a
+ * de-escalating persona while still reacting to what's actually said) and
+ * which persona is actually governing its tone right now, rather than
+ * silently diverging from what CALLER EMOTIONAL STATE below might suggest.
  */
 export function formatPersonaBlock(
   persona: EmotionPersona,
-  emotion: EmotionContext
+  emotion: EmotionContext,
+  lockInfo?: { label: string; isLocked: boolean; pendingStreak: number; streakThreshold: number }
 ): string {
   const { current } = emotion;
   const lines = [
-    `CALLER EMOTIONAL STATE: ${current.label.toUpperCase()} (intensity: ${current.intensity.toFixed(2)}, conf: ${current.confidence.toFixed(2)})`,
-    `TONE YOU MUST ADOPT: ${persona.tone}`,
+    `CALLER EMOTIONAL STATE (this turn's raw read): ${current.label.toUpperCase()} (intensity: ${current.intensity.toFixed(2)}, conf: ${current.confidence.toFixed(2)})`,
+  ];
+  if (lockInfo && lockInfo.isLocked) {
+    lines.push(
+      `LOCKED PERSONA: ${lockInfo.label.toUpperCase()} — holding this tone steady across turns rather than reacting to ` +
+      `every turn's raw read${lockInfo.pendingStreak > 0 ? ` (${lockInfo.pendingStreak}/${lockInfo.streakThreshold} consecutive turns toward a real shift)` : ""}.`
+    );
+  }
+  lines.push(`TONE YOU MUST ADOPT: ${persona.tone}`);
+  lines.push(
     `OPENING STYLE: ${persona.openingStyle}`,
     `LANGUAGE RULES:`,
     ...persona.languageRules.map((r) => `  - ${r}`),
-  ];
+  );
 
   if (persona.forbidden.length > 0) {
     lines.push(`FORBIDDEN WORDS/PHRASES: ${persona.forbidden.map((f) => `"${f}"`).join(", ")}`);

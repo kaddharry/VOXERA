@@ -89,13 +89,14 @@ vi.mock("../../lib/queue/manager", () => ({
 }));
 
 import { cloneVoiceElevenLabs } from "../../lib/tts/voice-clone";
-import { synthesizeLinear16 } from "../../lib/deepgram/tts";
+import { synthesizeLinear16, __clearVoiceSettingsCacheForTesting } from "../../lib/deepgram/tts";
 import { TelephonyStreamHandler } from "../../lib/telephony/stream-handler";
 import { DeepgramLiveWrapper } from "../../lib/deepgram/live";
 
 describe("Voice Personalization & Customer Recovery (Issue #16)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __clearVoiceSettingsCacheForTesting();
     mockUtterances = [];
     mockSettings = {
       voice_provider: "elevenlabs",

@@ -23,10 +23,25 @@ import { redis, redisSub } from "../redis/client";
 const CIRCUIT_BREAKER = {
   consecutiveFailures: 0,
   lastFailureAt: 0,
-  /** After this many consecutive failures, the circuit opens.
-   *  Set to 1 because DNS ENOTFOUND is deterministic — if the host
-   *  can't be resolved once, it won't resolve on the next call either. */
-  threshold: 1,
+  /**
+   * After this many consecutive failures, the circuit opens (isSupabaseHealthy()
+   * returns false, and every vectorStore call short-circuits to an empty
+   * result for `cooldownMs` instead of even attempting a request).
+   *
+   * Was 1 — the doc comment's original reasoning ("DNS ENOTFOUND is
+   * deterministic, no point retrying") is true for THAT failure mode, but
+   * this same threshold also fires on an ordinary transient timeoutFetch()
+   * abort (see FETCH_TIMEOUT_MS above), which is NOT deterministic and
+   * often would have succeeded on the very next attempt. Live call testing
+   * showed a single transient abort was enough to trip the breaker and go
+   * fully "amnesiac" — zero memory/knowledge retrieval — for a full 30s
+   * cooldown window, silently degrading every reply in that window to "I
+   * don't have that information" regardless of what was actually in the
+   * knowledge base. Raised to 3: a genuine DNS/connectivity outage still
+   * trips this within 3 rapid-fail requests (well under a second), while a
+   * one-off network blip no longer blacks out the whole session.
+   */
+  threshold: 3,
   /** How long (ms) the circuit stays open before allowing a retry probe. */
   cooldownMs: 30_000,
 };
@@ -97,10 +112,20 @@ export function recordSupabaseFailure(): void {
 }
 
 // ─── Timeout Fetch ───────────────────────────────────────────────────────────
-// Wraps the global fetch with a 5-second AbortController timeout so that
-// DNS failures (ENOTFOUND) don't block the pipeline for 10+ seconds.
-
-const FETCH_TIMEOUT_MS = 2_000;
+// Wraps the global fetch with an AbortController timeout so that DNS
+// failures (ENOTFOUND) don't block the pipeline for 10+ seconds.
+//
+// Was 2000ms (despite this comment always having said "5-second") — live
+// call testing showed this was too tight for ordinary conditions: real
+// vectorStore.search() calls (lib/memory/store.ts) run 3 concurrent
+// Supabase RPC round trips per turn (MTM/LTM_user/LTM_client), and under
+// normal network jitter that regularly exceeded 2s, producing a stream of
+// "[VectorStore] Search Error: AbortError" / "[Logger] Failed to write
+// session event: AbortError" — not genuine outages, just this timeout being
+// too aggressive for concurrent load. Raised to 6000ms; a real DNS failure
+// still fails in well under 100ms regardless of this value, so this only
+// changes behavior for the "actually slow but working" case.
+const FETCH_TIMEOUT_MS = 6_000;
 
 function timeoutFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();

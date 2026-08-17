@@ -1,7 +1,7 @@
 import { CONFIG } from "../config";
 import type { EmotionLabel, PolicyDirectives } from "../types";
 import { getDeepgram } from "./client";
-import { supabase } from "../db/supabase";
+import { supabase, isSupabaseHealthy } from "../db/supabase";
 import { synthesizeElevenLabs } from "../tts/voice-clone";
 import { applyEmotionProsody, getEmotionTTSParams } from "../emotion/tts-params";
 import { isDeepgramModelId } from "./voices";
@@ -21,9 +21,41 @@ function resolveVoiceModel(persona?: string): string {
   return personaConfig?.model || CONFIG.deepgram.ttsModel;
 }
 
+// In-memory cache for the tenant-level ElevenLabs voice override lookup —
+// this used to be a live, uncached 2-query Supabase round trip (tenants,
+// then business_settings) on EVERY single synthesize() call, i.e. every
+// spoken reply, even though this setting almost never changes mid-call.
+// Live testing surfaced this as a real TTS-latency regression: once
+// server.ts started passing `clientId` through (needed so an agent's own
+// Deepgram voice_persona could be resolved — see the caller), it also
+// unlocked this previously-dead code path, and it paid the DB round trip
+// on every reply regardless of whether ElevenLabs was even configured for
+// that tenant. A short TTL keeps it fresh enough that an admin changing
+// voice settings mid-session still takes effect within a few minutes.
+const VOICE_SETTINGS_CACHE_TTL_MS = 5 * 60 * 1000;
+const voiceSettingsCache = new Map<string, { value: { provider?: string; voiceId?: string } | null; ts: number }>();
+
+/** Test-only escape hatch — this cache is module-level state, so tests that
+ * change mocked Supabase data for the same clientId across cases need a way
+ * to bypass a stale entry rather than being order-dependent on the TTL. */
+export function __clearVoiceSettingsCacheForTesting(): void {
+  voiceSettingsCache.clear();
+}
+
 // Resolve voice settings for client
 async function getClientVoiceSettings(clientId?: string): Promise<{ provider?: string; voiceId?: string } | null> {
   if (!clientId || clientId === "demo") return null;
+
+  const cached = voiceSettingsCache.get(clientId);
+  if (cached && Date.now() - cached.ts < VOICE_SETTINGS_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
+  // Skip the lookup entirely during a known Supabase outage rather than
+  // paying (and risking) the round trip on every single reply — falls
+  // through to the agent's own Deepgram persona instead.
+  if (!isSupabaseHealthy()) return null;
+
   try {
     const { data: tenant } = await supabase
       .from("tenants")
@@ -31,7 +63,10 @@ async function getClientVoiceSettings(clientId?: string): Promise<{ provider?: s
       .eq("auth_user_id", clientId)
       .single();
 
-    if (!tenant) return null;
+    if (!tenant) {
+      voiceSettingsCache.set(clientId, { value: null, ts: Date.now() });
+      return null;
+    }
 
     const { data: settings } = await supabase
       .from("business_settings")
@@ -39,10 +74,12 @@ async function getClientVoiceSettings(clientId?: string): Promise<{ provider?: s
       .eq("tenant_id", tenant.id)
       .single();
 
-    return {
+    const result = {
       provider: settings?.voice_provider ?? undefined,
       voiceId: settings?.custom_voice_id ?? undefined,
     };
+    voiceSettingsCache.set(clientId, { value: result, ts: Date.now() });
+    return result;
   } catch (err) {
     console.error("[TTS] Failed to retrieve client voice settings:", err);
     return null;

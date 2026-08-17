@@ -47,7 +47,19 @@ export const LEXICON: Array<{
 
   // ── Excitement ─────────────────────────────────────────────────────────
   { kw: /\b(?:excit|can'?t wait|thrilled|pumped|stoked|hyped|ecstatic|sick)\b/ig, label: "excitement", vad: { v: 0.9, a: 0.9, d: 0.4 }, w: 1.0 },
-  { kw: /\b(?:amazing|incredible|awesome|insane|unbelievable|absolutely)\b/ig, label: "excitement", vad: { v: 0.8, a: 0.7, d: 0.3 }, w: 0.8 },
+  // "absolutely" was here too, alongside genuinely-positive standalone words
+  // like "amazing"/"awesome" — but "absolutely" is an INTENSIFIER, not a
+  // sentiment word: "absolutely ridiculous" and "absolutely wonderful" are
+  // opposite in valence, yet both matched this pattern and contributed the
+  // same +0.8 valence regardless of what it was intensifying. Live-verified
+  // this was flipping "This is absolutely ridiculous..." (unambiguously
+  // negative) to a net-POSITIVE fused VAD (v=+0.15) once blended with the
+  // correctly-negative "ridiculous" match — a real accuracy bug, not just a
+  // theoretical one, and one the new persona-lock hysteresis (which reads
+  // vad.v's sign) inherited directly. Removed; "amazing"/"incredible"/
+  // "awesome"/"insane"/"unbelievable" are fine standalone since they carry
+  // their own sentiment with or without an intensifier in front of them.
+  { kw: /\b(?:amazing|incredible|awesome|insane|unbelievable)\b/ig, label: "excitement", vad: { v: 0.8, a: 0.7, d: 0.3 }, w: 0.8 },
   { kw: /\b(?:got (?:a|an|the|my)|just got|i got|landed|accepted|admitted|selected|hired)\b/ig, label: "excitement", vad: { v: 0.7, a: 0.7, d: 0.4 }, w: 0.9 },
   { kw: /\b(?:internship|promotion|offer|scholarship|award|prize|dream job|accepted)\b/ig, label: "excitement", vad: { v: 0.8, a: 0.8, d: 0.4 }, w: 0.9 },
   { kw: /\b(?:celebrat|party|woohoo|yay|omg|oh my god|yes yes)\b/ig, label: "excitement", vad: { v: 0.8, a: 0.9, d: 0.3 }, w: 0.9 },
