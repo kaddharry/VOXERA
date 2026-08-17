@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `https://${req.headers.get("host")}`;
     const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}`;
 
-    return new NextResponse(buildConnectTwiml(wsUrl, callSid), {
+    return new NextResponse(buildConnectTwiml(wsUrl, { callSid, clientId, caller: callerNumber }), {
       headers: { "Content-Type": "text/xml" },
     });
   } catch (err) {

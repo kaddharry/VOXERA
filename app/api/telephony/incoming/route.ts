@@ -115,13 +115,18 @@ export async function POST(req: NextRequest) {
     }], { onConflict: "id" });
 
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `https://${req.headers.get("host")}`;
+    // Query params here are a best-effort fallback only (kept for direct/
+    // non-Twilio WS testing) — Twilio does not reliably forward them on the
+    // Media Stream connection URL. The real source of truth is the
+    // <Parameter> elements below, delivered via the "start" event.
     const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}${agentId ? `&agentId=${agentId}` : ""}`;
 
     console.log(`[Telephony] Connecting ${callSid} to stream: ${wsUrl}`);
 
-    return new NextResponse(buildConnectTwiml(wsUrl, callSid), {
-      headers: { "Content-Type": "text/xml" },
-    });
+    return new NextResponse(
+      buildConnectTwiml(wsUrl, { callSid, clientId, caller: callerNumber, ...(agentId && { agentId }) }),
+      { headers: { "Content-Type": "text/xml" } }
+    );
   } catch (err) {
     console.error("[Telephony] Incoming handler error:", err);
     return new NextResponse(buildRejectTwiml(), {

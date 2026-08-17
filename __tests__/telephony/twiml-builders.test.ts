@@ -15,32 +15,32 @@ import {
 
 describe("buildConnectTwiml", () => {
   it("returns valid XML string", () => {
-    const xml = buildConnectTwiml("wss://example.com/stream", "CA123");
+    const xml = buildConnectTwiml("wss://example.com/stream", { callSid: "CA123" });
     expect(xml).toContain("<?xml");
     expect(xml).toContain("<Response>");
     expect(xml).toContain("</Response>");
   });
 
   it("contains a <Connect> and <Stream> element", () => {
-    const xml = buildConnectTwiml("wss://example.com/stream", "CA123");
+    const xml = buildConnectTwiml("wss://example.com/stream", { callSid: "CA123" });
     expect(xml).toContain("<Connect>");
     expect(xml).toContain("<Stream");
   });
 
   it("embeds the correct WebSocket URL in the stream", () => {
     const wsUrl = "wss://my-ngrok.ngrok-free.app/api/telephony/stream";
-    const xml = buildConnectTwiml(wsUrl, "CA456");
+    const xml = buildConnectTwiml(wsUrl, { callSid: "CA456" });
     expect(xml).toContain(wsUrl);
   });
 
   it("embeds the callSid as a parameter", () => {
-    const xml = buildConnectTwiml("wss://example.com/stream", "CA789");
+    const xml = buildConnectTwiml("wss://example.com/stream", { callSid: "CA789" });
     expect(xml).toContain("callSid");
     expect(xml).toContain("CA789");
   });
 
   it("includes a <Say> greeting before connect", () => {
-    const xml = buildConnectTwiml("wss://example.com/stream", "CA000");
+    const xml = buildConnectTwiml("wss://example.com/stream", { callSid: "CA000" });
     expect(xml).toContain("<Say");
     expect(xml.toLowerCase()).toContain("please hold");
   });

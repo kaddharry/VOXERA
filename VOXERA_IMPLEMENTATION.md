@@ -2106,3 +2106,61 @@ run` (316 passing), `npm run build` all clean. Cleaned up all synthetic `session
 created during this investigation.
 
 **Files Modified**: `lib/agent/llm.ts`
+
+### 2026-08-18, later still — Two More Real Bugs Found From an Actual Call Transcript
+
+**Objective**: With the silent-LLM-reply fix live, the user placed a real call and shared the full
+server log: STT genuinely transcribed "Hello?" three times, the LLM genuinely replied each time
+("Hey there — hi! How's it going?", etc.), and the call ended cleanly after 28s — but the caller heard
+no audio at all. The same log also showed `callSid=unknown` on every line for this call, despite the
+TwiML's `<Stream>` URL clearly containing the real callSid as a query parameter.
+
+**Root cause #1 (the actual silence)**: `TelephonyStreamHandler`'s constructor called `this.init()`,
+an async function that `await`s `callQueue.markCallStarted()` then `this.deepgram.connect()` (a real
+network round-trip) *before* ever calling `this.ws.on("message", ...)`. Twilio sends `"connected"` and
+`"start"` within milliseconds of the WebSocket opening — Node's `EventEmitter` drops events fired
+before a listener exists, so on a real call those two events were silently lost while `init()` was
+still awaiting Deepgram. `"start"` is the only place `this.streamSid` ever gets set, and
+`speakToTwilio()` silently returns (`if (!this.streamSid || ...) return;`, no log) whenever it's unset
+— so the agent's replies were being generated and logged correctly, then silently discarded every
+single time. STT still worked because later `"media"` frames arrived *after* the listener finally
+attached. This is the exact bug class `server.ts`'s browser-demo path already documents fixing with the
+same "register every ws handler before awaiting anything" pattern — telephony's handler never got that
+fix. Moved `ws.on("message"/"close"/"error")` into the constructor synchronously, before `this.init()`
+is even called.
+
+**Root cause #2 (`callSid=unknown`)**: Twilio does not reliably forward arbitrary query-string
+parameters on the Media Stream WebSocket connection URL — confirmed directly: the TwiML's
+`<Stream url="...&callSid=...&clientId=...">` clearly had them, yet the handler read `"unknown"` for
+`callSid` at WS-upgrade time on a real call. This meant `clientId` was almost certainly also silently
+falling back to `"demo"` on every real call — the wrong tenant's prompt/knowledge base — and
+`updateCallLog` was targeting a `call_logs` row keyed `"unknown"` that never existed, silently updating
+zero rows (this is *also* why `sessionId` stayed `null` on real calls even when nothing else was
+broken). Twilio's actual documented mechanism for custom data on a Media Stream is `<Parameter>`
+elements, delivered in the `"start"` event's `start.customParameters` — not the connection URL.
+`buildConnectTwiml` (`lib/telephony/twilio.ts`) now takes a `customParams` record and emits one
+`<Parameter>` per entry instead of just `callSid`; both call sites
+(`app/api/telephony/incoming/route.ts`, `app/api/telephony/dequeue/route.ts`) now pass
+`callSid`/`clientId`/`caller`/`agentId`. The stream handler's `"start"` case now corrects
+`this.callSid` from Twilio's own authoritative `start.callSid` and `this.clientId`/`this.agentId`/
+`this.callerNumber` from `start.customParameters`, and the `updateCallLog` call moved from `init()`
+into the `"start"` case — it needs the corrected callSid to ever match a real row, so calling it before
+`"start"` arrives was pointless even before bug #1 masked the issue entirely. The query-string params
+are kept as a harmless best-effort fallback (useful for direct non-Twilio WS testing) but are no longer
+the source of truth.
+
+**Verified live, not just by reasoning about it**: restarted the dev server under this session's own
+tracking (again — it kept drifting to processes outside my visibility across this whole investigation)
+and sent a synthetic WebSocket connection with **zero query-string parameters at all** (matching
+Twilio's real behavior) and a `"start"` event carrying `customParameters`. Server log:
+`[TelephonyStream] Stream started: callSid=CArealtest1 clientId=176d6905-...-8d02d7836cb95b
+streamSid=MZrealtest1` — appearing *before* `"[Deepgram Live] Connected"`, confirming both fixes at
+once: `"start"` is now processed immediately (not dropped waiting on Deepgram), and the real
+callSid/clientId were correctly recovered from `customParameters` alone with no query string to fall
+back on. `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (316 passing, including updated
+`buildConnectTwiml` call sites in `__tests__/telephony/twiml-builders.test.ts` for its new signature),
+`npm run build` all clean.
+
+**Files Modified**: `lib/telephony/stream-handler.ts`, `lib/telephony/twilio.ts`,
+`app/api/telephony/incoming/route.ts`, `app/api/telephony/dequeue/route.ts`,
+`__tests__/telephony/twiml-builders.test.ts`

@@ -31,8 +31,17 @@ export function validateTwilioSignature(
 /**
  * Builds TwiML to connect the caller to a Media Stream WebSocket.
  * Twilio will open a WebSocket to `wsUrl` and stream mulaw audio.
+ *
+ * `customParams` (clientId, agentId, caller, callSid, ...) are sent as
+ * `<Parameter>` elements, NOT as query-string params on `wsUrl` — verified
+ * live against a real call that Twilio does not reliably forward arbitrary
+ * query parameters on the Media Stream connection URL (confirmed by the
+ * stream handler receiving `callSid=unknown` on a real call whose TwiML
+ * definitely had it in the URL). `<Parameter>` values are the
+ * Twilio-documented mechanism: they arrive in the `start` event's
+ * `start.customParameters`, which the stream handler now reads instead.
  */
-export function buildConnectTwiml(wsUrl: string, callSid: string): string {
+export function buildConnectTwiml(wsUrl: string, customParams: Record<string, string>): string {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
 
@@ -44,8 +53,9 @@ export function buildConnectTwiml(wsUrl: string, callSid: string): string {
 
   const connect = response.connect();
   const stream = connect.stream({ url: wsUrl });
-  // Pass callSid as a custom parameter so stream handler knows which call this is
-  stream.parameter({ name: "callSid", value: callSid });
+  for (const [name, value] of Object.entries(customParams)) {
+    if (value) stream.parameter({ name, value });
+  }
 
   return response.toString();
 }

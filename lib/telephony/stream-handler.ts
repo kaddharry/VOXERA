@@ -122,21 +122,32 @@ export class TelephonyStreamHandler {
     this.startedAt = Date.now();
  
     this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), { sampleRate: 8000 });
-    this.init();
-  }
- 
-  private async init() {
-    await callQueue.markCallStarted();
-    await this.deepgram.connect();
-    await this.updateCallLog({ sessionId: this.sessionId });
-    console.log(`[TelephonyStream] Call started: ${this.callSid}, session: ${this.sessionId}`);
- 
+
+    // Register every ws event handler in this same synchronous tick, before
+    // awaiting anything in init() below — Node's EventEmitter drops events
+    // fired before a listener is attached, and Twilio sends "connected"
+    // then "start" within milliseconds of the WS opening. init() awaits a
+    // real network round-trip to Deepgram before it used to reach this
+    // wiring, which silently dropped "start" (never setting streamSid) on
+    // real calls: STT still worked once later "media" frames arrived after
+    // the listener attached, but every speakToTwilio() call after that
+    // silently no-op'd on `if (!this.streamSid) return;` — the caller heard
+    // nothing back despite the agent generating real replies. Same bug
+    // class server.ts's realtime demo path already documents fixing.
     this.ws.on("message", (data: Buffer) => this.onTwilioMessage(data));
     this.ws.on("close", () => this.onCallEnded());
     this.ws.on("error", (err) => {
       console.error(`[TelephonyStream] WebSocket error on ${this.callSid}:`, err);
       this.onCallEnded();
     });
+
+    this.init();
+  }
+
+  private async init() {
+    await callQueue.markCallStarted();
+    await this.deepgram.connect();
+    console.log(`[TelephonyStream] Deepgram ready for session: ${this.sessionId}`);
   }
  
   private onTwilioMessage(raw: Buffer) {
@@ -155,7 +166,26 @@ export class TelephonyStreamHandler {
       case "start": {
         const startData = msg.start as Record<string, unknown>;
         this.streamSid = startData?.streamSid as string;
-        console.log(`[TelephonyStream] Stream started, streamSid: ${this.streamSid}`);
+
+        // Twilio's own callSid on the start event is authoritative — the
+        // one passed at WS-upgrade time (query string) isn't reliably
+        // forwarded on the Media Stream connection URL (verified live: it
+        // arrived as "unknown" on a real call). customParameters is the
+        // Twilio-documented way to receive clientId/agentId/caller, set via
+        // <Parameter> in buildConnectTwiml — read those here instead of
+        // trusting whatever this.* held from construction.
+        if (startData?.callSid) this.callSid = startData.callSid as string;
+        const customParams = startData?.customParameters as Record<string, string> | undefined;
+        if (customParams?.clientId) this.clientId = customParams.clientId;
+        if (customParams?.agentId) this.agentId = customParams.agentId;
+        if (customParams?.caller) this.callerNumber = customParams.caller;
+
+        console.log(`[TelephonyStream] Stream started: callSid=${this.callSid} clientId=${this.clientId}${this.agentId ? ` agentId=${this.agentId}` : ""} streamSid=${this.streamSid}`);
+
+        // Only now do we know the real callSid — updating call_logs any
+        // earlier (e.g. in init()) would target a row keyed by whatever
+        // wrong/placeholder id we started with and silently match nothing.
+        void this.updateCallLog({ sessionId: this.sessionId });
         break;
       }
  
