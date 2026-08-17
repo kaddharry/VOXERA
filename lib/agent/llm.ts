@@ -86,6 +86,37 @@ export async function generateReply(args: {
           break;
         }
 
+        // If every one of the 3 iterations made a tool call, the loop above
+        // never reaches the plain-content branch that sets finalResponseText
+        // — it exits still empty. This was a real, reproducible bug: a
+        // caller asking to book something (check_availability, then
+        // create_booking, potentially a third confirmation-shaped call)
+        // could exhaust the cap without the model ever having said anything
+        // back, so the agent went completely silent on a real phone call —
+        // no error anywhere, "[LLM] Success" logged with an empty reply.
+        // Force one more call with tools disabled so the model has to
+        // summarize what it just did in words instead of calling another tool.
+        if (!finalResponseText.trim()) {
+          console.warn(`[LLM] Tool-call loop exhausted without a final reply — forcing a text-only follow-up.`);
+          const closingResp = await openai.chat.completions.create({
+            model: provider.model,
+            messages: [
+              ...messages,
+              { role: "user", content: "Reply to the caller now in one or two spoken sentences, summarizing what you just did. Do not call any more tools." },
+            ],
+            max_tokens: args.maxOutputTokens ?? CONFIG.llm.maxOutputTokens,
+          });
+          finalResponseText = closingResp.choices[0].message.content || "";
+
+          // Last resort — should be unreachable in practice, but a live
+          // phone call going completely silent is bad enough that it's
+          // worth a hardcoded floor rather than trusting a second LLM call
+          // to definitely produce text.
+          if (!finalResponseText.trim()) {
+            finalResponseText = "Sorry, I just want to double check that — could you tell me again what you'd like me to do?";
+          }
+        }
+
         return { text: sanitizeReply(finalResponseText), model: provider.model, usedLive: true, provider: provider.name };
       });
 
