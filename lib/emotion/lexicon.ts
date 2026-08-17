@@ -14,7 +14,9 @@ export const LEXICON: Array<{
   { kw: /\b(?:angry|mad|annoyed)\b/ig, label: "anger", vad: { v: -0.6, a: 0.7, d: 0.3 }, w: 0.8 },
 
   // ── Frustration ────────────────────────────────────────────────────────
-  { kw: /\b(?:frustrat|fed up|tired of|sick of|again|third time|second time|still broken|painful|headache|wait)\b/ig, label: "frustration", vad: { v: -0.6, a: 0.6, d: 0.2 }, w: 0.9 },
+  // "wait" is deliberately NOT a standalone trigger — it fires on "I can't wait
+// to start!" and "please wait". Only explicit waiting complaints count.
+{ kw: /\b(?:frustrat|fed up|tired of|sick of|again|third time|second time|still broken|painful|headache|still waiting|been waiting|waiting too long|waiting forever|waited too long|waited forever|long wait)\b/ig, label: "frustration", vad: { v: -0.6, a: 0.6, d: 0.2 }, w: 0.9 },
   { kw: /\b(?:los(?:ing|in'?) (?:work|money|business)|can't work|cost(?:ing|in'?) me)\b/ig, label: "frustration", vad: { v: -0.7, a: 0.7, d: 0.3 }, w: 1.0 },
   { kw: /\b(?:ridiculous|unacceptable|useless|pointless|waste of time)\b/ig, label: "frustration", vad: { v: -0.5, a: 0.6, d: 0.2 }, w: 0.8 },
 
