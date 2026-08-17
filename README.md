@@ -144,7 +144,7 @@ If you add a new environment variable during development, you **must** add a dum
 
 ## 8. Docker Build Instructions
 
-We use a multi-stage Dockerfile that outputs a minimal Next.js standalone build.
+We use a multi-stage Dockerfile. The image runs the custom server (`server/index.ts`) rather than `next start`, because the Twilio Media Stream WebSocket upgrade on `/api/telephony/stream` requires ownership of the Node `http.Server`. Next's `output: "standalone"` is therefore not used: its output tracing prunes the dependencies the custom server needs, so the runner stage ships `.next` plus a full `node_modules`.
 To build the image:
 ```bash
 docker build -t voxera:latest .

@@ -89,7 +89,7 @@ All core features are implemented, tested, and fully integrated:
 * **Purpose**: Establishes bi-directional audio connections with Twilio.
 * **Implementation Logic**:
   - Incoming Webhook (`/api/telephony/incoming`) validates Twilio signatures, verifies active phone numbers, checks queue thresholds, and generates hold (`buildWaitTwiml`) or media stream (`buildConnectTwiml`) TwiML responses.
-  - WebSocket Upgrade (`/api/telephony/stream`) runs an in-process socket handler.
+  - WebSocket Upgrade (`/api/telephony/stream`) is handled by the custom server (`server/index.ts`) on the Node `http.Server` `upgrade` event, not by a route handler — App Router handlers receive a Web `Request` with no underlying Node socket, so they cannot complete a handshake. The custom server hands the socket to an in-process `TelephonyStreamHandler`.
   - `TelephonyStreamHandler` converts 8kHz mono mulaw audio bytes to 16kHz linear PCM using an in-memory decoding lookup table.
   - Transformed PCM is piped into `DeepgramLiveWrapper` via WebSockets.
   - When the orchestrator produces a response, Deepgram TTS generates an MP3, which is decoded to raw PCM, resampled, encoded back into 8kHz mulaw bytes, and flushed to Twilio.
@@ -97,9 +97,10 @@ All core features are implemented, tested, and fully integrated:
   - [twilio.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/telephony/twilio.ts) — HMAC webhook validation and TwiML generators.
   - [stream-handler.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/lib/telephony/stream-handler.ts) — Mulaw codec conversion table and telephony socket manager.
   - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/incoming/route.ts) — Webhook entry endpoint.
-  - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/stream/route.ts) — WebSocket upgrade endpoint.
+  - [index.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/server/index.ts) — Production custom server: owns the HTTP listener, serves Next via `getRequestHandler()`, and handles the `/api/telephony/stream` WebSocket upgrade. Run with `npm run start:prod`; it is the container entrypoint.
+  - [env.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/server/env.ts) — Loads `.env.local` before any `lib/*` module reads `process.env` at import time.
   - [route.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/app/api/telephony/status/route.ts) — Twilio callback endpoint to update call durations.
-  - [server.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/server.ts) — Standalone WebSocket server running on port 3001 for browser/script testing.
+  - [server.ts](file:///Users/hardikkadd/Desktop/Projects/VOXERA/server.ts) — Phase-1 legacy standalone WebSocket STT echo server on port 3001, for browser/script testing only (`npm run server`). Not part of the telephony path.
   - **Issue #14 Enhancements**:
     - **Energy-Based Barge-In**: Incoming audio packets compute RMS energy via `computeRmsEnergy()`. TTS playback is only interrupted when RMS exceeds `CONFIG.telephony.bargeInEnergyThreshold` (default: 500), preventing false triggers from background noise.
     - **PCM Accumulation**: Decoded PCM chunks are buffered in `turnAudioChunks[]` during each speech turn and concatenated for acoustic feature extraction upon final transcript.
