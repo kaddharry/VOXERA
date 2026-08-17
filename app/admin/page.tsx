@@ -16,6 +16,8 @@ import {
   Smile,
   Target,
   Bot,
+  Zap,
+  Radio,
 } from "lucide-react";
 import Link from "next/link";
 import { LiveCallMonitor } from "@/components/admin/LiveCallMonitor";
@@ -69,9 +71,9 @@ interface AnalyticsData {
 const ACCENT = {
   cyan: "text-[var(--color-accent-cyan)]",
   violet: "text-[var(--color-accent-violet)]",
-  amber: "text-amber-600",
-  emerald: "text-emerald-600",
-  red: "text-red-500",
+  amber: "text-amber-400",
+  emerald: "text-emerald-400",
+  red: "text-red-400",
   neutral: "text-[var(--color-text-primary)]",
 } as const;
 
@@ -112,7 +114,7 @@ export default function AnalyticsDashboard() {
 
   if (error) return (
     <div className="p-8 md:p-10 font-body">
-      <div className="bg-red-50 border border-red-200 text-red-700 p-6 rounded-2xl">
+      <div className="bg-red-500/10 border border-red-500/25 text-red-400 p-6 rounded-2xl">
         <h2 className="font-bold mb-2">Failed to load analytics</h2>
         <p className="text-[14px] opacity-90">{error}</p>
         <p className="mt-4 text-[13px] opacity-70">Tip: Make sure the SQL migration has been run in your Supabase SQL Editor.</p>
@@ -192,7 +194,7 @@ export default function AnalyticsDashboard() {
           </div>
           <div className="flex items-center gap-3">
             <OutboundCallModal />
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/70 backdrop-blur-md border border-[var(--color-border-subtle)] text-[11px] font-mono text-[var(--color-text-secondary)] shrink-0 w-fit">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/[0.06] backdrop-blur-md border border-[var(--color-border-subtle)] text-[11px] font-mono text-[var(--color-text-secondary)] shrink-0 w-fit">
               <span className={`w-2 h-2 rounded-full ${liveActive ? "bg-emerald-500 animate-pulse" : "bg-[var(--color-text-muted)]"}`} />
               {liveActive ? "LIVE CALL IN PROGRESS" : "SYSTEM LIVE"}
             </div>
@@ -202,38 +204,18 @@ export default function AnalyticsDashboard() {
           </div>
         </header>
 
-        {/* Business Impact — the "why keep this agent" answer, up front */}
-        <div className="mb-8">
-          <h2 className="text-[11px] font-bold text-[var(--color-text-secondary)] uppercase tracking-widest mb-3">Business Impact</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <ImpactCard
-              icon={Target}
-              accent="emerald"
-              label="Booking Conversion"
-              value={`${m.conversionRate}%`}
-              caption="of calls end in a confirmed reservation"
-            />
-            <ImpactCard
-              icon={ShieldCheck}
-              accent="cyan"
-              label="Resolved Without Escalation"
-              value={`${autonomousResolutionRate}%`}
-              caption="handled fully by the AI, no human needed"
-            />
-            <ImpactCard
-              icon={Smile}
-              accent="violet"
-              label="Positive Caller Sentiment"
-              value={emotionTotal > 0 ? `${positiveSentimentRate}%` : "—"}
-              caption="of detected emotion reads were positive"
-            />
-            <ImpactCard
-              icon={Clock}
-              accent="amber"
-              label="Avg. Handle Time"
-              value={formatDuration(m.avgSessionDurationMs)}
-              caption="average time to resolve a call"
-            />
+        {/* Hero — business-impact headline card + at-a-glance live metrics,
+            the first thing an owner should see when they open this page. */}
+        <div className="mb-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <HeroPanel
+            conversionRate={m.conversionRate}
+            autonomousResolutionRate={autonomousResolutionRate}
+            positiveSentimentRate={emotionTotal > 0 ? positiveSentimentRate : null}
+            avgHandleTime={formatDuration(m.avgSessionDurationMs)}
+          />
+          <div className="space-y-6">
+            <LiveVolumeCard hourlyHeatmap={hourlyHeatmap} maxHourVal={maxHourVal} />
+            <CaiSummaryCard avgCai={m.avgCai} activeCalls={m.activeCalls ?? 0} />
           </div>
         </div>
 
@@ -244,7 +226,7 @@ export default function AnalyticsDashboard() {
 
         {/* Setup Checklist (For new users) */}
         {m.totalCalls === 0 && (
-          <div className="bg-white/70 backdrop-blur-xl rounded-2xl border border-white/60 shadow-[0_8px_32px_rgba(124,58,237,0.08)] p-6 md:p-8 mb-8 relative overflow-hidden">
+          <div className="bg-white/[0.05] backdrop-blur-xl rounded-2xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.35)] p-6 md:p-8 mb-8 relative overflow-hidden">
             <div className="absolute top-0 left-0 w-1 h-full bg-[var(--color-accent-violet)]" />
             <h2 className="text-xl font-bold text-[var(--color-text-primary)] mb-2">Welcome to your workspace</h2>
             <p className="text-[14px] text-[var(--color-text-secondary)] mb-8">Complete these steps to deploy your AI agent.</p>
@@ -296,14 +278,14 @@ export default function AnalyticsDashboard() {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <div className="bg-white/50 border border-[var(--color-border-subtle)] rounded-xl p-4">
+              <div className="bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-xl p-4">
                 <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider block mb-1.5">Avg Session</span>
                 <span className="font-mono text-[16px] font-extrabold text-[var(--color-text-primary)] tabular-nums">{formatDuration(m.avgSessionDurationMs)}</span>
               </div>
-              <div className="bg-white/50 border border-[var(--color-border-subtle)] rounded-xl p-4">
+              <div className="bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-xl p-4">
                 <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider block mb-1.5">Missed Bookings</span>
                 <div className="flex items-center gap-1.5">
-                  <span className={`font-mono text-[16px] font-extrabold tabular-nums ${m.missedBookings > 0 ? "text-amber-600" : "text-emerald-600"}`}>{m.missedBookings}</span>
+                  <span className={`font-mono text-[16px] font-extrabold tabular-nums ${m.missedBookings > 0 ? "text-amber-400" : "text-emerald-400"}`}>{m.missedBookings}</span>
                   {m.missedBookings > 0 && <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />}
                 </div>
               </div>
@@ -321,7 +303,7 @@ export default function AnalyticsDashboard() {
             {/* Heatmap Hour tracker */}
             <GlassCard className="p-6">
               <div className="flex items-center gap-2.5 mb-1">
-                <Flame className="w-4 h-4 text-amber-600" />
+                <Flame className="w-4 h-4 text-amber-400" />
                 <h3 className="text-[14px] font-bold text-[var(--color-text-primary)]">Peak Hours Heatmap</h3>
               </div>
               <p className="text-[12.5px] text-[var(--color-text-secondary)] mb-6">Call session arrivals across 24 hours of the day.</p>
@@ -401,7 +383,7 @@ export default function AnalyticsDashboard() {
                     cx="40"
                     cy="40"
                     r="34"
-                    className="stroke-emerald-500 transition-all duration-1000"
+                    className="stroke-emerald-400 transition-all duration-1000"
                     fill="transparent"
                     strokeWidth="6"
                     strokeDasharray={circumference}
@@ -409,14 +391,14 @@ export default function AnalyticsDashboard() {
                     strokeLinecap="round"
                   />
                 </svg>
-                <span className="absolute font-mono text-sm font-extrabold text-emerald-600 tabular-nums">{m.conversionRate}%</span>
+                <span className="absolute font-mono text-sm font-extrabold text-emerald-400 tabular-nums">{m.conversionRate}%</span>
               </div>
             </GlassCard>
 
             {/* Confidence distribution card */}
             <GlassCard className="p-6">
               <div className="flex items-center gap-2.5 mb-1">
-                <Award className="w-4 h-4 text-emerald-600" />
+                <Award className="w-4 h-4 text-emerald-400" />
                 <h3 className="text-[14px] font-bold text-[var(--color-text-primary)]">SER Confidence Breakdown</h3>
               </div>
               <p className="text-[12.5px] text-[var(--color-text-secondary)] mb-6">Accuracy categories for Speech Emotion Recognition classifications.</p>
@@ -430,17 +412,17 @@ export default function AnalyticsDashboard() {
 
               {/* Labels grid */}
               <div className="grid grid-cols-3 gap-2 text-center">
-                <div className="p-2.5 bg-white/50 border border-[var(--color-border-subtle)] rounded-lg">
+                <div className="p-2.5 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-lg">
                   <span className="block text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-1">High</span>
-                  <span className="font-mono font-extrabold text-emerald-600 tabular-nums">{confDist.high}%</span>
+                  <span className="font-mono font-extrabold text-emerald-400 tabular-nums">{confDist.high}%</span>
                 </div>
-                <div className="p-2.5 bg-white/50 border border-[var(--color-border-subtle)] rounded-lg">
+                <div className="p-2.5 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-lg">
                   <span className="block text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-1">Medium</span>
-                  <span className="font-mono font-extrabold text-amber-600 tabular-nums">{confDist.medium}%</span>
+                  <span className="font-mono font-extrabold text-amber-400 tabular-nums">{confDist.medium}%</span>
                 </div>
-                <div className="p-2.5 bg-white/50 border border-[var(--color-border-subtle)] rounded-lg">
+                <div className="p-2.5 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-lg">
                   <span className="block text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-1">Low</span>
-                  <span className="font-mono font-extrabold text-red-500 tabular-nums">{confDist.low}%</span>
+                  <span className="font-mono font-extrabold text-red-400 tabular-nums">{confDist.low}%</span>
                 </div>
               </div>
             </GlassCard>
@@ -466,7 +448,7 @@ export default function AnalyticsDashboard() {
                           <span className="capitalize text-[var(--color-text-primary)]">{emotion}</span>
                           <span className="font-mono text-[var(--color-text-secondary)] tabular-nums">{String(count)} ({pct}%)</span>
                         </div>
-                        <div className="w-full bg-white/50 rounded-full h-2 overflow-hidden">
+                        <div className="w-full bg-white/[0.08] rounded-full h-2 overflow-hidden">
                           <div className="bg-[var(--color-accent-violet)] h-full rounded-full transition-all" style={{ width: `${pct}%` }} />
                         </div>
                       </div>
@@ -484,14 +466,14 @@ export default function AnalyticsDashboard() {
             <div className="space-y-2.5">
               {recentSessions.length > 0 ? (
                 recentSessions.map((s) => (
-                  <Link href="/admin/sessions" key={s.sessionId} className="block p-3.5 bg-white/50 rounded-xl border border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)] transition-colors">
+                  <Link href="/admin/sessions" key={s.sessionId} className="block p-3.5 bg-white/[0.04] rounded-xl border border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)] transition-colors">
                     <div className="flex justify-between items-center mb-2">
                       <span className="font-mono text-[11.5px] text-[var(--color-text-primary)] truncate max-w-[140px]">{s.sessionId}</span>
                       <span className="text-[10.5px] text-[var(--color-text-muted)]">{new Date(s.lastTs).toLocaleString()}</span>
                     </div>
                     <div className="flex gap-2 text-[10px] font-bold uppercase tracking-wide">
-                      <span className="px-2 py-1 bg-white/70 border border-[var(--color-border-subtle)] text-[var(--color-accent-cyan)] rounded-md">{s.eventCount} events</span>
-                      <span className="px-2 py-1 bg-white/70 border border-[var(--color-border-subtle)] text-[var(--color-accent-violet)] rounded-md capitalize">{s.dominantEmotion}</span>
+                      <span className="px-2 py-1 bg-white/[0.06] border border-[var(--color-border-subtle)] text-[var(--color-accent-cyan)] rounded-md">{s.eventCount} events</span>
+                      <span className="px-2 py-1 bg-white/[0.06] border border-[var(--color-border-subtle)] text-[var(--color-accent-violet)] rounded-md capitalize">{s.dominantEmotion}</span>
                     </div>
                   </Link>
                 ))
@@ -520,37 +502,139 @@ export default function AnalyticsDashboard() {
 
 type Accent = keyof typeof ACCENT;
 
-function ImpactCard({
-  icon: Icon,
-  accent,
-  label,
-  value,
-  caption,
+/** The dashboard's headline card — a warm orange/violet gradient panel
+ * (matching the sidebar wordmark and .voxera-console dark instrument-panel
+ * accent) that opens on the single business question an owner actually
+ * cares about, then backs it with the four real conversion/handling metrics
+ * as an underlined stat-pill row. All four numbers come straight from
+ * /api/analytics — nothing here is decorative or fabricated. */
+function HeroPanel({
+  conversionRate,
+  autonomousResolutionRate,
+  positiveSentimentRate,
+  avgHandleTime,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
-  accent: Accent;
-  label: string;
-  value: string;
-  caption: string;
+  conversionRate: number;
+  autonomousResolutionRate: number;
+  positiveSentimentRate: number | null;
+  avgHandleTime: string;
 }) {
-  const iconBg: Record<Accent, string> = {
-    cyan: "bg-[var(--color-accent-cyan)]/10",
-    violet: "bg-[var(--color-accent-violet)]/10",
-    amber: "bg-amber-500/10",
-    emerald: "bg-emerald-500/10",
-    red: "bg-red-500/10",
-    neutral: "bg-[var(--color-bg-surface)]",
-  };
+  const pills: Array<{ icon: React.ComponentType<{ className?: string }>; value: string; label: string; underline: string }> = [
+    { icon: Target, value: `${conversionRate}%`, label: "Conversion", underline: "bg-emerald-400" },
+    { icon: ShieldCheck, value: `${autonomousResolutionRate}%`, label: "Resolved", underline: "bg-[var(--console-cyan)]" },
+    { icon: Smile, value: positiveSentimentRate !== null ? `${positiveSentimentRate}%` : "—", label: "Sentiment", underline: "bg-[var(--console-violet)]" },
+    { icon: Clock, value: avgHandleTime, label: "Avg Handle", underline: "bg-[var(--console-orange)]" },
+  ];
+
+  return (
+    <div className="lg:col-span-2 relative rounded-2xl overflow-hidden border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.4)] min-h-[360px] flex flex-col justify-between p-8">
+      {/* Gradient backdrop + abstract voice-wave rings, standing in for a
+          hero photo — an audio waveform motif is the honest visual for a
+          voice-agent product, not a stock image of an unrelated person. */}
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 -z-10"
+        style={{
+          background:
+            "radial-gradient(ellipse 700px 500px at 85% 0%, var(--console-orange-deep) 0%, transparent 60%), " +
+            "radial-gradient(ellipse 600px 500px at 100% 100%, var(--console-violet) 0%, transparent 55%), " +
+            "var(--console-surface-raised)",
+        }}
+      />
+      <svg aria-hidden="true" className="absolute -right-10 -top-10 w-72 h-72 opacity-20 -z-10" viewBox="0 0 200 200">
+        {[30, 55, 80, 105, 130].map((r) => (
+          <circle key={r} cx="100" cy="100" r={r} fill="none" stroke="white" strokeWidth="1" />
+        ))}
+      </svg>
+
+      <div>
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-widest text-white/70">
+          <Radio className="w-3.5 h-3.5" /> AI Voice Agent
+        </span>
+        <h2 className="font-display text-[34px] sm:text-[42px] font-extrabold leading-[1.05] text-white mt-3 max-w-md">
+          Every Call,<br />Understood.
+        </h2>
+        <Link
+          href="/admin/sessions"
+          className="inline-flex items-center gap-2 mt-6 px-5 py-2.5 rounded-full bg-white text-[var(--console-bg)] text-[13.5px] font-semibold hover:bg-white/90 transition-colors"
+        >
+          View Sessions <ArrowRight className="w-3.5 h-3.5" />
+        </Link>
+      </div>
+
+      <div className="mt-8 pt-6 border-t border-white/15 grid grid-cols-2 sm:grid-cols-4 gap-6">
+        {pills.map((p) => (
+          <div key={p.label}>
+            <p className="font-mono text-2xl sm:text-[28px] font-extrabold text-white tabular-nums">{p.value}</p>
+            <div className="flex items-center gap-1.5 mt-1">
+              <p.icon className="w-3 h-3 text-white/60" />
+              <span className="text-[11.5px] text-white/70">{p.label}</span>
+            </div>
+            <div className={`h-[3px] w-full rounded-full mt-2 ${p.underline}`} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Compact SVG line-chart with no external charting library — enough for a
+ * 24-point sparkline, and it stays fully token/theme-driven. */
+function Sparkline({ values, color }: { values: number[]; color: string }) {
+  const w = 240;
+  const h = 64;
+  const max = Math.max(...values, 1);
+  const step = w / Math.max(values.length - 1, 1);
+  const points = values.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * (h - 8) - 4).toFixed(1)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-16" preserveAspectRatio="none">
+      <polyline points={points} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Mirrors the "Active Users right now" pattern — a live-feeling sparkline
+ * of real call arrivals across the day, with the busiest hour badged. */
+function LiveVolumeCard({ hourlyHeatmap, maxHourVal }: { hourlyHeatmap: number[]; maxHourVal: number }) {
+  const totalToday = hourlyHeatmap.reduce((s, c) => s + c, 0);
+  const peakHour = hourlyHeatmap.indexOf(maxHourVal);
   return (
     <GlassCard className="p-5">
-      <div className="flex items-center gap-2.5 mb-4">
-        <span className={`flex items-center justify-center w-8 h-8 rounded-lg ${iconBg[accent]} ${ACCENT[accent]} flex-none`}>
-          <Icon className="w-4 h-4" />
-        </span>
-        <span className="text-[11px] font-bold text-[var(--color-text-secondary)] uppercase tracking-wide leading-tight">{label}</span>
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-[13px] font-bold text-[var(--color-text-primary)]">Call Volume Today</h3>
+        {totalToday > 0 && (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-white text-[var(--console-bg)] text-[10.5px] font-mono font-bold">
+            {maxHourVal}
+          </span>
+        )}
       </div>
-      <p className={`font-mono text-[28px] font-extrabold tabular-nums ${ACCENT[accent]}`}>{value}</p>
-      <p className="text-[11.5px] text-[var(--color-text-muted)] mt-1.5 leading-snug">{caption}</p>
+      <p className="text-[11px] text-[var(--color-text-muted)] mb-3">
+        {totalToday > 0 ? `Peak around ${peakHour}:00` : "No calls yet today"}
+      </p>
+      <Sparkline values={hourlyHeatmap} color="var(--console-orange)" />
+    </GlassCard>
+  );
+}
+
+/** Mirrors the "Latest Sales" thumbnail-card pattern — a real secondary
+ * metric (average Conversational Adequacy Index) paired with a small icon
+ * tile instead of a product photo. */
+function CaiSummaryCard({ avgCai, activeCalls }: { avgCai: number; activeCalls: number }) {
+  return (
+    <GlassCard className="p-5 flex items-center gap-4">
+      <div className="flex-1">
+        <h3 className="text-[13px] font-bold text-[var(--color-text-primary)] mb-1">Avg Engagement (CAI)</h3>
+        <div className="flex items-center gap-1.5 mb-1">
+          <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
+          <span className="text-[11px] text-[var(--color-text-muted)]">{activeCalls} active now</span>
+        </div>
+        <p className="font-mono text-2xl font-extrabold text-[var(--color-text-primary)] tabular-nums">
+          {avgCai}<span className="text-[13px] font-medium text-[var(--color-text-muted)]"> / 100</span>
+        </p>
+      </div>
+      <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-[var(--console-violet)]/25 to-[var(--console-cyan)]/25 border border-white/10 flex items-center justify-center flex-none">
+        <Zap className="w-7 h-7 text-[var(--console-cyan)]" />
+      </div>
     </GlassCard>
   );
 }
@@ -569,7 +653,7 @@ function KpiCard({ label, value, accent, suffix }: { label: string; value: numbe
 
 function KpiCardMinimal({ label, value, accent, suffix, live }: { label: string; value: number; accent: Accent; suffix?: string; live?: boolean }) {
   return (
-    <div className="bg-white/50 rounded-xl border border-[var(--color-border-subtle)] p-4 relative overflow-hidden">
+    <div className="bg-white/[0.04] rounded-xl border border-[var(--color-border-subtle)] p-4 relative overflow-hidden">
       {live && (
         <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
       )}
@@ -584,7 +668,7 @@ function KpiCardMinimal({ label, value, accent, suffix, live }: { label: string;
 
 function EmptyChartState({ label }: { label: string }) {
   return (
-    <div className="h-24 flex items-center justify-center rounded-xl bg-white/40 border border-dashed border-[var(--color-border-subtle)]">
+    <div className="h-24 flex items-center justify-center rounded-xl bg-white/[0.03] border border-dashed border-[var(--color-border-subtle)]">
       <p className="text-[12.5px] text-[var(--color-text-muted)] text-center px-6">{label}</p>
     </div>
   );
@@ -592,7 +676,7 @@ function EmptyChartState({ label }: { label: string }) {
 
 function ChecklistItem({ title, desc, done, href }: { title: string, desc: string, done: boolean, href?: string }) {
   return (
-    <div className={`p-5 rounded-xl border ${done ? "bg-white/40 border-[var(--color-border-subtle)]" : "bg-white/60 border-[var(--color-accent-violet)]/40"}`}>
+    <div className={`p-5 rounded-xl border ${done ? "bg-white/[0.03] border-[var(--color-border-subtle)]" : "bg-white/[0.06] border-[var(--color-accent-violet)]/40"}`}>
       <div className="flex items-start gap-3">
         {done ? <CheckCircle2 className="w-5 h-5 text-emerald-500 mt-0.5" /> : <Circle className="w-5 h-5 text-[var(--color-accent-cyan)] mt-0.5" />}
         <div>
@@ -612,20 +696,20 @@ function ChecklistItem({ title, desc, done, href }: { title: string, desc: strin
 const EVENT_META: Record<string, { badgeBg: string; badgeText: string; label: string; short: string }> = {
   utterance: { badgeBg: "bg-[var(--color-accent-cyan)]/10", badgeText: "text-[var(--color-accent-cyan)]", label: "Utterance", short: "UT" },
   emotion: { badgeBg: "bg-[var(--color-accent-violet)]/10", badgeText: "text-[var(--color-accent-violet)]", label: "Emotion", short: "EM" },
-  memory_write: { badgeBg: "bg-emerald-500/10", badgeText: "text-emerald-600", label: "Memory Write", short: "MW" },
-  retrieval: { badgeBg: "bg-amber-500/10", badgeText: "text-amber-600", label: "Retrieval", short: "RT" },
+  memory_write: { badgeBg: "bg-emerald-500/10", badgeText: "text-emerald-400", label: "Memory Write", short: "MW" },
+  retrieval: { badgeBg: "bg-amber-500/10", badgeText: "text-amber-400", label: "Retrieval", short: "RT" },
   policy: { badgeBg: "bg-orange-500/10", badgeText: "text-orange-600", label: "Policy", short: "PL" },
   escalation: { badgeBg: "bg-red-500/10", badgeText: "text-red-600", label: "Escalation", short: "ES" },
   cai: { badgeBg: "bg-[var(--color-accent-cyan)]/10", badgeText: "text-[var(--color-accent-cyan)]", label: "CAI Score", short: "CI" },
   tool_invocation: { badgeBg: "bg-teal-500/10", badgeText: "text-teal-600", label: "Tool Call", short: "TC" },
-  guard: { badgeBg: "bg-white/50", badgeText: "text-[var(--color-text-secondary)]", label: "Guard", short: "GD" },
+  guard: { badgeBg: "bg-white/[0.04]", badgeText: "text-[var(--color-text-secondary)]", label: "Guard", short: "GD" },
   llm_reply: { badgeBg: "bg-[var(--color-accent-violet)]/10", badgeText: "text-[var(--color-accent-violet)]", label: "LLM Reply", short: "LR" },
-  calendar_sync: { badgeBg: "bg-emerald-500/10", badgeText: "text-emerald-600", label: "Calendar Sync", short: "CS" },
+  calendar_sync: { badgeBg: "bg-emerald-500/10", badgeText: "text-emerald-400", label: "Calendar Sync", short: "CS" },
   email_dispatch: { badgeBg: "bg-blue-500/10", badgeText: "text-blue-600", label: "Email Sent", short: "EM" },
 };
 
 function eventMeta(type: string) {
-  return EVENT_META[type] ?? { badgeBg: "bg-white/50", badgeText: "text-[var(--color-text-secondary)]", label: type.replace(/_/g, " "), short: type.slice(0, 2).toUpperCase() };
+  return EVENT_META[type] ?? { badgeBg: "bg-white/[0.04]", badgeText: "text-[var(--color-text-secondary)]", label: type.replace(/_/g, " "), short: type.slice(0, 2).toUpperCase() };
 }
 
 /** Human-readable one-line summary for the most common event types — raw
@@ -660,7 +744,7 @@ function eventSummary(ev: { type: string; payload: Record<string, unknown> }): s
 function EventRow({ event }: { event: { type: string; ts: number; payload: Record<string, unknown> } }) {
   const meta = eventMeta(event.type);
   return (
-    <div className="flex gap-3 p-3.5 rounded-xl bg-white/50 border border-[var(--color-border-subtle)]">
+    <div className="flex gap-3 p-3.5 rounded-xl bg-white/[0.04] border border-[var(--color-border-subtle)]">
       <div className="flex-none">
         <span className={`inline-flex items-center justify-center h-8 w-8 rounded-full text-[10px] font-bold ${meta.badgeBg} ${meta.badgeText}`}>
           {meta.short}

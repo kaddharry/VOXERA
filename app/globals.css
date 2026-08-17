@@ -39,13 +39,13 @@ html {
   background-color: #FAFBFF;
 }
 
-/* /demo is the one page that inverts to the dark console theme (see
-   .voxera-demo-dark below) — without this, overscroll/rubber-band scrolling
-   flashes the light html/body background behind it, since body's own
-   background resolves from --color-bg-base at body's scope (light), one
-   level above where .voxera-demo-dark redefines that token on <main>. */
-html:has(.voxera-demo-dark),
-body:has(.voxera-demo-dark) {
+/* /demo and the whole admin platform invert to the dark console theme (see
+   .voxera-demo-dark / .voxera-admin-dark below) — without this, overscroll/
+   rubber-band scrolling flashes the light html/body background behind it,
+   since body's own background resolves from --color-bg-base at body's scope
+   (light), one level above where these classes redefine that token. */
+html:has(.voxera-demo-dark, .voxera-admin-dark),
+body:has(.voxera-demo-dark, .voxera-admin-dark) {
   background-color: var(--console-bg);
 }
 
@@ -83,6 +83,8 @@ body:has(.voxera-demo-dark) {
   --console-text-dim: #7679A0;
   --console-violet: #A78BFA;
   --console-cyan: #22D3EE;
+  --console-orange: #FF8A4C;
+  --console-orange-deep: #E85D2C;
 }
 
 .voxera-console {
@@ -236,6 +238,29 @@ body:has(.voxera-demo-dark) {
    drawer's dark instrument-panel look, without touching every component file.
    ════════════════════════════════════════════════════════════════════════════ */
 .voxera-demo-dark {
+  color-scheme: dark;
+  --color-bg-base:     var(--console-bg);
+  --color-bg-surface:  var(--console-surface);
+  --color-bg-elevated: var(--console-surface-raised);
+  --color-text-primary:   var(--console-text);
+  --color-text-secondary: #A8ABC8;
+  --color-text-muted:     var(--console-text-dim);
+  --color-border-subtle: var(--console-border);
+  --color-border-active: var(--console-border-active);
+  --color-accent-violet: var(--console-violet);
+  --color-accent-cyan:   var(--console-cyan);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ADMIN PLATFORM — dark glassmorphism theme
+   Same mechanism as .voxera-demo-dark above: every admin component reads
+   color through --color-* tokens, so redefining them here re-themes the
+   entire admin platform (dashboard, sessions, agents, knowledge base,
+   settings, etc.) without touching each page's component code. Public-facing
+   surfaces (landing page, onboarding, and the "talk to my agent" widget) are
+   NOT under this scope and stay on the light theme — this is admin-only.
+   ════════════════════════════════════════════════════════════════════════════ */
+.voxera-admin-dark {
   color-scheme: dark;
   --color-bg-base:     var(--console-bg);
   --color-bg-surface:  var(--console-surface);

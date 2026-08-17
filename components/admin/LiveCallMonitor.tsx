@@ -131,16 +131,16 @@ export function LiveCallMonitor({
       case "anger":
       case "frustration":
       case "distress":
-        return "text-red-600 border-red-500/30 bg-red-500/10";
+        return "text-red-400 border-red-500/30 bg-red-500/10";
       case "fear":
       case "confusion":
       case "disappointment":
-        return "text-amber-600 border-amber-500/30 bg-amber-500/10";
+        return "text-amber-400 border-amber-500/30 bg-amber-500/10";
       case "joy":
       case "gratitude":
       case "excitement":
       case "calm":
-        return "text-emerald-600 border-emerald-500/30 bg-emerald-500/10";
+        return "text-emerald-400 border-emerald-500/30 bg-emerald-500/10";
       default:
         return "text-[var(--color-accent-cyan)] border-[var(--color-accent-cyan)]/30 bg-[var(--color-accent-cyan)]/10";
     }
@@ -158,7 +158,7 @@ export function LiveCallMonitor({
             <p className="text-[11.5px] text-[var(--color-text-muted)]">Real-time SSE emotion stream &amp; prosody monitoring</p>
           </div>
         </div>
-        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-600 border border-emerald-500/25">
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
           <Activity className="w-3.5 h-3.5 mr-1 animate-spin" /> Stream Active
         </span>
       </div>
@@ -235,7 +235,7 @@ export function LiveCallMonitor({
 
               {/* Active Emotion Pattern Flags */}
               {Object.values(liveState.flags).some(Boolean) && (
-                <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-lg flex items-center gap-2 text-red-600 text-[11.5px] font-medium">
+                <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-lg flex items-center gap-2 text-red-400 text-[11.5px] font-medium">
                   <ShieldAlert className="w-4 h-4" />
                   <span>
                     Pattern Triggered: {Object.entries(liveState.flags).filter(([, v]) => v).map(([k]) => k.replace(/_/g, " ")).join(", ")}
@@ -253,7 +253,7 @@ export function LiveCallMonitor({
                     <p className="text-[11.5px] text-[var(--color-text-muted)] italic">Waiting for turn transcript…</p>
                   ) : (
                     liveState.transcript.map((t, idx) => (
-                      <div key={idx} className={`text-[11.5px] p-2 rounded ${t.role === "user" ? "bg-white/70 text-[var(--color-text-primary)]" : "bg-[var(--color-accent-violet)]/10 text-[var(--color-text-primary)] border border-[var(--color-accent-violet)]/20"}`}>
+                      <div key={idx} className={`text-[11.5px] p-2 rounded ${t.role === "user" ? "bg-white/[0.06] text-[var(--color-text-primary)]" : "bg-[var(--color-accent-violet)]/10 text-[var(--color-text-primary)] border border-[var(--color-accent-violet)]/20"}`}>
                         <span className="font-semibold uppercase text-[9.5px] block opacity-60 mb-0.5">{t.role}</span>
                         {t.text}
                       </div>

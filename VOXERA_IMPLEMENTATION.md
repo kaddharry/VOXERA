@@ -1818,3 +1818,71 @@ sandbox):
 **Validation Performed**: `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (316 passing),
 `npm run build` — all clean. Live local verification of the WS handshake and normal HTTP routing
 through `custom-server.ts` as described above.
+
+### 2026-08-17 — Admin Platform: Dark Glassmorphism Theme (Reversing the Earlier Light-Theme Call)
+
+**Objective**: User provided a reference screenshot (a dark "Channel Analytics" dashboard — translucent
+glass cards over a near-black background, a warm gradient hero panel, stat pills with colored
+underlines, mini sparkline cards) and asked for the whole admin platform to match it exactly:
+same fonts, alignment, colors, structure, and glassmorphism. This explicitly reverses the light-theme
+instruction from two entries above — confirmed directly with the user before proceeding, since it
+undoes work from the same session.
+
+**Mechanism — reused the existing dark-theming pattern instead of inventing a new one**: `/demo`
+already had a proven scoped-class pattern (`.voxera-demo-dark`) that redefines the app's semantic
+`--color-*` tokens to the existing `--console-*` dark palette for everything under that class, without
+touching individual component files (documented in an earlier entry). Added the identical
+`.voxera-admin-dark` class (`app/globals.css`) and applied it once at the root of `app/admin/layout.tsx`
+— every admin page, including ones not yet individually touched (e.g. `/admin/sessions`), immediately
+inherits the dark theme through the token cascade. Added `--console-orange` / `--console-orange-deep`
+tokens for the new hero gradient accent (the reference's warm tone), reusing the existing violet/cyan
+console accents everywhere else rather than inventing a third palette. Extended the existing overscroll
+background-flash fix (`html:has()/body:has()`) to also match `.voxera-admin-dark`.
+
+**Component changes**:
+- `GlassCard`/`AmbientBackground` (`app/_components/GlassCard.tsx`) rewritten for dark glass:
+  `bg-white/[0.045]` translucent panels with `border-white/10` and a black-tinted shadow (was
+  `bg-white/70` + violet-tinted shadow), and the ambient wash recolored to orange/violet/cyan radial
+  glows instead of violet/cyan on white.
+- `app/admin/layout.tsx`: sidebar surface now uses the same translucent-dark treatment, wordmark got
+  an orange→violet gradient to match the new accent, nav-item hover icon color switched to orange.
+- `app/admin/page.tsx`: replaced the plain "Business Impact" 4-card grid with a `HeroPanel` — a
+  gradient panel (orange/violet radial gradients + a decorative concentric-rings SVG standing in for a
+  hero photo, since fabricating a stock photo of an unrelated person for a B2B voice-agent product
+  would be dishonest) with a headline, a "View Sessions" CTA, and the same four real metrics
+  (conversion, resolution rate, sentiment, handle time) now rendered as underlined stat pills — mirroring
+  the reference's stat-pill row, not copying its unrelated "Users/Clicks/Sales/Items" content. Added
+  `LiveVolumeCard` (a hand-rolled SVG `Sparkline` over the existing hourly-heatmap data — mirrors the
+  reference's "Active Users right now" card with zero new charting dependency) and `CaiSummaryCard`
+  (mirrors the reference's "Latest Sales" thumbnail-card pattern using the real average CAI score).
+  Bulk-converted every remaining hardcoded `bg-white/NN`/`text-*-600` light-mode utility class in this
+  file and in `components/admin/LiveCallMonitor.tsx` (left over from the previous light-theme pass) to
+  their dark-appropriate equivalents (`bg-white/[0.0N]`, `text-*-400`) — a plain `--color-*` token
+  redefinition doesn't touch literal Tailwind palette classes, so these needed a manual pass.
+
+**A real bug found and fixed while verifying visually, not part of the theme change**: the overscroll
+background-flash CSS rule was correct in source but the running dev server was serving a stale
+Turbopack-cached CSS bundle — confirmed by diffing `document.styleSheets` against the source file (the
+compiled output was missing the entire `.voxera-admin-dark` block and `--console-orange` tokens even
+after a process restart). Fixed by clearing `.next` entirely before restarting; unrelated to the theme
+work itself but worth noting since the symptom (a white gap appearing partway down the page on scroll)
+looked like a real CSS bug at first.
+
+**Files Added**: none
+
+**Files Modified**: `app/globals.css`, `app/_components/GlassCard.tsx`, `app/admin/layout.tsx`,
+`app/admin/page.tsx`, `components/admin/LiveCallMonitor.tsx`
+
+**Validation Performed**: `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (316 passing),
+`npm run build` — all clean. Live-verified in-browser this time (not just code review): created a
+throwaway local test account (`verify-ui-check@voxera-local-test.dev`, local dev Supabase only — not
+the production/ECS database) since this sandbox has no real admin credentials, and confirmed via
+screenshots and DOM/computed-style inspection that the hero panel, stat pills, sparkline/CAI cards, KPI
+grid, Live Telephony, Session Performance, Peak Hours Heatmap, and the untouched `/admin/sessions` page
+all render correctly in the dark theme with no illegible text or broken layout.
+
+**Still pending** (task #67, not started): applying the same `GlassCard`-based dark treatment
+consistently to the six other admin pages that inherited the dark tokens automatically but still use
+their previous light-glass-era markup/spacing conventions (Agent Builder, Try a Call, Tenants, Sessions,
+Knowledge Base, RAG Debugger, Settings) — they're legible and not broken today, just not yet polished to
+match the Dashboard's new hero/pill/sparkline visual language.
