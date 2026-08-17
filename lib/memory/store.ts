@@ -17,9 +17,10 @@ function toRow(rec: MemoryRecord): Record<string, unknown> {
     entities: rec.entities,
     topic: rec.topic,
     emotion: rec.emotion,
-    vad_v: rec.vad.v,
-    vad_a: rec.vad.a,
-    vad_d: rec.vad.d,
+    // Mirrors fromRow()'s ?? 0 defaults so the round-trip stays symmetric.
+    vad_v: rec.vad?.v ?? 0,
+    vad_a: rec.vad?.a ?? 0,
+    vad_d: rec.vad?.d ?? 0,
     intensity: rec.intensity,
     importance: rec.importance,
     importance_score: rec.importance_score ?? rec.importance,
