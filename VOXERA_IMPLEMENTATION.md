@@ -1648,3 +1648,65 @@ compact JSON only for event types without a dedicated summary.
 - Could not click through with real account data in this sandbox (behind login, no credentials
   available) — recommend a manual pass to confirm the flat styling and event-summary rewrite render
   correctly against real session data
+
+### 2026-08-17 — Dashboard v2: Business-Impact Metrics, Voice Orb, Glassmorphism
+
+**Objective**: Immediate follow-up to the flat-color dashboard redesign above — user supplied a
+reference screenshot (a course-platform dashboard) and asked for real interactivity: a voice-reactive
+orb on the profile/header area, glassmorphism, a distinct "analytical" font for numbers, and — framed
+as the core question — "imagine yourself as a business owner: what would you actually want to see when
+you open this, that tells you to keep paying for the AI agent?"
+
+**Business-impact metrics (the actual ask, not just decoration)**: added a hero row above the existing
+KPI grid, reframing already-real `/api/analytics` data around ROI instead of raw counts: **Booking
+Conversion** (already existed, now the headline), **Resolved Without Escalation**
+(`100 - escalations/totalCalls*100` — the "the AI can actually handle this alone" number),
+**Positive Caller Sentiment** (share of detected emotions in `{joy, gratitude, excitement, calm}` vs
+all detected emotions — a real proxy for "are callers having a good experience," not a survey score
+that doesn't exist), and **Avg. Handle Time** (already existed, promoted). All four are derived
+entirely from data the API was already computing — no new fabricated metric, no invented percentage.
+
+**Voice orb**: reused `.voxera-orb` — the exact CSS already driving the real, audio-amplitude-reactive
+orb in `TestAgentDrawer.tsx`'s Live Test Call — rather than building a second, decorative one from
+scratch. Extracted it into a reusable `VoiceOrb` component (`app/_components/VoiceOrb.tsx`). On the
+dashboard there's no live microphone to react to, so it's wired to `LiveCallMonitor`'s real SSE stream
+instead: `LiveCallMonitor` gained an `onLiveUpdate` callback (`active`, `intensity`, `caiScore`,
+`emotionLabel`, all genuine values from the session's live emotion/CAI events) that the dashboard uses
+to drive the orb's `--level` whenever a real call is in progress. When no call is active, the orb
+switches to a `.is-idle` CSS class instead — a gentle "ambient breathing" animation, deliberately
+distinct from (and never simultaneous with) the real-data-driven state, so it never claims to be
+reacting to something that isn't there. Required registering `--level` via `@property` in
+`globals.css` so `@keyframes` can animate it smoothly at all (plain custom properties don't
+interpolate) — verified this doesn't affect the existing JS-driven usage in `TestAgentDrawer.tsx`,
+which sets `--level` directly and never applies `.is-idle`.
+
+**Glassmorphism + font**: replaced the dashboard's opaque white cards with `bg-white/70 backdrop-blur-xl`
+frosted-glass surfaces (new shared `GlassCard` component) sitting over a very-low-opacity ambient
+gradient wash on the page background — the blur/translucency needs something soft underneath to
+actually read as "glass" against. All KPI/stat numbers now render in `font-mono` with `tabular-nums`
+for a consistent "data terminal" register, distinct from the `font-display` headline typeface used for
+prose. Added a subtle cursor-following glow (`CursorGlow`, a fixed-position blurred radial gradient
+tracking `mousemove`) rather than replacing the OS cursor outright — keeps native pointer affordances
+and accessibility intact while still feeling more alive.
+
+**Found and fixed while touching this**: `LiveCallMonitor.tsx` (the dashboard's centerpiece "Live Call
+& Emotion Monitor" panel) was using hardcoded Tailwind `slate-*`/`indigo-*` colors instead of this
+app's `--color-*`/`--console-*` design tokens — a real, pre-existing off-brand inconsistency, not
+something introduced by the earlier flat-color pass (that pass only touched `app/admin/page.tsx`
+itself). Rebuilt it onto the `.voxera-console` dark-instrument-panel treatment already established for
+live/real-time monitoring surfaces elsewhere (`/demo`'s Live Engine Console, `TestAgentDrawer.tsx`) —
+consistent with the deliberate light/dark split already documented in `globals.css`, not a new pattern.
+
+**Files Added**: `app/_components/VoiceOrb.tsx`
+
+**Files Modified**: `app/admin/page.tsx`, `components/admin/LiveCallMonitor.tsx`, `app/globals.css`
+
+**Validation Performed**:
+- `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (316 passing), `npm run build` — all clean
+- Live browser check of `/demo`'s Live Call mode (the only other real consumer of `.voxera-orb`) after
+  the `globals.css` changes — screenshot-confirmed no visual or behavioral regression, since the new
+  `@property`/`.is-idle` rules are additive and scoped by class, and `TestAgentDrawer.tsx` never
+  applies `.is-idle`
+- Could not click through `/admin` itself with real account data in this sandbox (behind login, no
+  credentials available) — recommend a manual pass, especially to confirm the orb's idle-vs-live state
+  transition when starting/ending a real "Try a Call" session

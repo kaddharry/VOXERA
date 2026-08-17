@@ -200,6 +200,32 @@ body:has(.voxera-demo-dark) {
   .voxera-orb::before, .voxera-orb::after, .voxera-orb-core { transition: none; }
 }
 
+/* Registering --level as a typed custom property is what makes it possible
+   for @keyframes to animate it smoothly at all — plain custom properties
+   don't interpolate. Only used for the orb's idle "ambient breathing" state
+   below; whenever a real call is live, JS sets --level directly from actual
+   SSE data every frame, same as the Test Agent drawer's orb, and the
+   .is-idle class (and this animation with it) is removed — the CSS
+   animation never runs at the same time as real data is driving it. */
+@property --level {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+@keyframes voxera-orb-idle-breathe {
+  0%, 100% { --level: 0.12; }
+  50%      { --level: 0.34; }
+}
+
+.voxera-orb.is-idle {
+  animation: voxera-orb-idle-breathe 4.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voxera-orb.is-idle { animation: none; }
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    /demo PAGE — dark console theme
    Every component under this scope reads color through the semantic
