@@ -105,6 +105,7 @@ export class TelephonyStreamHandler {
   private isBusy = false; // prevent overlapping LLM turns
   private isSpeaking = false; // Issue #8: track if TTS is playing for barge-in
   private hasEnded = false; // prevent double-invocation of onCallEnded
+  private slotTaken = false;
 
   // Issue #14: PCM accumulator for acoustic feature extraction
   private turnAudioChunks: Buffer[] = [];
@@ -141,14 +142,44 @@ export class TelephonyStreamHandler {
       this.onCallEnded();
     });
 
-    this.init();
+    this.init().catch((err) => this.onInitFailed(err));
   }
 
   private async init() {
     await callQueue.markCallStarted();
+    this.slotTaken = true;
     await this.deepgram.connect();
     console.log(`[TelephonyStream] Deepgram ready for session: ${this.sessionId}`);
   }
+  private async onInitFailed(err: unknown) {
+  console.error(`[TelephonyStream] Initialisation failed for ${this.callSid}:`, err);
+  this.hasEnded = true;
+
+  try {
+    this.deepgram.close();
+  } catch {
+    // may have failed before connecting
+  }
+
+  if (this.slotTaken) {
+    await callQueue.markCallEnded();
+  }
+
+  const endedAt = Date.now();
+
+  await this.updateCallLog({
+    status: "failed",
+    endedAt,
+    durationMs: endedAt - this.startedAt,
+  });
+
+  try {
+    this.ws.close(1011, "stream initialisation failed");
+  } catch {
+    // socket may already be gone
+  }
+}
+
  
   private onTwilioMessage(raw: Buffer) {
     let msg: Record<string, unknown>;
