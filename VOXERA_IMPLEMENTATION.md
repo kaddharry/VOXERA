@@ -1976,3 +1976,17 @@ already used, confirming the new code path is wired identically to a known-worki
 database — none of the three features function until the `phone_numbers.agentId` column and the
 `call_campaigns`/`campaign_calls` tables exist. No deploy/DB credentials available in this sandbox to do
 it directly.
+
+**2026-08-17, later — migration applied.** The user provided a direct Postgres connection string
+(pooler host, since `db.<ref>.supabase.co:5432` doesn't resolve from this sandbox — Supabase's
+IPv4-restricted direct host). Ran `migration_v12.sql` against production via `pg`, forced a PostgREST
+schema-cache reload (`NOTIFY pgrst, 'reload schema'`) since PostgREST caches the schema and briefly
+still returned the old "column not found" error otherwise, then verified read-only via
+`information_schema` that `phone_numbers.agentId` and both campaign tables now exist. Live-tested
+through the actual running app (not just the DB): added a real phone number via Settings and confirmed
+it round-trips correctly (previously failed with the exact "agentId column not found" schema-cache
+error); verified `call_campaigns`/`campaign_calls` insert, foreign-key cascade delete, and read-back via
+a synthetic campaign row, then deleted it — no leftover test data. Also removed the test phone number
+added during verification. The connection string is stored only in the gitignored `.env.local`
+(confirmed via `.gitignore`), used solely for this one-off migration run — the app itself continues to
+talk to Supabase exclusively through the REST API (`SUPABASE_URL`/keys), unchanged.
