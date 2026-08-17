@@ -92,13 +92,18 @@ export async function synthesize(text: string, opts?: {
   persona?: string;
   clientId?: string;
   emotion?: EmotionLabel;
+  /** The caller's utterance this turn is replying to — used only to detect
+   * task-critical topics (payment/legal/refund/...) for the Serious/Formal
+   * tone override. Not required; omitting it just skips that override. */
+  callerText?: string;
 }): Promise<Uint8Array> {
   const settings = await getClientVoiceSettings(opts?.clientId);
-  
+  const emotionParams = getEmotionTTSParams(opts?.emotion, opts?.policy, opts?.callerText);
+
   // If ElevenLabs is configured for custom voice, handle it
   if (settings?.provider === "elevenlabs" && settings.voiceId) {
     try {
-      const pcm = await synthesizeElevenLabs(text, settings.voiceId);
+      const pcm = await synthesizeElevenLabs(text, settings.voiceId, emotionParams.elevenLabsVoiceSettings);
       return new Uint8Array(pcm);
     } catch (err) {
       console.warn("[TTS] ElevenLabs synthesis failed, falling back to Deepgram:", err);
@@ -106,11 +111,7 @@ export async function synthesize(text: string, opts?: {
   }
 
   const dg = getDeepgram();
-  const emotionParams = getEmotionTTSParams(opts?.emotion);
-  let shaped = applyEmotionProsody(text, emotionParams);
-  if (opts?.policy) {
-    shaped = applyProsody(shaped, opts.policy);
-  }
+  const shaped = applyEmotionProsody(text, emotionParams);
 
   const model = resolveVoiceModel(opts?.persona);
 
@@ -147,23 +148,22 @@ export async function synthesizeLinear16(text: string, opts?: {
   persona?: string;
   clientId?: string;
   emotion?: EmotionLabel;
+  /** See `synthesize()` — same Serious/Formal override input. */
+  callerText?: string;
 }): Promise<Buffer> {
   const settings = await getClientVoiceSettings(opts?.clientId);
+  const emotionParams = getEmotionTTSParams(opts?.emotion, opts?.policy, opts?.callerText);
 
   if (settings?.provider === "elevenlabs" && settings.voiceId) {
     try {
-      return await synthesizeElevenLabs(text, settings.voiceId);
+      return await synthesizeElevenLabs(text, settings.voiceId, emotionParams.elevenLabsVoiceSettings);
     } catch (err) {
       console.warn("[TTS] ElevenLabs synthesis failed, falling back to Deepgram:", err);
     }
   }
 
   const dg = getDeepgram();
-  const emotionParams = getEmotionTTSParams(opts?.emotion);
-  let shaped = applyEmotionProsody(text, emotionParams);
-  if (opts?.policy) {
-    shaped = applyProsody(shaped, opts.policy);
-  }
+  const shaped = applyEmotionProsody(text, emotionParams);
 
   const model = resolveVoiceModel(opts?.persona);
 
@@ -176,10 +176,4 @@ export async function synthesizeLinear16(text: string, opts?: {
   });
   const buf = await binary.arrayBuffer();
   return Buffer.from(buf);
-}
-
-// Light prosody adaptation: under slow pacing, insert subtle pauses and keep sentences short.
-function applyProsody(text: string, policy?: PolicyDirectives): string {
-  if (!policy || policy.pace !== "slow") return text;
-  return text.replace(/([\.!?])\s+/g, "$1  ");
 }

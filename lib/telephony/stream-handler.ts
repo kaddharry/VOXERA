@@ -3,7 +3,7 @@ import WebSocket from "ws";
 import { DeepgramLiveWrapper } from "../deepgram/live";
 import { synthesizeLinear16 } from "../deepgram/tts";
 import { handleTurn } from "../agent/orchestrator";
-import type { EmotionLabel } from "../types";
+import type { EmotionLabel, PolicyDirectives } from "../types";
 import { supabase } from "../db/supabase";
 import { callQueue } from "../queue/manager";
 import { stm } from "../memory/stm";
@@ -299,7 +299,7 @@ export class TelephonyStreamHandler {
       if (fillerTimer) clearTimeout(fillerTimer);
 
       console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
-      await this.speakToTwilio(output.reply, output.trace.emotion.current.label, output.trace.agent?.voicePersona ?? undefined);
+      await this.speakToTwilio(output.reply, output.trace.emotion.current.label, output.trace.agent?.voicePersona ?? undefined, output.trace.policy, text);
     } catch (err) {
       if (fillerTimer) clearTimeout(fillerTimer);
       console.error(`[TelephonyStream] handleTurn error:`, err);
@@ -314,7 +314,7 @@ export class TelephonyStreamHandler {
   /**
    * Converts text → Linear16 PCM → G.711 μ-law → sends back to the Twilio Media Stream.
    */
-  private async speakToTwilio(text: string, emotionLabel?: EmotionLabel, persona?: string) {
+  private async speakToTwilio(text: string, emotionLabel?: EmotionLabel, persona?: string, policy?: PolicyDirectives, callerText?: string) {
     if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
 
     try {
@@ -325,7 +325,9 @@ export class TelephonyStreamHandler {
       // when this call is routed through a custom agent — takes priority
       // over the CONFIG default but is still overridden by a tenant-level
       // ElevenLabs voice inside synthesizeLinear16() if one is configured.
-      const pcmBytes = await synthesizeLinear16(text, { clientId: this.clientId, emotion: emotionLabel, persona });
+      // `policy`/`callerText` drive the adaptive tone (BUG-V1 fix) — real
+      // calls previously never passed policy to TTS at all.
+      const pcmBytes = await synthesizeLinear16(text, { clientId: this.clientId, emotion: emotionLabel, persona, policy, callerText });
       const mulawAudio = pcmToMulaw(pcmBytes);
       const base64Audio = mulawAudio.toString("base64");
  

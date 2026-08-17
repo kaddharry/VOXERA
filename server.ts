@@ -187,6 +187,7 @@ wss.on("connection", async (ws: WebSocket, request) => {
         emotion: output.trace.emotion.current.label,
         persona: output.trace.agent?.voicePersona ?? undefined,
         clientId,
+        callerText: text,
       });
       const ttsMs = Date.now() - ttsStart;
 

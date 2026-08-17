@@ -37,7 +37,11 @@ export async function cloneVoiceElevenLabs(args: {
   return voiceId;
 }
 
-export async function synthesizeElevenLabs(text: string, voiceId: string): Promise<Buffer> {
+export async function synthesizeElevenLabs(
+  text: string,
+  voiceId: string,
+  voiceSettings?: { stability: number; style: number; speed: number },
+): Promise<Buffer> {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
     console.warn("[ElevenLabsTTS] ELEVENLABS_API_KEY is not set. Simulating speech synthesis (returning empty PCM buffer)...");
@@ -55,10 +59,16 @@ export async function synthesizeElevenLabs(text: string, voiceId: string): Promi
       },
       body: JSON.stringify({
         text,
-        model_id: "eleven_monolingual_v1",
+        // eleven_monolingual_v1 no longer appears in ElevenLabs' current
+        // model catalog (verified live docs, 2026-08-19) — switched to the
+        // current default. Side benefit: multilingual_v2 is one of only two
+        // models that support Hindi, so it doesn't block that later.
+        model_id: "eleven_multilingual_v2",
         voice_settings: {
-          stability: 0.5,
+          stability: voiceSettings?.stability ?? 0.5,
           similarity_boost: 0.75,
+          style: voiceSettings?.style ?? 0,
+          speed: voiceSettings?.speed ?? 1.0,
         },
       }),
     }
