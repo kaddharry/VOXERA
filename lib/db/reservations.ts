@@ -112,7 +112,11 @@ export async function createBooking(args: CreateBookingArgs): Promise<Booking> {
   }
 
   // Send confirmation email
-  await sendBookingConfirmation(newBooking.customerEmail!, newBooking);
+  if (newBooking.customerEmail) {
+    await sendBookingConfirmation(newBooking.customerEmail, newBooking);
+  } else {
+    console.warn(`[Reservations] Booking ${newBooking.id} has no customerEmail — skipping confirmation email.`);
+  }
 
   return newBooking;
 }
