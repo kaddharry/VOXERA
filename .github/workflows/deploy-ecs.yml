@@ -1,0 +1,48 @@
+name: Deploy VOXERA to ECS
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: voxera
+  ECS_CLUSTER: default
+  ECS_SERVICE: voxera
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::920154934940:role/GitHubActions-VOXERA
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Deploy to ECS Express
+        run: |
+          aws ecs update-express-gateway-service \
+            --service-arn arn:aws:ecs:ap-south-1:920154934940:service/default/voxera \
+            --primary-container '{"image":"920154934940.dkr.ecr.ap-south-1.amazonaws.com/voxera:latest"}'
