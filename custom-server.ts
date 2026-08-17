@@ -48,8 +48,9 @@ app.prepare().then(() => {
         const callSid = String(query.callSid || "unknown");
         const clientId = String(query.clientId || "demo");
         const callerNumber = String(query.caller || "unknown");
-        console.log(`[TelephonyStream] New connection: callSid=${callSid}`);
-        new TelephonyStreamHandler({ ws, callSid, clientId, callerNumber });
+        const agentId = query.agentId ? String(query.agentId) : undefined;
+        console.log(`[TelephonyStream] New connection: callSid=${callSid}${agentId ? ` agentId=${agentId}` : ""}`);
+        new TelephonyStreamHandler({ ws, callSid, clientId, callerNumber, agentId });
       });
     } else {
       socket.destroy();

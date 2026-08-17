@@ -1,7 +1,21 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { Check, Upload, Sparkles, MessageSquare, Phone, Volume2, Calendar } from "lucide-react";
+import { Check, Upload, Sparkles, MessageSquare, Phone, Volume2, Calendar, PhoneCall, Trash2, Bot } from "lucide-react";
+
+interface PhoneNumberRow {
+  id: number;
+  phoneNumber: string;
+  friendlyName: string | null;
+  active: boolean;
+  agentId: string | null;
+  createdAt: number;
+}
+
+interface AgentOption {
+  id: string;
+  name: string;
+}
 
 const VOICE_PERSONAS = [
   { id: "female-friendly", label: "Female · Friendly", model: "aura-asteria-en" },
@@ -31,7 +45,28 @@ export default function SettingsPage() {
   const [cloningError, setCloningError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
+  // Phone Numbers / Default Inbound Agent
+  const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumberRow[]>([]);
+  const [agentOptions, setAgentOptions] = useState<AgentOption[]>([]);
+  const [numbersLoading, setNumbersLoading] = useState(true);
+  const [newNumber, setNewNumber] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [addingNumber, setAddingNumber] = useState(false);
+  const [addNumberError, setAddNumberError] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const loadPhoneNumbers = () => {
+    setNumbersLoading(true);
+    fetch("/api/settings/phone-numbers")
+      .then((res) => res.json())
+      .then((data) => {
+        setPhoneNumbers(data.numbers ?? []);
+        setAgentOptions((data.agents ?? []).map((a: any) => ({ id: a.id, name: a.name })));
+      })
+      .catch((err) => console.error("Failed to load phone numbers:", err))
+      .finally(() => setNumbersLoading(false));
+  };
 
   // Load settings on mount
   useEffect(() => {
@@ -65,7 +100,67 @@ export default function SettingsPage() {
         if (data.calendarId) setGcalCalendarId(data.calendarId);
       })
       .catch((err) => console.error("Failed to load credentials:", err));
+
+    // 4. Fetch phone numbers + agent roster
+    loadPhoneNumbers();
   }, []);
+
+  const handleAddNumber = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddingNumber(true);
+    setAddNumberError(null);
+    try {
+      const res = await fetch("/api/settings/phone-numbers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phoneNumber: newNumber.trim(), friendlyName: newLabel.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add number");
+      setPhoneNumbers((prev) => [data.number, ...prev]);
+      setNewNumber("");
+      setNewLabel("");
+    } catch (err: any) {
+      setAddNumberError(err.message || "Failed to add number");
+    } finally {
+      setAddingNumber(false);
+    }
+  };
+
+  const handleAssignAgent = async (id: number, agentId: string | null) => {
+    setPhoneNumbers((prev) => prev.map((n) => (n.id === id ? { ...n, agentId } : n)));
+    try {
+      await fetch("/api/settings/phone-numbers", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, agentId }),
+      });
+    } catch (err) {
+      console.error("Failed to assign agent:", err);
+    }
+  };
+
+  const handleToggleActive = async (id: number, active: boolean) => {
+    setPhoneNumbers((prev) => prev.map((n) => (n.id === id ? { ...n, active } : n)));
+    try {
+      await fetch("/api/settings/phone-numbers", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, active }),
+      });
+    } catch (err) {
+      console.error("Failed to toggle number:", err);
+    }
+  };
+
+  const handleDeleteNumber = async (id: number) => {
+    setPhoneNumbers((prev) => prev.filter((n) => n.id !== id));
+    try {
+      await fetch(`/api/settings/phone-numbers?id=${id}`, { method: "DELETE" });
+    } catch (err) {
+      console.error("Failed to delete number:", err);
+    }
+  };
 
   const handleSaveSettings = async () => {
     try {
@@ -193,6 +288,97 @@ export default function SettingsPage() {
             className="w-full px-4 py-3 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[14px] text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)] resize-none"
             placeholder="Welcome to Hotel Paradise. How may I assist you today?"
           />
+        </section>
+
+        {/* Phone Numbers / Default Inbound Agent Section */}
+        <section className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 md:p-8 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
+          <div className="flex items-center gap-3 mb-4">
+            <PhoneCall className="w-5 h-5 text-[var(--color-accent-cyan)]" />
+            <h2 className="text-[14px] font-mono font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Phone Numbers & Inbound Routing</h2>
+          </div>
+          <p className="text-[14px] text-[var(--color-text-muted)] mb-6">
+            Register the Twilio numbers that route to this workspace, and choose which agent answers each one.
+            Leave a number unassigned to use your default agent.
+          </p>
+
+          <form onSubmit={handleAddNumber} className="flex flex-col sm:flex-row gap-3 mb-6">
+            <input
+              type="text"
+              value={newNumber}
+              onChange={(e) => setNewNumber(e.target.value)}
+              required
+              className="flex-1 px-4 py-2.5 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[14px] text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)]"
+              placeholder="+15551234567"
+            />
+            <input
+              type="text"
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              className="flex-1 px-4 py-2.5 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[14px] text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)]"
+              placeholder="Label (optional) — e.g. Main Line"
+            />
+            <button
+              type="submit"
+              disabled={addingNumber}
+              className="px-5 py-2.5 text-[13px] font-semibold text-white btn-gradient rounded-xl transition-all hover:scale-[1.02] disabled:opacity-50 disabled:hover:scale-100 shrink-0"
+            >
+              {addingNumber ? "Adding..." : "Add Number"}
+            </button>
+          </form>
+          {addNumberError && (
+            <p className="text-[13px] text-red-400 mb-4">{addNumberError}</p>
+          )}
+
+          {numbersLoading ? (
+            <p className="text-[13px] text-[var(--color-text-muted)] animate-pulse">Loading numbers...</p>
+          ) : phoneNumbers.length === 0 ? (
+            <p className="text-[13px] text-[var(--color-text-muted)] italic">
+              No phone numbers registered yet. Add your Twilio number above to enable inbound calls.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {phoneNumbers.map((n) => (
+                <div
+                  key={n.id}
+                  className={`flex flex-col sm:flex-row sm:items-center gap-3 p-4 rounded-xl border ${n.active ? "border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)]" : "border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] opacity-50"}`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono text-[14px] font-semibold text-[var(--color-text-primary)]">{n.phoneNumber}</div>
+                    {n.friendlyName && <div className="text-[12px] text-[var(--color-text-muted)]">{n.friendlyName}</div>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Bot className="w-3.5 h-3.5 text-[var(--color-text-muted)] shrink-0" />
+                    <select
+                      value={n.agentId ?? ""}
+                      onChange={(e) => handleAssignAgent(n.id, e.target.value || null)}
+                      className="px-3 py-2 bg-[var(--color-bg-base)] border border-[var(--color-border-subtle)] rounded-lg text-[13px] text-[var(--color-text-primary)] focus:ring-1 focus:ring-[var(--color-accent-cyan)]"
+                    >
+                      <option value="">Default agent</option>
+                      {agentOptions.map((a) => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button
+                      onClick={() => handleToggleActive(n.id, !n.active)}
+                      className={`w-11 h-6 rounded-full transition-all relative ${n.active ? "bg-[var(--color-accent-cyan)]" : "bg-[var(--color-bg-base)] border border-[var(--color-border-subtle)]"}`}
+                      title={n.active ? "Active — click to disable" : "Inactive — click to enable"}
+                    >
+                      <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-all ${n.active ? "right-1" : "left-1"}`} />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteNumber(n.id)}
+                      className="text-[var(--color-text-muted)] hover:text-red-400 transition-colors"
+                      title="Remove number"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         {/* Voice Persona Section */}

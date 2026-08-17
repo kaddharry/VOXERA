@@ -1886,3 +1886,93 @@ consistently to the six other admin pages that inherited the dark tokens automat
 their previous light-glass-era markup/spacing conventions (Agent Builder, Try a Call, Tenants, Sessions,
 Knowledge Base, RAG Debugger, Settings) — they're legible and not broken today, just not yet polished to
 match the Dashboard's new hero/pill/sparkline visual language.
+
+### 2026-08-17 — Sessions Analytics Redesign, Default Inbound Agent, Bulk Outbound Campaigns
+
+**Objective**: Three features requested together: (1) the Sessions page was a confusing raw JSON event
+dump with no real analytics; (2) inbound calls always used the tenant's one default prompt with no way
+to route a specific phone number to a specific Agent Builder agent; (3) no way to place calls to many
+recipients at once with per-call results.
+
+**1 — Sessions tab.** Rewrote `app/admin/sessions/page.tsx` into four tabs (Overview / Transcript /
+Emotion Timeline / Diagnostics) computed client-side from the same `/api/session/[sessionId]` event log
+— no schema change. Overview derives duration, user-turn count, avg/last CAI, dominant emotion, and
+escalations from the existing `emotion`/`cai`/`utterance`/`escalation` event types. **Found a real gap
+while building the Transcript tab**: `session_logs` only ever persisted the *caller's* side of the
+conversation (`type: "utterance"`) — the agent's replies existed only on the ephemeral SSE channel used
+by the live dashboard, never written to `session_logs`, so a completed session's transcript could only
+ever show half a conversation. Fixed in `lib/agent/orchestrator.ts` by logging a second `utterance`
+event (`role: "agent"`) alongside the existing `llm_reply` metadata-only log, right where the agent's
+`agentTurn` is already constructed — new sessions now get a real two-sided transcript; already-completed
+sessions predate the fix and can't be retroactively completed.
+
+**2 — Default inbound agent per phone number.** `phone_numbers` (queried by `/api/telephony/incoming`
+but never previously written to by any UI — confirmed via repo-wide grep, only that one read existed)
+gained an `agentId` column (`sql/migration_v12.sql`, also folded into `migration_consolidated.sql`).
+Built full CRUD at `app/api/settings/phone-numbers/route.ts` and a new "Phone Numbers & Inbound Routing"
+section in `app/admin/settings/page.tsx` — register a number, assign an agent from a dropdown (sourced
+from `listAgentsForTenant`), toggle active, delete. Threaded `agentId` through
+`lib/telephony/stream-handler.ts` (`StreamHandlerOptions.agentId` → `handleTurn`'s existing `agentId`
+param, unchanged) and `custom-server.ts`'s WS upgrade handler. `/api/telephony/incoming/route.ts` now
+resolves `agentId` from the `phone_numbers` row alongside `clientId`.
+
+**3 — Bulk outbound campaigns.** New `call_campaigns`/`campaign_calls` tables
+(`sql/migration_v12.sql`). Extracted the single-call logic from `app/api/telephony/outbound/route.ts`
+into `lib/telephony/outbound.ts` (`placeOutboundCall`) so both the existing single-call route and the
+new campaign dispatcher (`lib/telephony/campaign-dispatcher.ts`) go through identical webhook
+construction and `call_logs` writes. The dispatcher runs detached from the `POST /api/campaigns` request
+(this app runs on a persistent Node process — `custom-server.ts` — not serverless, so a fire-and-forget
+async function keeps executing after the response is sent) with a concurrency cap of 2 and a 400ms gap
+between dials, to avoid hammering Twilio's call-creation API. New `/admin/campaigns` page: create a
+campaign (name, agent picker reusing `/api/admin/agents`, recipient textarea with client-side E.164
+validation), campaign list, and a detail view that polls every 3s while the campaign is running, showing
+per-recipient status and a live progress/failure count.
+
+**Two real, unrelated bugs found and fixed while wiring the agent/campaign call paths through**
+`/api/telephony/incoming` — not something either feature could have worked correctly without:
+- **Every outbound call was silently failing to connect once answered.** `/api/telephony/outbound`
+  inserts a `call_logs` row (`status: "outbound_initiated"`) the moment a call is placed; when Twilio
+  then hits `/api/telephony/incoming` once the recipient answers, that route did a plain `.insert()` on
+  the *same* `callSid` — a primary-key violation on every single outbound call, caught by the top-level
+  try/catch and silently rejected with `buildRejectTwiml()`. Changed to `.upsert(..., { onConflict: "id"
+  })`. This was pre-existing and would have made every campaign call fail identically regardless of the
+  new agent/campaign plumbing.
+- **Outbound call outcomes were never recorded.** `initiateOutboundCall` never set Twilio's
+  `statusCallback`, so `/api/telephony/status` (which already existed and already correctly mapped
+  Twilio's completed/busy/no-answer/failed events to `call_logs.status`) never actually received any
+  callbacks for outbound calls — `call_logs.status` stayed at `"outbound_initiated"` forever. Added
+  `statusCallback`/`statusCallbackEvent` to `initiateOutboundCall`, and extended the status route to also
+  roll a campaign call's real outcome into its `campaign_calls` row and the parent campaign's
+  `completedCount`/`failedCount`. Without this, every campaign call would have looked permanently
+  "calling" regardless of whether it actually connected.
+
+**A signature-validation detail specific to routing agentId through the webhook URL**: outbound calls
+(including campaign calls) now carry `?clientId=&agentId=` on the `/api/telephony/incoming` webhook URL
+Twilio is given, since `To` on an outbound call's callback is the recipient dialed, not one of the
+tenant's own registered numbers — the existing `phone_numbers` lookup only applies to genuine inbound
+calls. Twilio signs the exact URL it was given including that query string; the route's signature
+reconstruction previously hardcoded a bare `${baseUrl}/api/telephony/incoming` with no query string,
+which would have rejected every outbound-triggered webhook call as an invalid signature the moment
+`TWILIO_AUTH_TOKEN` is set. Fixed by reconstructing with `req.nextUrl.search` appended.
+
+**Files Added**: `sql/migration_v12.sql`, `app/api/settings/phone-numbers/route.ts`,
+`lib/telephony/outbound.ts`, `lib/telephony/campaign-dispatcher.ts`, `app/api/campaigns/route.ts`,
+`app/api/campaigns/[id]/route.ts`, `app/admin/campaigns/page.tsx`
+
+**Files Modified**: `app/admin/sessions/page.tsx`, `lib/agent/orchestrator.ts`,
+`app/admin/settings/page.tsx`, `lib/telephony/stream-handler.ts`, `custom-server.ts`,
+`app/api/telephony/incoming/route.ts`, `app/api/telephony/outbound/route.ts`, `lib/telephony/twilio.ts`,
+`app/api/telephony/status/route.ts`, `app/admin/layout.tsx`, `sql/migration_consolidated.sql`
+
+**Validation Performed**: `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (316 passing),
+`npm run build` — all clean. Live-verified in-browser with the same throwaway local test account:
+confirmed the redesigned Sessions page, the new Settings phone-numbers section (including the exact
+expected `agentId` schema-cache error, since the migration hasn't been run against this dev database —
+correctly surfaced instead of crashing), the Bulk Calls list/create flow, and campaign creation
+correctly hitting the same "needs a public URL Twilio can reach" guard the existing single-call feature
+already used, confirming the new code path is wired identically to a known-working one.
+
+**Requires the user's own action**: run `sql/migration_v12.sql` against the production Supabase
+database — none of the three features function until the `phone_numbers.agentId` column and the
+`call_campaigns`/`campaign_calls` tables exist. No deploy/DB credentials available in this sandbox to do
+it directly.

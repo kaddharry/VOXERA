@@ -435,6 +435,17 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     replyLength: guarded.cleaned.length,
   }));
 
+  // Persist the agent's own utterance to session_logs the same way the
+  // user's turn is (above) — llm_reply above only logs metadata, not the
+  // text itself, so without this the Sessions history page could only ever
+  // reconstruct half a transcript (the caller's side) after the fact; the
+  // agent's replies previously existed only on the ephemeral SSE channel.
+  void logSessionEvent(makeEvent(evBase, "utterance", {
+    utteranceId: agentTurn.id,
+    role: agentTurn.role,
+    text: agentTurn.text,
+  }));
+
   return {
     reply: guarded.cleaned,
     trace: {

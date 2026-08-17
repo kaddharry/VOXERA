@@ -230,6 +230,41 @@ CREATE TABLE IF NOT EXISTS public.phone_numbers (
   "createdAt" bigint NOT NULL DEFAULT (extract(epoch from now()) * 1000)::bigint
 );
 
+-- migration_v12: default inbound agent per phone number
+ALTER TABLE public.phone_numbers
+ADD COLUMN IF NOT EXISTS "agentId" UUID REFERENCES public.agents(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_phone_numbers_agent ON public.phone_numbers ("agentId");
+
+-- migration_v12: campaign bulk-calling
+CREATE TABLE IF NOT EXISTS public.call_campaigns (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "clientId" text NOT NULL,
+  "agentId" UUID REFERENCES public.agents(id) ON DELETE SET NULL,
+  name text NOT NULL,
+  status text NOT NULL DEFAULT 'pending',
+  "totalRecipients" integer NOT NULL DEFAULT 0,
+  "completedCount" integer NOT NULL DEFAULT 0,
+  "failedCount" integer NOT NULL DEFAULT 0,
+  "createdAt" bigint NOT NULL DEFAULT (extract(epoch from now()) * 1000)::bigint,
+  "completedAt" bigint
+);
+
+CREATE INDEX IF NOT EXISTS idx_call_campaigns_client ON public.call_campaigns ("clientId");
+
+CREATE TABLE IF NOT EXISTS public.campaign_calls (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  "campaignId" UUID NOT NULL REFERENCES public.call_campaigns(id) ON DELETE CASCADE,
+  "phoneNumber" text NOT NULL,
+  status text NOT NULL DEFAULT 'pending',
+  "callSid" text,
+  error text,
+  "createdAt" bigint NOT NULL DEFAULT (extract(epoch from now()) * 1000)::bigint,
+  "completedAt" bigint
+);
+
+CREATE INDEX IF NOT EXISTS idx_campaign_calls_campaign ON public.campaign_calls ("campaignId");
+
 CREATE INDEX IF NOT EXISTS idx_phone_numbers_client ON public.phone_numbers ("clientId");
 
 -- =============================================================================

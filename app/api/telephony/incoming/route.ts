@@ -31,7 +31,12 @@ export async function POST(req: NextRequest) {
     if (authToken) {
       const signature = req.headers.get("x-twilio-signature") || "";
       const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "";
-      const webhookUrl = `${baseUrl}/api/telephony/incoming`;
+      // Must include the query string exactly as configured on the call's
+      // webhook `url` — Twilio signs the full URL it was given, including
+      // ?clientId=/&agentId= appended for outbound campaign calls below.
+      // Reconstructing without it would make every outbound-triggered call
+      // fail signature validation.
+      const webhookUrl = `${baseUrl}/api/telephony/incoming${req.nextUrl.search}`;
       const isValid = validateTwilioSignature(webhookUrl, params, signature);
       if (!isValid) {
         console.warn("[Telephony] Invalid Twilio signature — rejecting request");
@@ -39,14 +44,33 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const { data: phoneRow } = await supabase
-      .from("phone_numbers")
-      .select("clientId")
-      .eq("phoneNumber", toNumber)
-      .eq("active", true)
-      .single();
+    // Outbound calls (single "Place Outbound Call" or a bulk campaign) set
+    // clientId/agentId as query params on the webhook URL they gave Twilio,
+    // since `To` on an outbound call's callback is the recipient we dialed,
+    // not one of our own registered numbers — the phone_numbers lookup
+    // below only applies to genuine inbound calls, which never carry these.
+    const queryClientId = req.nextUrl.searchParams.get("clientId");
+    const queryAgentId = req.nextUrl.searchParams.get("agentId");
 
-    const clientId = phoneRow?.clientId || process.env.DEFAULT_CLIENT_ID || "demo";
+    let clientId: string;
+    let agentId: string | undefined;
+
+    if (queryClientId) {
+      clientId = queryClientId;
+      agentId = queryAgentId ?? undefined;
+    } else {
+      const { data: phoneRow } = await supabase
+        .from("phone_numbers")
+        .select("clientId, agentId")
+        .eq("phoneNumber", toNumber)
+        .eq("active", true)
+        .single();
+
+      clientId = phoneRow?.clientId || process.env.DEFAULT_CLIENT_ID || "demo";
+      // The specific agent assigned to this number (Settings > Phone Numbers),
+      // if any — falls through to the tenant's default prompt when unset.
+      agentId = phoneRow?.agentId ?? undefined;
+    }
 
     const activeCount = await callQueue.getActiveCallCount();
 
@@ -74,17 +98,24 @@ export async function POST(req: NextRequest) {
     // Accepted immediately — remove from queue, stream-handler will markCallStarted
     await callQueue.dequeueCaller(callSid);
 
-    await supabase.from("call_logs").insert([{
+    // Upsert, not insert: for an outbound call (single call or a campaign),
+    // /api/telephony/outbound already inserted a row with this same callSid
+    // (status "outbound_initiated") the moment the call was placed — Twilio
+    // then hits this webhook once the recipient actually answers. A plain
+    // insert would fail on the id primary key every single time, which
+    // silently rejected every outbound call before this call_logs row was
+    // ever reached (caught by the top-level try/catch as a generic error).
+    await supabase.from("call_logs").upsert([{
       id: callSid,
       clientId,
       callerNumber,
       status: "active",
       startedAt: Date.now(),
       queueWaitMs: caller.joinedAt ? Date.now() - caller.joinedAt : 0,
-    }]);
+    }], { onConflict: "id" });
 
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `https://${req.headers.get("host")}`;
-    const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}`;
+    const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}${agentId ? `&agentId=${agentId}` : ""}`;
 
     console.log(`[Telephony] Connecting ${callSid} to stream: ${wsUrl}`);
 

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { initiateOutboundCall } from "../../../../lib/telephony/twilio";
-import { supabase } from "../../../../lib/db/supabase";
 import { checkRateLimit } from "../../../../lib/telephony/rate-limit";
+import { placeOutboundCall, isLocalBaseUrl, resolveBaseUrl } from "../../../../lib/telephony/outbound";
 
 export const dynamic = "force-dynamic";
 
@@ -42,14 +41,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Destination phone number 'to' is required." }, { status: 400 });
     }
 
-    const host = req.headers.get("host") || "localhost:3000";
-    const protocol = host.includes("localhost") ? "http" : "https";
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${protocol}://${host}`;
+    const baseUrl = resolveBaseUrl(req);
 
     // Twilio calls this webhook from the public internet — it can never reach
     // localhost. Fail fast with an actionable message instead of silently
     // placing a call Twilio will fail to connect (see docs/PHONE_CALL_DEMO_SETUP.md).
-    if (/localhost|127\.0\.0\.1/.test(baseUrl)) {
+    if (isLocalBaseUrl(baseUrl)) {
       return NextResponse.json(
         {
           error:
@@ -59,21 +56,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const webhookUrl = `${baseUrl}/api/telephony/incoming`;
-
-    const { callSid, status } = await initiateOutboundCall({
-      to,
-      webhookUrl,
-    });
-
-    // Record outbound call in call_logs
-    await supabase.from("call_logs").insert([{
-      id: callSid,
-      clientId,
-      callerNumber: to,
-      status: "outbound_initiated",
-      startedAt: Date.now(),
-    }]);
+    const { callSid, status } = await placeOutboundCall({ to, clientId, baseUrl });
 
     return NextResponse.json({ success: true, callSid, status });
   } catch (err: any) {

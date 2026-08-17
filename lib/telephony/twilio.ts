@@ -99,6 +99,12 @@ export async function initiateOutboundCall(opts: {
   to: string;
   from?: string;
   webhookUrl: string;
+  /** Twilio POSTs the final call status here (completed/busy/no-answer/
+   * failed/canceled) once the call ends — see app/api/telephony/status.
+   * Without this, call_logs (and any campaign_calls row for this call)
+   * stay stuck at "outbound_initiated" forever, since nothing else ever
+   * learns whether the call was actually answered. */
+  statusCallback?: string;
 }): Promise<{ callSid: string; status: string }> {
   const client = getTwilioClient();
   const fromNumber = opts.from || process.env.TWILIO_PHONE_NUMBER;
@@ -111,6 +117,11 @@ export async function initiateOutboundCall(opts: {
     to: opts.to,
     from: fromNumber,
     url: opts.webhookUrl,
+    ...(opts.statusCallback && {
+      statusCallback: opts.statusCallback,
+      statusCallbackEvent: ["completed"],
+      statusCallbackMethod: "POST",
+    }),
   });
 
   return { callSid: call.sid, status: call.status };

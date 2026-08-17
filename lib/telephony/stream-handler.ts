@@ -70,6 +70,10 @@ export interface StreamHandlerOptions {
   callSid: string;
   clientId: string;
   callerNumber: string;
+  /** The agent whose prompt/knowledge base should handle this call, resolved
+   * from phone_numbers.agentId by the incoming webhook. Undefined falls back
+   * to the tenant's default prompt (handleTurn's existing behavior). */
+  agentId?: string;
 }
  
 /**
@@ -92,6 +96,7 @@ export class TelephonyStreamHandler {
   private callSid: string;
   private clientId: string;
   private callerNumber: string;
+  private agentId?: string;
   private sessionId: string;
   private userId: string;
   private deepgram: DeepgramLiveWrapper;
@@ -111,6 +116,7 @@ export class TelephonyStreamHandler {
     this.callSid = opts.callSid;
     this.clientId = opts.clientId;
     this.callerNumber = opts.callerNumber;
+    this.agentId = opts.agentId;
     this.sessionId = `tel-${nanoid(12)}`;
     this.userId = `caller-${opts.callerNumber.replace(/\D/g, "")}`;
     this.startedAt = Date.now();
@@ -209,6 +215,7 @@ export class TelephonyStreamHandler {
         sessionId: this.sessionId,
         userId: this.userId,
         clientId: this.clientId,
+        agentId: this.agentId,
         transcript: text,
         sttConfidence: 0.9,
         audioEmotion: null,
