@@ -212,7 +212,7 @@ export function groupMemoriesIntoTimeline(memories: MemoryRecord[]): TimelineEve
 }
 
 export async function retrieve(req: RetrievalRequest): Promise<RetrievedContext> {
-  const queryEmb = await embed(req.queryText);
+  const queryEmb = await embed(req.queryText, { isQuery: true });
   const stmTurns = await stm.get(req.sessionId);
   const boostEmotion = req.emotion.flags.increasing_distress || req.emotion.flags.repeated_frustration;
 

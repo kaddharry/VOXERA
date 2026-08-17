@@ -316,7 +316,7 @@ CREATE TABLE IF NOT EXISTS public.memories (
   importance_score real NOT NULL DEFAULT 0.5,
   retrieval_count integer NOT NULL DEFAULT 0,
   last_retrieved_at bigint,
-  embedding vector(1536),
+  embedding vector(384),
   "sourceUtteranceIds" text[] NOT NULL DEFAULT '{}',
   recurrence integer NOT NULL DEFAULT 1,
   resolved boolean NOT NULL DEFAULT false,
@@ -375,7 +375,7 @@ CREATE POLICY "Tenants can manage their own memories" ON public.memories
 -- which version, if any, is already there.
 DROP FUNCTION IF EXISTS public.match_memories(vector, double precision, integer, text, text, text);
 CREATE OR REPLACE FUNCTION match_memories(
-  query_embedding vector(1536),
+  query_embedding vector(384),
   match_threshold float,
   match_count int,
   filter_tier text,

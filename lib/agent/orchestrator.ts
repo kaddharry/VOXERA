@@ -212,7 +212,7 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   await stm.push(input.sessionId, userTurn, input.clientId);
 
 
-  const queryEmbedding = await embed(input.transcript);
+  const queryEmbedding = await embed(input.transcript, { isQuery: true });
   const [ltmUserResults, mtmSearchResults] = await Promise.all([
     vectorStore.search({
       tier: "LTM_user",

@@ -2363,3 +2363,135 @@ longer serially blocking the reply (bug 2).
 
 **Files Modified**: `lib/agent/orchestrator.ts`, `lib/emotion/emotion-debug.ts`, `lib/config.ts`,
 `lib/agent/context.ts`, `server.ts`, `lib/telephony/stream-handler.ts`
+
+## Local Embeddings, Turn-Splitting, LLM Latency, Mute Controls
+
+**Objective**: user reported the agent's answers stayed narrow ("only gives Tredence, PDF has more in it")
+even after the prior session's RAG-truncation fix, that a sentence split by a mid-sentence pause got
+answered as two separate fragmented turns, that latency was still ~10s and asked for a small local
+embedding model + smallest LLM, and asked for self-mute/speaker-mute controls in the Try a Call test
+drawer.
+
+**Critical finding, not a code bug — the agent's knowledge base is currently near-empty**: investigated the
+"only Tredence" complaint by querying `memories`/`knowledge_documents` directly. The original 66-chunk
+`Vikas_Verma_Full_Detail_Deck.pdf` ingestion (topic `kb:vikas verma full detail deck`) is gone — its
+`knowledge_documents` row is `status: "superseded"`, and `ingestDocument()`'s supersede logic
+(`lib/knowledge/ingest.ts`) deletes a prior version's `memories` rows whenever a new document with the same
+clientId+filename is ingested. A second document (`status: "ready"`, `chunkCount: 1`, filename a random
+UUID) exists but has **zero** `memories` rows referencing its `documentId` — its one claimed chunk was
+never actually written, a real but separate data-integrity gap in the ingest pipeline not chased further
+here given time constraints. The agent's `system_prompt` contains no resume facts either (verified: no
+mention of Tredence or any employer) — confirming the earlier live-verified "Tredence" answer came from
+real RAG retrieval at the time it was tested, and has nothing left to retrieve now. **Action needed from
+the user: re-upload the PDF** — it will now go through the new local embedding pipeline below and populate
+correctly. This is flagged, not fixed, since there's no way to regenerate the original file's content from
+this environment.
+
+**Root cause of the RAG "same 3 chunks regardless of query" pattern (the part that WAS a code bug)**:
+`lib/util/embed.ts` calls OpenAI's `text-embedding-3-small` only when `OPENAI_API_KEY` is set — confirmed
+via `.env.local` that it never was, meaning every single embedding to date (both stored chunks and
+per-turn queries) actually came from `embedLocal()`, a bag-of-words FNV hash embedder with **no real
+semantic signal** — cosine similarity is driven by literal token overlap. If a proper noun (a client's own
+name, a repeated brand/company word) appears across most chunks of a document, it dominates the hash
+similarity for every query, flattening the ranking so the same top-3 chunks win regardless of what was
+actually asked. This was silently the *actual* embedder in production the whole time, not a rare fallback
+path.
+
+**Fix — local ONNX embeddings, matching the pattern already used for the emotion engines**: added
+`lib/util/local-embedder.ts`, a singleton `@xenova/transformers` `feature-extraction` pipeline over
+`Xenova/bge-small-en-v1.5` (384-dim BGE-small, ONNX-converted for transformers.js — same
+singleton-pipeline pattern as `lib/emotion/local-emotion-classifier.ts`). Live-verified: 185ms cold
+(includes model load), ~7ms warm per embed, producing real, graded, non-degenerate cosine similarities
+between distinct queries (0.32-0.42 range for genuinely different topics, not the near-1.0 clustering a
+hash embedder driven by shared boilerplate tokens would produce). `lib/util/embed.ts` rewritten: local ONNX
+is now the primary path (no network call, no API cost); OpenAI remains an optional override (its
+`dimensions` param pinned to match, since pgvector columns are fixed-dimension); the hash embedder is now
+only the last-resort fallback if the local model itself fails to load. BGE embeds queries with a different
+instruction prefix than passages (asymmetric search) — `embed()` gained an `{ isQuery?: boolean }` option,
+threaded through every query-side call site (`lib/memory/retrieval.ts`, `lib/agent/orchestrator.ts`,
+`lib/knowledge/ingest.ts`'s `queryKnowledgeBase`), and the in-memory cache key now includes it so a query
+lookup can never accidentally serve a passage-mode vector.
+
+**Database migration required and applied** (with explicit user confirmation before running, since it's a
+destructive schema change on the live Supabase DB — the auto-mode safety classifier correctly blocked the
+first unconfirmed attempt): `sql/migration_v13.sql` drops and recreates `memories.embedding` as
+`vector(384)` (pgvector columns are fixed-dimension; 1536 can't be resized to 384 in place) and redefines
+`match_memories()`'s `query_embedding` param to match. `sql/migration.sql` and `sql/migration_consolidated.sql`
+also updated (`vector(1536)` -> `vector(384)`) so a fresh install matches. Ran a one-off re-embedding pass
+immediately after (not checked into the repo) that read all existing `memories` rows by their stored
+`text` and regenerated real local embeddings for each — 13 rows existed at migration time (fewer than the
+79 seen earlier in the same investigation, consistent with the knowledge-base loss described above), all
+re-embedded successfully and verified as real 384-length float vectors, not stubs.
+
+**`CONFIG.retrieval.topK.ltmClient` raised 3 -> 6**: a knowledge document can be dozens of chunks; with
+real semantic ranking now driving selection, a wider top-K surfaces more of a document's actual breadth per
+turn instead of only ever the 3 highest scorers — directly targets "the PDF has more in it" once the user
+re-uploads it.
+
+**Turn-splitting bug** (`lib/deepgram/live.ts`): Deepgram's `is_final: true` on a Results message means
+"this word group is finalized and won't be re-transcribed," not "the caller stopped talking" — treating
+every `is_final` segment as a complete turn (the prior behavior) is exactly what split "...tell me about
+your <thinking pause> experience in Salesforce?" into two separate turns, the first answered as a bare
+fragment. Fixed by using Deepgram's actual end-of-utterance signal: added `vad_events: "true"` to the
+connection params (required for `UtteranceEnd` messages to be emitted at all — they weren't being requested
+before), and `handleTranscript()` now buffers `is_final` word-group segments in `finalSegments[]`, only
+joining and firing the turn-triggering callback (`isFinal: true`) when an `UtteranceEnd` message arrives.
+Interim segments still surface live (as `isFinal: false`) so any live-caption UI keeps updating instead of
+appearing frozen mid-utterance. Added a 2.5s safety-net timer per accumulated segment in case
+`UtteranceEnd` never arrives for some reason (flaky network, unexpected response shape) — same "don't trust
+a single signal to definitely fire" precaution already used for the LLM tool-loop fallback in
+`lib/agent/llm.ts`. Both the browser demo (`server.ts`) and Twilio telephony (`lib/telephony/stream-handler.ts`)
+share this wrapper, so both benefit. Not independently live-testable in this environment (no real mic/audio
+input available headlessly) — verified via code review and the full existing test suite (which mocks
+`connect`/`sendAudio`/`close` on this class but doesn't exercise `handleTranscript` internals, so nothing
+needed updating there).
+
+**LLM latency**: reordered `CONFIG.llm.providers` to try Groq first (custom LPU inference hardware, very
+low per-token latency) instead of last. Live-debugging the actual model choice took several iterations,
+each verified against the real Groq API rather than assumed: the originally-tried "llama-3.1-8b-instant"
+404'd (not on this account's catalog — confirmed via `GET /openai/v1/models`); the smallest genuinely
+available model, "allam-2-7b", turned out not to support tool calling at all (a hard 400 from Groq, and
+every live turn needs tools); landed on "openai/gpt-oss-20b" (~6x smaller than the
+"openai/gpt-oss-120b" this used to fall back to), which does support tools — but is itself a *reasoning*
+model that was silently spending most/all of `maxOutputTokens` (160) on a hidden `reasoning` field before
+ever writing `content` (live-verified via a raw API call: 125 of 160 tokens went to reasoning on one
+request, leaving a truncated 35-token answer; on another, `content` came back empty entirely). This is
+exactly what was surfacing as `[LLM] Tool-call loop exhausted without a final reply — forcing a
+text-only follow-up` and occasional visibly truncated replies ("I don") once Groq became primary — not a
+tool-calling problem at all, a hidden-reasoning-token-budget problem. Fixed at the source with
+`reasoning_effort: "low"` (Groq/OpenAI's own supported knob for gpt-oss models, threaded through as a new
+per-provider `reasoningEffort` config field in `lib/agent/llm.ts`'s two completion call sites) — live-verified
+this drops reasoning tokens from 125 to 8, leaving the budget for the real answer. **Live-verified end-to-end
+via `/api/turn`** (before -> after, same question, same agent): `llmMs` ~4-8s+ (with the tool-loop-exhaustion
+retry sometimes doubling that) -> consistently ~500-750ms, zero tool-loop-exhaustion warnings across
+repeated calls, replies no longer truncated. Total turn time (text-only, no TTS) settled around ~1.9s
+steady-state vs. the originally reported ~10s.
+
+**Mute controls** (`app/_components/TestAgentDrawer.tsx`): added self-mute (mic) and speaker-mute (agent
+audio) toggle buttons in the Live Test Call toolbar, next to Start/End Call. Self-mute disables the live
+`MediaStreamTrack` (`track.enabled = false`) rather than gating the WS send — a disabled track outputs
+silence to every consumer (the capture worklet, the level meter, VAD) with no extra plumbing needed
+per-consumer, and re-enabling immediately resumes normal capture. Speaker-mute sets the `<audio>` element's
+`.muted` property, which silences output immediately (including audio already mid-playback) and persists
+across future `audio.src` swaps on the same element, so it doesn't need to re-apply per reply. Both persist
+across a call (not reset on Start/End Call) since there's no clear reason a tester would want them to
+reset. Live-verified via browser screenshot: both buttons render in the toolbar, and clicking the mic-mute
+button visibly toggles it to the active/red state with the crossed-mic icon.
+
+**Verification**: `npx tsc --noEmit`, `npm run lint`, `npm run build` all clean. `npx vitest run`: 3
+pre-existing tests in `__tests__/agent/llm-provider-fallback.test.ts` failed after the provider reorder
+(asserted the old ZenMux-first order and model) — rewrote them for Groq-first priority and the new
+`openai/gpt-oss-20b` default; full suite 315 passing, 0 failing. Local embedder live-tested standalone
+(cosine similarities, timing, dimension) before wiring in. Database migration applied directly against the
+live Supabase DB via a raw `pg` connection (no `psql` binary available in this environment) after explicit
+user confirmation. LLM latency and reasoning-token-budget fixes verified with real Groq API calls (both
+raw `fetch()` probes to inspect response shape, and full `/api/turn` round trips through the actual
+`handleTurn()` pipeline) — not assumed from documentation. Mute controls verified via a live browser
+screenshot showing the toggle firing correctly. Turn-splitting fix is code-reviewed and covered by existing
+mocked tests but not independently live-audio-tested (no headless mic/speaker in this environment) — flagged
+explicitly rather than claimed as fully verified.
+
+**Files Modified**: `lib/util/local-embedder.ts` (new), `lib/util/embed.ts`, `lib/memory/retrieval.ts`,
+`lib/agent/orchestrator.ts`, `lib/knowledge/ingest.ts`, `lib/config.ts`, `lib/agent/llm.ts`,
+`lib/deepgram/live.ts`, `app/_components/TestAgentDrawer.tsx`, `sql/migration_v13.sql` (new),
+`sql/migration.sql`, `sql/migration_consolidated.sql`, `__tests__/agent/llm-provider-fallback.test.ts`

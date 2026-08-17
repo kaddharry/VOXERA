@@ -16,7 +16,13 @@ export const CONFIG = {
     zeta: 0.05,
   },
   retrieval: {
-    topK: { mtm: 6, ltmUser: 3, ltmClient: 3 },
+    // ltmClient raised 3 -> 6: a knowledge-base document can be dozens of
+    // chunks (e.g. a multi-page resume/deck), and with real semantic
+    // embeddings now driving ranking (see lib/util/local-embedder.ts) a
+    // broader top-K surfaces more of the document's actual breadth per turn
+    // instead of only ever showing the 3 highest-scoring chunks — directly
+    // targets "the PDF has more in it than what the agent ever mentions".
+    topK: { mtm: 6, ltmUser: 3, ltmClient: 6 },
     w: { sem: 0.45, emo: 0.2, rec: 0.15, imp: 0.15, stale: 0.05, redund: 0.15 },
     tauFreshMs: 1000 * 60 * 60 * 24 * 3,
     minSemScore: 0.35,
@@ -41,36 +47,50 @@ export const CONFIG = {
   },
   llm: {
     // Order is the fallback priority, tried top to bottom by generateReply()
-    // (lib/agent/llm.ts) until one succeeds: ZenMux first, then the existing
-    // Groq key-rotation setup, then OpenAI. Each entry's `envKey` is read by
-    // KeyRotator (lib/util/keys.ts), which already supports comma-separated
-    // multi-key rotation for ANY of these — ZenMux gets that for free, not
-    // just Groq. baseURL/model are env-overridable (ZENMUX_BASE_URL /
-    // ZENMUX_MODEL) since ZenMux's exact model catalog is account/deployment
-    // -specific; the values below are only fallback defaults.
+    // (lib/agent/llm.ts) until one succeeds. Groq is now first: Groq's whole
+    // product is running open models on custom LPU inference hardware for
+    // very low per-token latency. ZenMux and OpenAI stay as fallbacks for
+    // when Groq's key/quota isn't available. Each entry's `envKey` is read
+    // by KeyRotator (lib/util/keys.ts), which already supports
+    // comma-separated multi-key rotation for ANY of these. baseURL/model are
+    // env-overridable (GROQ_MODEL / ZENMUX_BASE_URL / ZENMUX_MODEL) since
+    // exact model catalogs are account/deployment-specific and change over
+    // time (Groq in particular has fully removed models it once supported —
+    // check `GET /openai/v1/models` with your key if a default below goes
+    // stale).
     providers: [
+      {
+        name: "groq",
+        baseURL: "https://api.groq.com/openai/v1",
+        // Verified live against this account's actual `GET /openai/v1/models`
+        // catalog (not assumed) — "llama-3.1-8b-instant" 404'd despite being
+        // Groq's commonly-documented small/fast model, meaning it isn't on
+        // this account/API version. Of what's actually available,
+        // "allam-2-7b" is smaller but doesn't support tool calling at all
+        // (a hard 400 from Groq, verified live) — a non-starter, since
+        // every live turn needs tools. "openai/gpt-oss-20b" is the smallest
+        // model that both exists on this account AND supports tool calling
+        // (~6x smaller than "openai/gpt-oss-120b", the previous default).
+        // It IS a reasoning model though — verified live it was silently
+        // spending most/all of maxOutputTokens on a hidden `reasoning` field
+        // before ever writing `content`, which is exactly what surfaced as
+        // "[LLM] Tool-call loop exhausted without a final reply" and
+        // occasional visibly truncated replies once this became the
+        // primary provider. `reasoningEffort: "low"` below (Groq/OpenAI's
+        // own supported knob for gpt-oss models) fixes that at the source
+        // rather than just paying for a bigger token budget.
+        model: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
+        envKey: "GROQ_API_KEYS",
+        reasoningEffort: "low" as const,
+      },
       {
         name: "zenmux",
         baseURL: process.env.ZENMUX_BASE_URL || "https://zenmux.ai/api/v1",
         model: process.env.ZENMUX_MODEL || "openai/gpt-4o-mini",
         envKey: "ZENMUX_API_KEY",
       },
-      {
-        name: "groq",
-        baseURL: "https://api.groq.com/openai/v1",
-        // Was hardcoded to "llama-3.3-70b-versatile", which Groq has since
-        // fully removed from their catalog (confirmed live: every request
-        // returned a 400 "does not exist or you do not have access to it"
-        // — every single turn silently fell through past Groq to whatever
-        // came after it, all session). Groq's available models change
-        // over time faster than most providers here, so this is now
-        // env-overridable like ZenMux's — check `GET /openai/v1/models`
-        // with your key if this one goes stale too.
-        model: process.env.GROQ_MODEL || "openai/gpt-oss-120b",
-        envKey: "GROQ_API_KEYS",
-      },
       { name: "openai", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", envKey: "OPENAI_API_KEY" },
-    ] as Array<{ name: string; baseURL: string; model: string; envKey: string }>,
+    ] as Array<{ name: string; baseURL: string; model: string; envKey: string; reasoningEffort?: "low" | "medium" | "high" }>,
     maxInputTokens: 6000,
     // Kept tight for voice/realtime turns — long completions add seconds of
     // TTS-wait latency and break the "feels like a phone call" pacing.

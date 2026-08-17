@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Radio, X, Phone, PhoneOff, Sparkles, ChevronDown, Database, ListTree, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Radio, X, Phone, PhoneOff, Sparkles, ChevronDown, Database, ListTree, AlertTriangle, CheckCircle2, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
 import { getMicSupport, describeMicError } from "./micUtils";
 import { useVoiceActivityDetection } from "./useVoiceActivityDetection";
 import {
@@ -344,6 +344,11 @@ export function TestAgentDrawer() {
   // behavior); clicking an older bubble in the transcript pins it here so
   // it can be inspected, until the next new reply auto-advances again.
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
+  // Self-mute (mic) and speaker-mute (agent audio) toggles for testing —
+  // independent of each other and of call state, so either can be flipped
+  // mid-call.
+  const [micMuted, setMicMuted] = useState(false);
+  const [speakerMuted, setSpeakerMuted] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const micAudioContextRef = useRef<AudioContext | null>(null);
@@ -427,6 +432,22 @@ export function TestAgentDrawer() {
     playbackAnalyserRef.current = analyser;
   }, [open]);
 
+  // Toggling mid-call disables/re-enables the live mic track directly —
+  // a disabled MediaStreamTrack outputs silence to every consumer (the
+  // capture worklet that streams audio to Deepgram, the level meter, VAD)
+  // without needing to touch any of that plumbing individually.
+  useEffect(() => {
+    streamRef.current?.getAudioTracks().forEach((t) => { t.enabled = !micMuted; });
+  }, [micMuted]);
+
+  // HTMLMediaElement.muted silences output immediately, including audio
+  // already mid-playback, and persists across future `audio.src` swaps on
+  // the same element (the reply_audio handler above only sets .src, not
+  // .muted, so this doesn't need to re-run per reply).
+  useEffect(() => {
+    if (playerRef.current) playerRef.current.muted = speakerMuted;
+  }, [speakerMuted]);
+
   const stopLevelLoop = useCallback(() => {
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
@@ -506,6 +527,10 @@ export function TestAgentDrawer() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
+      // Respect a mute toggled before the call started — disabling the
+      // track makes it output silence to every consumer (worklet, level
+      // meter, VAD) with no extra plumbing needed elsewhere.
+      stream.getAudioTracks().forEach((t) => { t.enabled = !micMuted; });
 
       const selectedAgent = agents.find((a) => a.id === selectedAgentId);
       const effectiveAgentId = selectedAgent?.id ?? (selectedAgentId || undefined);
@@ -682,7 +707,7 @@ export function TestAgentDrawer() {
       setStatus("error");
       endCall();
     }
-  }, [endCall, startLevelLoop, vad, bargeIn, agents, selectedAgentId, sensitivityBias]);
+  }, [endCall, startLevelLoop, vad, bargeIn, agents, selectedAgentId, sensitivityBias, micMuted]);
 
   const isLive = status !== "idle" && status !== "error";
 
@@ -738,19 +763,45 @@ export function TestAgentDrawer() {
             </div>
           </div>
 
-          <button
-            onClick={isLive ? endCall : startCall}
-            disabled={!micSupported && !isLive}
-            title={!micSupported ? "Microphone requires HTTPS (or localhost) and a supported browser" : undefined}
-            className={`ml-auto flex-none flex items-center gap-2 px-5 py-2 rounded-xl text-[13px] font-semibold transition-all ${
-              isLive
-                ? "bg-red-500 text-white shadow-[0_0_15px_rgba(239,68,68,0.5)] hover:bg-red-600"
-                : "bg-[var(--console-violet)] text-[#0A0C14] hover:brightness-110"
-            } disabled:opacity-40 disabled:cursor-not-allowed`}
-          >
-            {isLive ? <PhoneOff className="w-4 h-4" /> : <Phone className="w-4 h-4" />}
-            {isLive ? "End Call" : "Start Call"}
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setMicMuted((m) => !m)}
+              title={micMuted ? "Unmute your microphone" : "Mute your microphone"}
+              aria-pressed={micMuted}
+              className={`flex-none flex items-center justify-center w-9 h-9 rounded-xl border transition-all ${
+                micMuted
+                  ? "bg-red-500/15 border-red-500/40 text-red-400"
+                  : "bg-[var(--console-surface-raised)] border-[var(--console-border)] text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
+              }`}
+            >
+              {micMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={() => setSpeakerMuted((m) => !m)}
+              title={speakerMuted ? "Unmute the agent's voice" : "Mute the agent's voice"}
+              aria-pressed={speakerMuted}
+              className={`flex-none flex items-center justify-center w-9 h-9 rounded-xl border transition-all ${
+                speakerMuted
+                  ? "bg-red-500/15 border-red-500/40 text-red-400"
+                  : "bg-[var(--console-surface-raised)] border-[var(--console-border)] text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
+              }`}
+            >
+              {speakerMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={isLive ? endCall : startCall}
+              disabled={!micSupported && !isLive}
+              title={!micSupported ? "Microphone requires HTTPS (or localhost) and a supported browser" : undefined}
+              className={`flex-none flex items-center gap-2 px-5 py-2 rounded-xl text-[13px] font-semibold transition-all ${
+                isLive
+                  ? "bg-red-500 text-white shadow-[0_0_15px_rgba(239,68,68,0.5)] hover:bg-red-600"
+                  : "bg-[var(--console-violet)] text-[#0A0C14] hover:brightness-110"
+              } disabled:opacity-40 disabled:cursor-not-allowed`}
+            >
+              {isLive ? <PhoneOff className="w-4 h-4" /> : <Phone className="w-4 h-4" />}
+              {isLive ? "End Call" : "Start Call"}
+            </button>
+          </div>
         </div>
 
         {/* Agent selector — pick which custom Agent Builder agent's actual

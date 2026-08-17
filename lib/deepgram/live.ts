@@ -35,6 +35,20 @@ export class DeepgramLiveWrapper {
   private state: ConnectionState = "disconnected";
   private audioBuffer: (Uint8Array | Buffer)[] = [];
   private intentionallyClosed = false;
+  /** is_final segments accumulated since the last UtteranceEnd — a single
+   * is_final=true Results message is a finalized WORD GROUP, not "the caller
+   * stopped talking"; treating it as a whole turn is what caused a sentence
+   * with a mid-sentence thinking pause ("...tell me about your <pause>
+   * experience in Salesforce?") to be split into two separate turns. */
+  private finalSegments: string[] = [];
+  /** Safety net: if Deepgram's UtteranceEnd (driven by vad_events) never
+   * arrives after a final segment lands — flaky network, an unexpected
+   * response shape — the turn would otherwise never fire and the agent
+   * would go silent. Forces finalization after this many ms of no further
+   * activity, same "don't trust a single signal to definitely fire" pattern
+   * already used for the LLM tool-loop fallback in lib/agent/llm.ts. */
+  private static readonly UTTERANCE_END_FALLBACK_MS = 2500;
+  private utteranceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(onTranscript?: TranscriptCallback, opts?: DeepgramLiveOptions) {
     if (onTranscript) {
@@ -63,18 +77,22 @@ export class DeepgramLiveWrapper {
       sample_rate: String(this.sampleRate),
       channels: "1",
       interim_results: "true",
-      // `is_final` (the flag handleTranscript() below actually acts on to
-      // trigger a reply) is governed by `endpointing`, not `utterance_end_ms`
-      // — left unset, Deepgram finalizes on its own short default silence
-      // gap, which fires on an ordinary mid-sentence breath or pause and
-      // makes the agent start replying before the caller finished talking
-      // (reported live: "starts talking before I finished my sentence").
-      // Was 500ms; live testing still showed occasional cut-offs on longer
-      // natural pauses (thinking mid-sentence, not just a breath), so bumped
-      // to 900ms — still well under the ~1-1.2s a listener perceives as
-      // "the agent went quiet," but enough room for a real pause.
+      // `is_final` on a Results message means "this word group is finalized
+      // and won't be re-transcribed" — it does NOT mean the caller stopped
+      // talking. Treating every is_final segment as a complete turn (the
+      // previous behavior) meant an ordinary mid-sentence thinking pause
+      // ("...tell me about your <pause> experience in Salesforce?") got
+      // split into two separate turns, the first answered as if it were a
+      // complete (fragment) question. `endpointing: 900` still controls how
+      // eagerly each word group gets marked is_final — kept as-is. The real
+      // "caller is done talking" signal is UtteranceEnd, which requires
+      // vad_events=true to be emitted at all; handleTranscript() below now
+      // buffers is_final segments and only fires a turn-triggering callback
+      // on UtteranceEnd, using utterance_end_ms as the silence gap for that
+      // decision specifically.
       endpointing: "900",
       utterance_end_ms: "1000",
+      vad_events: "true",
     });
     const url = `wss://api.deepgram.com/v1/listen?${params.toString()}`;
 
@@ -171,21 +189,66 @@ export class DeepgramLiveWrapper {
       this.live = null;
     }
     this.audioBuffer = [];
+    this.finalSegments = [];
+    this.clearUtteranceFallback();
+  }
+
+  private clearUtteranceFallback(): void {
+    if (this.utteranceFallbackTimer) {
+      clearTimeout(this.utteranceFallbackTimer);
+      this.utteranceFallbackTimer = null;
+    }
+  }
+
+  /** Joins accumulated is_final word-group segments into the finished
+   * utterance and fires the turn-triggering callback (isFinal=true). */
+  private finalizeUtterance(): void {
+    this.clearUtteranceFallback();
+    if (this.finalSegments.length === 0) return;
+    const text = this.finalSegments.join(" ").trim();
+    this.finalSegments = [];
+    if (text.length > 0 && this.onTranscript) {
+      this.onTranscript(text, true);
+    }
   }
 
   private handleTranscript(data: any) {
-    // Basic duck-typing for a transcript response vs metadata
+    // UtteranceEnd (requires vad_events=true) is the real "caller stopped
+    // talking" signal — this is the only place a full turn should fire from.
+    if (data && data.type === "UtteranceEnd") {
+      this.finalizeUtterance();
+      return;
+    }
+
+    // Basic duck-typing for a transcript Results response vs other metadata
     if (data && data.channel && data.channel.alternatives) {
       const isFinal = data.is_final || false;
       const alternatives = data.channel.alternatives;
+      if (!alternatives || alternatives.length === 0) return;
 
-      if (alternatives && alternatives.length > 0) {
-        const text = alternatives[0].transcript;
-        if (text && text.trim().length > 0) {
-          if (this.onTranscript) {
-            this.onTranscript(text, isFinal);
-          }
+      const text = alternatives[0].transcript;
+      if (!text || text.trim().length === 0) return;
+
+      if (isFinal) {
+        // A finalized word group, not necessarily the end of the turn —
+        // buffer it and wait for UtteranceEnd. Still surface the growing
+        // transcript to the caller as an interim update (isFinal=false) so
+        // any live-caption UI keeps updating instead of appearing frozen.
+        this.finalSegments.push(text.trim());
+        if (this.onTranscript) {
+          this.onTranscript(this.finalSegments.join(" "), false);
         }
+        // Safety net in case UtteranceEnd never arrives for this utterance.
+        this.clearUtteranceFallback();
+        this.utteranceFallbackTimer = setTimeout(
+          () => this.finalizeUtterance(),
+          DeepgramLiveWrapper.UTTERANCE_END_FALLBACK_MS
+        );
+      } else if (this.onTranscript) {
+        // True interim (not yet finalized) — show it appended to whatever
+        // is already finalized so far, not in isolation.
+        const preview = this.finalSegments.length > 0 ? `${this.finalSegments.join(" ")} ${text}` : text;
+        this.onTranscript(preview, false);
       }
     }
   }

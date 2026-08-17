@@ -46,6 +46,12 @@ export async function generateReply(args: {
 
         let finalResponseText = "";
         const useTools = args.useTools ?? true;
+        // Reasoning models (e.g. Groq's gpt-oss family) otherwise spend the
+        // output-token budget on a hidden reasoning field before ever
+        // writing the actual reply — see CONFIG.llm.providers' groq entry
+        // for the live-verified failure mode this fixes. A no-op extra
+        // field for providers/models that don't support it.
+        const reasoningOpt = provider.reasoningEffort ? { reasoning_effort: provider.reasoningEffort } : {};
 
         for (let i = 0; i < 3; i++) {
           const resp = await openai.chat.completions.create({
@@ -53,7 +59,8 @@ export async function generateReply(args: {
             messages,
             max_tokens: args.maxOutputTokens ?? CONFIG.llm.maxOutputTokens,
             ...(useTools ? { tools: TOOLS as any, tool_choice: "auto" as const } : {}),
-          });
+            ...reasoningOpt,
+          } as any);
 
           const message = resp.choices[0].message;
           messages.push(message);
@@ -105,7 +112,8 @@ export async function generateReply(args: {
               { role: "user", content: "Reply to the caller now in one or two spoken sentences, summarizing what you just did. Do not call any more tools." },
             ],
             max_tokens: args.maxOutputTokens ?? CONFIG.llm.maxOutputTokens,
-          });
+            ...reasoningOpt,
+          } as any);
           finalResponseText = closingResp.choices[0].message.content || "";
 
           // Last resort — should be unreachable in practice, but a live
