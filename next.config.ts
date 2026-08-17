@@ -13,16 +13,23 @@ const nextConfig: NextConfig = {
    * of a full build + full node_modules at runtime (see Dockerfile).
    */
   /**
-   * pdf-parse (via pdfjs-dist) dynamically resolves its own worker script
-   * (pdf.worker.mjs) relative to a real node_modules path at runtime. When
-   * Next.js bundles it into a hashed .next/dev/server/chunks/ path instead,
-   * that resolution breaks — "Setting up fake worker failed: Cannot find
-   * module '.../.next/dev/server/chunks/pdf.worker.mjs'" on every PDF
-   * knowledge-base upload. Marking it external skips bundling for server
-   * code, so Node's normal require/import resolves it from its real
-   * location in node_modules instead.
+   * pdfjs-dist dynamically resolves its own worker script (pdf.worker.mjs)
+   * relative to a real node_modules path at runtime (lib/knowledge/pdf.ts
+   * pins it explicitly via import.meta.resolve()). When Next.js bundles it
+   * into a hashed .next/dev/server/chunks/ path instead, that resolution
+   * breaks — "Setting up fake worker failed: Cannot find module
+   * '.../.next/dev/server/chunks/pdf.worker.mjs'" on every PDF knowledge-
+   * base upload. Marking it external skips bundling for server code, so
+   * Node's normal require/import resolves it from its real location in
+   * node_modules instead. tesseract.js and @napi-rs/canvas (OCR fallback
+   * for PDFs with no real text layer, see pdf.ts) have the same kind of
+   * runtime asset/worker resolution and need the same treatment. (pdf-parse
+   * was removed — it depended on its own separate, differently-versioned
+   * pdfjs-dist copy, which broke pdfjs-dist's worker version check when
+   * both were loaded in the same process; text extraction now goes through
+   * pdfjs-dist directly instead.)
    */
-  serverExternalPackages: ["pdf-parse", "pdfjs-dist"],
+  serverExternalPackages: ["pdfjs-dist", "tesseract.js", "@napi-rs/canvas"],
   /**
    * Next.js blocks cross-origin dev requests (including the HMR websocket
    * at /_next/webpack-hmr) unless the requesting origin is explicitly

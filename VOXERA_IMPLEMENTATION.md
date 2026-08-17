@@ -2612,3 +2612,130 @@ sandbox can simulate on demand).
 `lib/emotion/persona.ts`, `lib/emotion/lexicon.ts`, `lib/agent/context.ts`, `lib/agent/orchestrator.ts`,
 `lib/config.ts`, `__tests__/emotion/persona-lock.test.ts` (new), `__tests__/emotion/context-prompt.test.ts`,
 `__tests__/scaling/redis-scaling.test.ts`, `__tests__/e2e/voice-personalization-recovery.test.ts`
+
+## OCR for Image-Only PDFs, Turn Filler, Home Redirect, Fallback Prompt
+
+**Objective**: the user re-attached the exact PDF from earlier in this session (the one whose ingestion had
+silently produced a documented-but-unexplained empty `memories` row) and asked for the whole knowledge
+pipeline to actually work end-to-end: hierarchical retrieval for large knowledge bases, a fast-fallback
+message when nothing is found, a spoken "one moment" filler instead of dead air on a slow turn, and — very
+explicitly — `/` redirecting straight to `/admin` for a logged-in user instead of the public landing page
+every time.
+
+**Root cause of the original "empty PDF ingestion" mystery, finally found**: read the attached PDF directly
+— it's a graphic-design menu template (dark background, decorative "MENU" title, two price columns), the
+kind of file design tools like Canva export with all "text" flattened to vector paths / an embedded raster
+image, not a real PDF text layer. Verified directly: `pdfjs-dist`'s own `page.getTextContent()` returns
+**zero text items** for this file on every page — there's nothing for any text-extraction library to find,
+regardless of which one is used. This is why the earlier upload of this same file (different session) ended
+up with a near-empty artifact and no real content — not a bug in the ingest pipeline's logic, a structural
+limitation of the source file that nothing was catching or reporting.
+
+**Fix — OCR fallback, and it took several iterations to actually get working under this app's real runtime,
+not just in isolation**:
+- Live-verified OCR itself works well on this exact file: `pdfjs-dist` (rasterizes each page via
+  `@napi-rs/canvas` — no native toolchain needed, unlike `node-canvas`, which needs Cairo/pkg-config via a
+  system package manager confirmed unavailable in this environment) + `tesseract.js` correctly recovers
+  every menu item and price (`Black Paper $27`, `Wagyu Steak $28`, `Spaghetti ... $28`, etc.) in ~3s/page —
+  only the decorative dotted price-leaders get OCR'd as minor noise around the (still-correct) numbers.
+- Consolidated all PDF handling into one new file, `lib/knowledge/pdf.ts`, sharing a single `pdfjs-dist`
+  import for BOTH plain-text extraction (`getTextContent()`, tried first, fast/exact) and OCR rendering
+  (fallback only when the text layer is empty/near-empty). This replaces the old `pdf-parse` dependency
+  entirely (removed from `package.json`) — `pdf-parse` depends on its own separate, differently-versioned
+  bundled `pdfjs-dist` copy, and having two versions loaded in the same process broke pdfjs-dist's own
+  worker-version check ("API version does not match the Worker version"), live-verified reproducible and
+  NOT fixable via `workerSrc` pinning (tried `require.resolve`, `import.meta.resolve`, and a `process.cwd()`
+  -built path — none of them stayed consistent with which copy the API module itself had loaded from).
+- A second, much harder problem surfaced only once this was tested through the **real running Next.js dev
+  server** (Next 16's default dev bundler, Turbopack) rather than a standalone `tsx` script: every
+  standalone test of the exact same extraction code passed cleanly, but a real `POST
+  /api/knowledge/upload` through the browser failed with `Setting up fake worker failed: "Cannot find
+  package '[project]' imported from .../pdfjs-dist/legacy/build/pdf.mjs"`. Root-caused by reading
+  `pdfjs-dist`'s own source: server-side in Node, pdfjs-dist always falls back to an in-process "fake
+  worker" (there's no `window`/DOM to spin up a same-origin `Worker()`), and that fallback does `await
+  import(this.workerSrc)` internally, marked `/*webpackIgnore: true*/`/`/*@vite-ignore*/` for those two
+  bundlers — but Turbopack doesn't recognize either pragma and rewrites that dynamic import through its own
+  internal `"[project]"` virtual module graph regardless of what string value `workerSrc` actually holds
+  (confirmed: neither a `require.resolve` path, an `import.meta.resolve` path, a `process.cwd()`-built OS
+  path, nor a proper `file://` URL via `pathToFileURL` changed the outcome — the interception is on the
+  `import()` **call site** inside pdfjs-dist's own code, not the runtime argument). The actual fix: pdfjs-
+  dist's fake-worker loader checks `globalThis.pdfjsWorker?.WorkerMessageHandler` FIRST and only reaches the
+  problematic dynamic import if that's unset — this is pdfjs-dist's own documented escape hatch for exactly
+  this situation. `lib/knowledge/pdf.ts` now does a plain top-level `import("pdfjs-dist/legacy/build/pdf.worker.mjs")`
+  itself (a normal static import, which Turbopack handles fine since `pdfjs-dist` is already listed in
+  `next.config.ts`'s `serverExternalPackages`) and pre-populates that global before any PDF gets processed,
+  so the broken dynamic import is never reached at all. Added `lib/knowledge/pdf-worker.d.ts` (a minimal
+  ambient module declaration — the worker's own subpath has no shipped types). Also updated
+  `next.config.ts`'s `serverExternalPackages` to list `pdfjs-dist`/`tesseract.js`/`@napi-rs/canvas` (removed
+  `pdf-parse`, since it's gone).
+- **Live end-to-end verification, the real way** — not assumed from the isolated fixes above: created a
+  genuine test account through the actual signup flow, created a tenant+agent via `/api/onboarding`, then
+  drove a real `multipart/form-data` `POST /api/knowledge/upload` from inside the running browser tab
+  (fetching the PDF from Next's own static file serving so the upload exercises the exact same code path a
+  real user's browser would, no shortcuts) against the exact PDF from earlier in this session. Result:
+  `status: 200`, 2 chunks, and the extracted preview shows the real menu content recovered correctly. Then
+  asked the resulting agent "how much is the spaghetti?" through `/api/turn` (the same `handleTurn()` path
+  every call goes through) — reply: **"Spaghetti is $28."** — correct, and the retrieved
+  `ltmClientSnippets` show the actual OCR'd menu chunk grounding the answer, not a hallucination.
+- Small files (this menu, one ~600-char chunk after OCR) never needed anything beyond what already existed:
+  `chunkText()` (`lib/knowledge/chunk.ts`) already returns a single chunk for anything under
+  `CONFIG.knowledge.chunkSize` (500 chars) — the "keep small files as one block" requirement was already
+  satisfied by existing code, confirmed rather than assumed.
+- For genuinely large knowledge bases (per the user's explicit ask — group embeddings into summarized
+  "stacks", query the summary first): implemented in `lib/knowledge/ingest.ts`'s new `writeStackSummaries()`,
+  gated behind `CONFIG.knowledge.stackThresholdChunks` (20 — so a small file like this menu never touches
+  it). Groups of `stackGroupSize` (8) consecutive chunks get one short LLM-written summary each, stored as
+  its own independently-retrievable memory record (topic suffixed `:overview`, boosted importance 0.95 vs.
+  0.85 for detail chunks) rather than a separate multi-step "check summary, then drill down" round trip — a
+  live call can't afford a second query-then-query-again latency hit, so the summary and its detail chunks
+  are simply both ordinary top-K candidates every turn: a broad question naturally favors the higher-
+  ranked summary, a specific detail question naturally favors its own matching chunk, and there's no added
+  latency either way since nothing sequential was introduced.
+
+**"One moment" filler for a slow turn** (issue 12 — never leave the caller in dead air): added
+`CONFIG.realtime.turnFillerThresholdMs` (3000ms) and `turnFillerPhrase`. Both `server.ts` (browser demo) and
+`lib/telephony/stream-handler.ts` (real Twilio calls) now start a timer the moment a turn begins; if
+`handleTurn()` hasn't resolved by the threshold, a short filler ("One moment, let me check on that for
+you.") is synthesized and sent immediately, then the real reply follows once ready — cleared instantly on
+the (overwhelmingly common, post this session's latency fixes) case where the turn finishes well under
+3s, so it's a pure safety net, not something that fires in steady state. `TestAgentDrawer.tsx`'s
+`reply_audio` handler now checks a new `isFiller` flag so the UI goes back to "thinking" (not "listening")
+after a filler plays, since the caller isn't expected to speak yet.
+
+**Fallback-to-redirect reinforced** (issue 11): Core Rule 1 in `lib/agent/context.ts`'s system prompt now
+explicitly instructs the model to offer connecting the caller with the business owner/team when something
+isn't in EVIDENCE — "always give the caller a concrete next step, never just leave the gap unaddressed" —
+rather than a bare "I don't have that information."
+
+**Home page redirect** (explicit, separate ask): `app/page.tsx` was a `"use client"` landing page with no
+auth check at all — moved its content unchanged into `app/_components/LandingPageClient.tsx` and made
+`app/page.tsx` a server component using the exact same `createClient()` + `supabase.auth.getUser()` pattern
+`app/admin/layout.tsx` already uses to gate the dashboard, redirecting to `/admin` when a session exists
+and rendering the landing page only when it doesn't. Build output confirms `/` is now `ƒ` (dynamic,
+server-rendered per request to check the cookie) instead of `○` (static) — the correct signal for this kind
+of check.
+
+**A loose end, disclosed rather than silently cleaned up**: the live end-to-end verification above created a
+real test tenant/agent/account (`test-verify-menu@voxera-test.com`, "Nolke Zahida Restaurant Agent") in the
+user's actual Supabase project, needed to exercise the real signup → onboarding → upload → turn pipeline
+rather than mocking any of it. Left in place rather than deleted unilaterally, since deleting a real
+account/tenant with cascading data isn't something to do without the user's say-so — flagged here so they
+can remove it via the admin UI if they'd rather it not be there.
+
+**Verification**: `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (324 passing — no existing test
+exercised the PDF/OCR path with real assertions on its output, so nothing needed updating there beyond
+removing the now-dead `pdf-parse` mock from `__tests__/knowledge/ingestion.test.ts`), `npm run build` all
+clean. The OCR/Turbopack fix in particular was NOT verified by static checks or the unit-test suite at all —
+every failure in that whole investigation was invisible to `tsc`/`vitest`/`npm run build` and only
+reproduced through a real request against the actual running dev server, which is exactly how it was found
+and fixed. Production build (`next build`, not `next dev`) was not independently re-run against a live
+`next start` server after these changes — the fix doesn't branch on dev-vs-prod, so it's expected to hold,
+but that specific combination wasn't re-verified live given time constraints.
+
+**Files Modified**: `lib/knowledge/pdf.ts` (new, replaces the old inline `extractPdfText`),
+`lib/knowledge/pdf-worker.d.ts` (new), `lib/knowledge/ingest.ts`, `lib/knowledge/chunk.ts` (confirmed
+unchanged behavior, no edit needed), `lib/config.ts`, `next.config.ts`, `server.ts`,
+`lib/telephony/stream-handler.ts`, `app/_components/TestAgentDrawer.tsx`, `app/page.tsx`,
+`app/_components/LandingPageClient.tsx` (new), `lib/agent/context.ts`,
+`__tests__/knowledge/ingestion.test.ts`, `package.json`/`package-lock.json` (removed `pdf-parse`, added
+`pdfjs-dist`, `@napi-rs/canvas`, `tesseract.js`)

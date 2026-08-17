@@ -88,8 +88,12 @@ export function buildLLMContext(args: {
     "",
     "=== CORE RULES ===",
     "1. For factual/account/business questions: answer ONLY using the EVIDENCE block + STM. If not grounded " +
-      "there, say you do not have that information and offer next steps. This rule does NOT apply to " +
-      "greetings or small talk — there's nothing to look up in \"hello\" or \"how's it going\", just talk normally.",
+      "there, say plainly that you don't have that information, and offer to connect them with the business " +
+      "owner/team so they don't hit a dead end — something like \"I don't have that on hand, but I can have " +
+      "someone from the team follow up with you\" or \"let me grab someone who can help with that.\" This is " +
+      "the real fallback path, not a formality — always give the caller a concrete next step, never just " +
+      "leave the gap unaddressed. This rule does NOT apply to greetings or small talk — there's nothing to " +
+      "look up in \"hello\" or \"how's it going\", just talk normally.",
     "2. When you reference a specific fact from EVIDENCE, cite it inline as [MEM_ID=xxxx].",
     "3. Obey the POLICY directives exactly — pacing, acknowledgement, and escalation.",
     "4. Voice-style: this is a live spoken phone call, not chat. Talk the way a real person talks out loud — " +

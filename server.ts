@@ -6,6 +6,7 @@ import { synthesize } from "./lib/deepgram/tts";
 import { extractAcousticFeatures } from "./lib/audio/acoustic";
 import { int16ToFloat32Pcm } from "./lib/emotion/local-audio-detect";
 import { DEMO, ensureSeeded } from "./lib/bootstrap";
+import { CONFIG } from "./lib/config";
 import { config } from "dotenv";
 
 // Belt-and-suspenders env loading: `npm run server` passes `--env-file=.env.local`
@@ -109,6 +110,31 @@ wss.on("connection", async (ws: WebSocket, request) => {
       // model's native sample rate, so no resampling is needed here.
       const rawAudioPcm16k = turnPcm.length > 0 ? int16ToFloat32Pcm(turnPcm) : undefined;
 
+      // Safety net for an unusually slow turn (see CONFIG.realtime) — if
+      // handleTurn() hasn't resolved within the threshold, speak a short
+      // filler so the caller isn't sitting in silence wondering if the
+      // call dropped, then continue waiting for the real reply. Cleared
+      // the moment handleTurn() actually resolves, so this never fires on
+      // an ordinary-latency turn.
+      let fillerTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        fillerTimer = null;
+        if (myGeneration !== generation) return;
+        void synthesize(CONFIG.realtime.turnFillerPhrase, { clientId })
+          .then((audio) => {
+            if (myGeneration !== generation) return;
+            ws.send(
+              JSON.stringify({
+                type: "reply_audio",
+                turnId: `filler-${nanoid(6)}`,
+                audio: Buffer.from(audio).toString("base64"),
+                mime: "audio/mpeg",
+                isFiller: true,
+              })
+            );
+          })
+          .catch((err) => console.warn("[Server] Filler synthesis failed:", err));
+      }, CONFIG.realtime.turnFillerThresholdMs);
+
       const output = await handleTurn({
         sessionId,
         userId: DEMO.userId,
@@ -124,6 +150,8 @@ wss.on("connection", async (ws: WebSocket, request) => {
         // not just the fused label.
         diagnostics: true,
       });
+
+      if (fillerTimer) clearTimeout(fillerTimer);
 
       if (myGeneration !== generation) {
         // A barge-in happened while this turn was being generated — the

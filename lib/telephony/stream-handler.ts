@@ -264,6 +264,18 @@ export class TelephonyStreamHandler {
  
     console.log(`[TelephonyStream] Transcript (${this.callSid}): "${text}"`);
  
+    // Safety net for an unusually slow turn (see CONFIG.realtime) — if
+    // handleTurn() hasn't resolved within the threshold, speak a short
+    // filler so the caller isn't sitting in silence on a real phone call
+    // wondering if it dropped, then continue waiting for the real reply.
+    // Cleared the moment handleTurn() actually resolves.
+    let fillerTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      fillerTimer = null;
+      void this.speakToTwilio(CONFIG.realtime.turnFillerPhrase).catch((err) =>
+        console.warn(`[TelephonyStream] Filler synthesis failed for ${this.callSid}:`, err)
+      );
+    }, CONFIG.realtime.turnFillerThresholdMs);
+
     try {
       // Issue #14: Extract acoustic features from accumulated PCM
       const turnPcm = Buffer.concat(this.turnAudioChunks);
@@ -283,10 +295,13 @@ export class TelephonyStreamHandler {
         acousticFeatures,
         bargeInCount: this.turnInterruptionCount,
       });
- 
+
+      if (fillerTimer) clearTimeout(fillerTimer);
+
       console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
       await this.speakToTwilio(output.reply, output.trace.emotion.current.label, output.trace.agent?.voicePersona ?? undefined);
     } catch (err) {
+      if (fillerTimer) clearTimeout(fillerTimer);
       console.error(`[TelephonyStream] handleTurn error:`, err);
     } finally {
       this.isBusy = false;

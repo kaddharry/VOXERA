@@ -5,6 +5,8 @@ import { embed } from "../util/embed";
 import { vectorStore } from "../memory/store";
 import { chunkText } from "./chunk";
 import { supabase } from "../db/supabase";
+import { extractPdfText } from "./pdf";
+import { generateReply } from "../agent/llm";
 
 export interface IngestResult {
   documentId: string;
@@ -105,7 +107,10 @@ export async function ingestDocument(args: {
       .toLowerCase()
       .trim() || "knowledge";
 
-    // Chunk the text.
+    // Chunk the text. A small document (the common case — a 1-page menu,
+    // a short FAQ) stays a single chunk here already: chunkText() only
+    // splits when the text exceeds CONFIG.knowledge.chunkSize, so nothing
+    // extra is needed to keep small files as one block.
     const chunks = chunkText(rawText);
     const chunkIds: string[] = [];
 
@@ -118,6 +123,24 @@ export async function ingestDocument(args: {
         documentId,
       });
       chunkIds.push(chunkId);
+    }
+
+    // Large documents get grouped into "stacks" of consecutive chunks, each
+    // with its own short LLM-written summary stored as an additional,
+    // independently-retrievable record with a boosted importance so it
+    // tends to rank above any single detail chunk when it's a genuine match
+    // for the query. This gives retrieval a natural "check the overview
+    // first" signal without a separate multi-step drill-down round trip —
+    // a live call can't afford a second query-then-query-again latency hit,
+    // so both the summary AND the individual detail chunks are ordinary,
+    // simultaneously-retrievable top-K candidates; a summary alone usually
+    // already answers a broad question, while a specific detail question
+    // naturally ranks its own matching chunk higher regardless of the
+    // summary's presence. Below CONFIG.knowledge.stackThresholdChunks
+    // (default 20), this is skipped entirely — a small file like a 1-page
+    // menu never touches it.
+    if (chunks.length > CONFIG.knowledge.stackThresholdChunks) {
+      await writeStackSummaries({ clientId, documentId, topic, chunks });
     }
 
     // Deactivate/supersede old versions
@@ -200,33 +223,51 @@ export async function queryKnowledgeBase(args: {
 }
 
 /**
- * PDF text extraction via pdf-parse v2, which rewrote the package's whole
- * API — v1 exported a single callable function (`pdfParse(buffer)`); v2
- * has no default export at all and instead exposes a `PDFParse` class
- * (`new PDFParse({ data }).getText()`). Calling the old function-style API
- * against v2 doesn't throw MODULE_NOT_FOUND, it throws "is not a
- * function", which was surfacing as an opaque 500 on every PDF upload.
+ * Groups `chunks` into consecutive groups of ~CONFIG.knowledge.stackGroupSize,
+ * writes one short LLM-generated summary per group as its own memory record
+ * (topic suffixed `:overview` so it's identifiable, boosted importance so it
+ * tends to outrank a single detail chunk when it's genuinely the better
+ * match). Best-effort — a summary that fails to generate is skipped rather
+ * than failing the whole ingest, since the underlying detail chunks are
+ * already written and independently useful either way.
  */
-async function extractPdfText(content: Buffer | Uint8Array): Promise<string> {
-  let parser: InstanceType<typeof import("pdf-parse").PDFParse> | undefined;
-  try {
-    // Dynamic import so the module is optional — the rest of the
-    // knowledge base still works with plain text files if pdf-parse
-    // is not installed.
-    const { PDFParse } = await import("pdf-parse");
-    const data = Buffer.isBuffer(content) ? content : Buffer.from(content);
-    parser = new PDFParse({ data });
-    const result = await parser.getText();
-    return result.text;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-      throw new Error(
-        "pdf-parse is not installed. Run: npm install pdf-parse",
-      );
+async function writeStackSummaries(args: {
+  clientId: string;
+  documentId: string;
+  topic: string;
+  chunks: string[];
+}): Promise<void> {
+  const { clientId, documentId, topic, chunks } = args;
+  const groupSize = CONFIG.knowledge.stackGroupSize;
+
+  for (let i = 0; i < chunks.length; i += groupSize) {
+    const group = chunks.slice(i, i + groupSize);
+    const groupText = group.join("\n\n");
+    try {
+      const summaryReply = await generateReply({
+        system:
+          "You summarize a section of a business knowledge-base document in ONE short sentence " +
+          "(under 30 words) that would help someone decide whether the full detail is worth reading. " +
+          "Be concrete — name the actual items/topics covered, don't say generic things like " +
+          "\"this section covers various topics\". Output ONLY the summary sentence, nothing else.",
+        user: groupText.slice(0, CONFIG.llm.maxInputTokens * 3),
+        clientId,
+        useTools: false,
+        maxOutputTokens: 80,
+      });
+      const summaryText = summaryReply.text.trim();
+      if (!summaryText) continue;
+
+      await seedClientMemory({
+        clientId,
+        topic: `kb:${topic}:overview`,
+        text: `Overview of ${topic} (part ${Math.floor(i / groupSize) + 1}): ${summaryText}`,
+        importance: 0.95,
+        documentId,
+      });
+    } catch (err) {
+      console.warn(`[Ingest] Stack summary generation failed for group starting at chunk ${i}:`, err);
     }
-    throw err;
-  } finally {
-    await parser?.destroy();
   }
 }
 

@@ -121,6 +121,37 @@ export const CONFIG = {
       "application/json",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
     ] as string[],
+    /**
+     * Minimum text-layer content length before extracted PDF text is
+     * trusted. Below this, lib/knowledge/pdf.ts's OCR fallback kicks in
+     * instead. Live-verified this matters: a real graphic-design menu PDF
+     * (all text rendered as vector paths, no text layer at all) returned
+     * ZERO text items from pdfjs-dist's own getTextContent() — a
+     * previous version of this check (using the pdf-parse library, since
+     * removed) passed a near-empty extraction through anyway and silently
+     * "succeeded" with a single near-content-free chunk, making the agent
+     * unable to answer anything from a document that LOOKED successfully
+     * ingested in the UI.
+     */
+    minRealTextChars: 20,
+    /** Safety cap on how many pages OCR will process for one document —
+     * OCR is slow (multiple seconds per page) and only runs at ingest
+     * time (never blocks a live call turn), but an unbounded scanned
+     * multi-hundred-page document could still make an upload request hang
+     * far too long. */
+    ocrMaxPages: 15,
+    /**
+     * Above this many chunks for one document, group them into
+     * "stacks" of ~stackGroupSize chunks each and generate a one-line LLM
+     * summary per stack (lib/knowledge/ingest.ts's writeStackSummaries()) — the summary itself
+     * becomes a normally-retrievable top-level record, and its detail
+     * chunks stay retrievable underneath it via `stackId`. Below this
+     * threshold, chunks are retrieved directly with no extra hierarchy —
+     * a 1-page menu (1 chunk) never touches this path at all, matching
+     * "only big or multiple files should be made into this format."
+     */
+    stackThresholdChunks: 20,
+    stackGroupSize: 8,
   },
   telephony: {
     // FR-19: Max concurrent calls before queue/reject logic kicks in
@@ -195,5 +226,21 @@ export const CONFIG = {
      * override in resolvePersonaLock().
      */
     personaLockStreakThreshold: 4,
+  },
+  realtime: {
+    /**
+     * If a turn (STT-final -> handleTurn() resolving) hasn't produced any
+     * spoken reply within this many ms, server.ts/stream-handler.ts
+     * proactively speak a short "just a moment" filler so the caller isn't
+     * sitting in dead air wondering if the call dropped — then the real
+     * reply follows once it's ready. In steady state this practically
+     * never fires (turns are typically ~1.5-3.5s end to end after this
+     * session's latency fixes), but it's a real safety net for the
+     * occasional slow turn (e.g. a third-party LLM provider's shared-tier
+     * queueing spike, observed live to occasionally run 6-15s with no
+     * error) rather than leaving the caller with silence for that long.
+     */
+    turnFillerThresholdMs: 3000,
+    turnFillerPhrase: "One moment, let me check on that for you.",
   },
 } as const;

@@ -16,13 +16,6 @@ vi.mock("../../lib/memory/writer", () => ({
   seedClientMemory: vi.fn().mockResolvedValue("chunk-id-123"),
 }));
 
-// Mock pdf-parse
-vi.mock("pdf-parse", () => {
-  return {
-    default: vi.fn().mockResolvedValue({ text: "Mocked PDF text content" }),
-  };
-});
-
 // A single, robust, chainable mock database helper
 const mockChain = {
   select: vi.fn().mockReturnThis(),

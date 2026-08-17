@@ -614,7 +614,9 @@ export function TestAgentDrawer() {
               // Synthesis finishes after reply_text already landed — merge its
               // ttsMs into the matching turn (by server-assigned turnId)
               // instead of waiting to send timings all at once, so the text
-              // and analytics still appear the instant they're ready.
+              // and analytics still appear the instant they're ready. A
+              // filler's turnId never matches an existing turn (no reply_text
+              // preceded it), so this is a harmless no-op for those.
               if (msg.turnId && typeof msg.ttsMs === "number") {
                 setTurns((prev) =>
                   prev.map((t) =>
@@ -625,12 +627,17 @@ export function TestAgentDrawer() {
               const audio = playerRef.current;
               if (audio) {
                 audio.src = `data:${msg.mime};base64,${msg.audio}`;
+                // A "one moment" filler (server-side safety net for an
+                // unusually slow turn — see CONFIG.realtime) means the real
+                // reply is still on its way; go back to "thinking", not
+                // "listening", so the UI doesn't imply it's the caller's
+                // turn to speak again.
                 audio.onended = () => {
-                  if (active.current) setStatus("listening");
+                  if (active.current) setStatus(msg.isFiller ? "thinking" : "listening");
                 };
                 playbackAudioContextRef.current?.resume().catch(() => {});
                 void audio.play().catch(() => {
-                  if (active.current) setStatus("listening");
+                  if (active.current) setStatus(msg.isFiller ? "thinking" : "listening");
                 });
               }
               break;
