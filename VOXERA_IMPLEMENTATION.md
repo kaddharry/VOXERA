@@ -2034,3 +2034,28 @@ correct, but the actual LLM-reply/TTS-back-to-caller experience can only be conf
 this session cannot place itself.
 
 **Files Modified**: `package.json` (`dev:full` script), `custom-server.ts`
+
+### 2026-08-18 — `custom-server.ts` Was Also Destroying Next's Own HMR WebSocket
+
+**Objective**: User reported the browser console filling with repeated `WebSocket connection to
+'ws://localhost:3000/_next/hmr?id=...' failed` while running `npm run dev:full`, and the admin
+dashboard stuck on "Loading analytics..." indefinitely.
+
+**Root cause**: `custom-server.ts`'s `'upgrade'` handler special-cased `/api/telephony/stream` and
+called `socket.destroy()` on every other upgrade request — a leftover from when the only known
+consumer of raw WS upgrades was Twilio. Next's own dev-mode Hot Module Reload client *also* opens a
+WebSocket (`/_next/hmr`) to receive live-reload notifications, and that request has the exact same
+generic shape as any other upgrade — this handler destroyed it identically to a stray connection,
+silently breaking HMR for the entire dev session (no live-reload on file changes, and the constant
+failed-reconnect loop is a plausible contributor to the stuck "Loading analytics..." state the user
+also saw, though that specific symptom wasn't independently reproduced from this sandbox — a different
+browser session than the user's own, with its own auth cookie).
+
+**Fix**: delegate anything that isn't `/api/telephony/stream` to Next's own
+`app.getUpgradeHandler()` (stable public API since Next 13's custom-server support) instead of
+destroying the socket. Verified both paths now work from the same running server: no HMR WebSocket
+errors in a fresh browser console, and the Twilio media-stream WS still opens correctly
+(`ws.on("open")` fires) — confirming the fix didn't regress the original reason `custom-server.ts`
+exists.
+
+**Files Modified**: `custom-server.ts`
