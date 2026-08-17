@@ -1710,3 +1710,111 @@ consistent with the deliberate light/dark split already documented in `globals.c
 - Could not click through `/admin` itself with real account data in this sandbox (behind login, no
   credentials available) — recommend a manual pass, especially to confirm the orb's idle-vs-live state
   transition when starting/ending a real "Try a Call" session
+
+### 2026-08-17 — LiveCallMonitor Corrected to Light Theme; Shared Glass Design System Extracted
+
+**Objective**: The prior entry's decision to keep `LiveCallMonitor` on the dark `.voxera-console`
+treatment was explicitly overridden by the user after seeing it live: everywhere in the admin platform
+except the public "talk to my agent" widget must be light/white-themed, and the same glass treatment
+must be consistent across every admin page.
+
+**Changes**: Rewrote `LiveCallMonitor.tsx` onto `GlassCard` (new `app/_components/GlassCard.tsx`,
+exporting `GlassCard` and `AmbientBackground`) and `--color-*` design tokens throughout — header,
+empty state, active-call selector, Detected Emotion / CAI cards, pattern-flag banner, transcript
+stream. The `onLiveUpdate` callback (drives the header `VoiceOrb` from real call signal) was left
+untouched. Extracted `CursorGlow` the same way (`app/_components/CursorGlow.tsx`) and now render both
+`AmbientBackground` and `CursorGlow` once at `app/admin/layout.tsx`, so every admin page gets the same
+background/cursor treatment automatically instead of each page carrying its own copy — removed the
+now-redundant local copies from `app/admin/page.tsx`.
+
+**Files Added**: `app/_components/GlassCard.tsx`, `app/_components/CursorGlow.tsx`
+
+**Files Modified**: `app/admin/layout.tsx`, `app/admin/page.tsx`, `components/admin/LiveCallMonitor.tsx`
+
+**Validation**: `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (316 passing), `npm run build` —
+all clean.
+
+**Still pending** (separate task, not yet started): propagating this same `GlassCard`/`--color-*`
+treatment to the other admin pages restyled in an earlier pass with flat opaque-white cards — Agent
+Builder, Try a Call, Tenants, Sessions, Knowledge Base, RAG Debugger, Settings.
+
+### 2026-08-17 — Root-Caused and Fixed: Real Phone Calls Never Actually Streamed Audio in Production
+
+**Objective**: User reported the calling system needed to "work perfectly" with live updates showing
+in the Dashboard and Sessions, pointing at the live ECS deployment
+(`vo-2882c61ad83f44399c60d35c29921a12.ecs.ap-south-1.on.aws`). Investigated rather than assumed —
+found two real, verified bugs, not a vague "make it work better."
+
+**Root cause #1 — the Twilio Media Stream WebSocket never actually connected in production.**
+`app/api/telephony/incoming/route.ts` returns TwiML pointing Twilio's `<Connect><Stream>` at
+`/api/telephony/stream`, which was implemented as an App Router route handler trying to grab the raw
+Node socket off the request (`(req as any).socket ?? (req as any)._socket`) and manually complete a
+WebSocket handshake. This doesn't work: Next.js App Router route handlers are only ever invoked for
+complete HTTP request/response cycles — the `'upgrade'` event (how WS handshakes actually happen) is
+handled at the raw `http.Server` level and never reaches a route handler at all, regardless of socket
+access tricks. **Verified live**, not assumed: connecting a real WebSocket client to
+`wss://vo-2882c61ad83f44399c60d35c29921a12.ecs.ap-south-1.on.aws/api/telephony/stream` returned a
+502/500 on every attempt. This means every real phone call would answer (Twilio gets valid TwiML) and
+then go completely silent — no audio ever reached `TelephonyStreamHandler`, so no STT, no LLM turns, no
+TTS, and no emotion/transcript events, which is also why nothing showed up live anywhere.
+
+**Fix**: added `custom-server.ts` — the standard Next.js custom-server pattern: a plain
+`http.createServer` delegates ordinary requests to Next's handler and separately listens for the
+`'upgrade'` event, matching `/api/telephony/stream` and completing the WS handshake itself
+(`WebSocketServer({ noServer: true }).handleUpgrade`) before handing the socket to
+`TelephonyStreamHandler`, unchanged. Deleted the broken `app/api/telephony/stream/route.ts`. Removed
+`output: "standalone"` from `next.config.ts` (its auto-generated `server.js` doesn't support custom
+`'upgrade'` handling) and rewrote the Dockerfile's runner stage to ship the full build + full
+production `node_modules` and run `npx tsx custom-server.ts` instead of `node server.js`. Moved `tsx`
+from devDependencies to dependencies since it now runs at production runtime. `package.json`'s
+`"start"` script now runs the custom server too; added `"dev:full"` for running it locally against a
+non-Next-dev build if testing telephony end-to-end locally is ever needed.
+
+**Root cause #2 — the Dashboard's Live Call Monitor was subscribing to the wrong SSE channel for real
+calls.** `TelephonyStreamHandler` generates its own `sessionId` (`tel-xxx`) distinct from Twilio's
+`callSid`, and persists it onto the `call_logs` row's `sessionId` column — `lib/agent/orchestrator.ts`
+publishes every live emotion/transcript/CAI event to Redis channel `session:${sessionId}` (the `tel-xxx`
+one). `LiveCallMonitor.tsx` picked `call.id || call.sessionId` when selecting which session to open an
+SSE connection to — since `call.id` (the callSid) is always truthy, it always subscribed to
+`session:${callSid}`, a channel nothing ever publishes to. Even with root cause #1 fixed, the dashboard
+would still show zero live updates for real phone calls. Fixed by flipping the fallback order to
+`call.sessionId || call.id` in both the initial auto-select effect and the manual call-picker's
+`onClick`/highlight logic.
+
+**Verified, not just claimed**: ran `custom-server.ts` locally in production mode
+(`NODE_ENV=production`), confirmed a raw WebSocket client now receives `101 Switching Protocols`
+against `/api/telephony/stream` (previously 502/500 against the live deployment), confirmed normal
+HTTP routes (`/`, `/login`) still serve `200` through the same server, and confirmed the server log
+shows `TelephonyStreamHandler` actually instantiating, connecting to Deepgram Live, and starting a real
+session (`[TelephonyStream] Call started: test123, session: tel-kVXBbXHb3XCK`) — this is the real path
+a Twilio call takes, not a mock.
+
+**What still requires the user's own action** (no deploy access, no Twilio account, no phone in this
+sandbox):
+1. **Redeploy** the updated Docker image to ECS — this fix only takes effect once the new image (with
+   `custom-server.ts` as the entrypoint) is built and pushed.
+2. **Twilio webhook**: point the phone number's Voice webhook directly at
+   `https://vo-2882c61ad83f44399c60d35c29921a12.ecs.ap-south-1.on.aws/api/telephony/incoming` — **no
+   ngrok needed**, since the app is already publicly hosted. ngrok is only for exposing a local dev
+   server; it doesn't apply to an already-deployed ECS service. (`npm run dev:full` + ngrok remains
+   available if local telephony testing against your laptop specifically is ever wanted instead.)
+3. **Tenant/clientId mapping**: `/api/telephony/incoming` resolves `clientId` from a `phone_numbers`
+   table lookup by the called number, falling back to `DEFAULT_CLIENT_ID` env var, then `"demo"`. The
+   Dashboard's `/api/session/active` filters strictly by `clientId = <logged-in admin's user id>` — if
+   the Twilio number isn't registered in `phone_numbers` against that same id (or `DEFAULT_CLIENT_ID`
+   isn't set to it), a real call will connect and stream fine but never appear as "active" for that
+   admin login. This is tenant configuration, not a code bug — flagging it since it would otherwise
+   look like the fix didn't work.
+4. Real end-to-end verification (an actual phone ringing through) cannot happen in this sandbox — no
+   phone, no Twilio account access.
+
+**Files Added**: `custom-server.ts`
+
+**Files Modified**: `next.config.ts`, `Dockerfile`, `package.json`,
+`components/admin/LiveCallMonitor.tsx`
+
+**Files Removed**: `app/api/telephony/stream/route.ts`
+
+**Validation Performed**: `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (316 passing),
+`npm run build` — all clean. Live local verification of the WS handshake and normal HTTP routing
+through `custom-server.ts` as described above.

@@ -27,7 +27,14 @@ ENV RESEND_API_KEY="dummy"
 
 RUN npm run build
 
-# Production image, copy all the files and run next
+# Production image — runs custom-server.ts (not `next start`), which is a
+# plain Node http.Server wrapping Next's request handler. That's the only
+# way to accept the raw WebSocket 'upgrade' event Twilio's Media Stream
+# needs at /api/telephony/stream — App Router route handlers never see
+# upgrade requests, and Next's auto-generated standalone server.js has no
+# 'upgrade' listener either. So this stage ships the full build output and
+# full production node_modules (tsx included) instead of the pruned
+# standalone trace.
 FROM base AS runner
 WORKDIR /app
 
@@ -37,16 +44,16 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
+COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/lib ./lib
+COPY --from=builder /app/custom-server.ts ./custom-server.ts
+COPY --from=builder /app/next.config.ts ./next.config.ts
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
 
-# Set the correct permission for prerender cache
-RUN mkdir .next
-RUN chown nextjs:nodejs .next
-
-# Automatically leverage output traces to reduce image size
-# https://nextjs.org/docs/advanced-features/output-file-tracing
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+RUN chown -R nextjs:nodejs /app
 
 USER nextjs
 
@@ -56,6 +63,4 @@ ENV PORT=3000
 # set hostname to localhost
 ENV HOSTNAME="0.0.0.0"
 
-# server.js is created by next build from the standalone output
-# https://nextjs.org/docs/pages/api-reference/next-config-js/output
-CMD ["node", "server.js"]
+CMD ["npx", "tsx", "custom-server.ts"]

@@ -26,7 +26,7 @@ export function LiveCallMonitor({
    * in-progress call instead of sitting idle. */
   onLiveUpdate?: (info: { active: boolean; intensity: number; caiScore: number; emotionLabel: string }) => void;
 }) {
-  const [activeCalls, setActiveCalls] = useState<Array<{ id: string; callerNumber: string; startedAt: number }>>([]);
+  const [activeCalls, setActiveCalls] = useState<Array<{ id: string; sessionId?: string; callerNumber: string; startedAt: number }>>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [liveState, setLiveState] = useState<LiveSessionState | null>(null);
   const [emotionHistory, setEmotionHistory] = useState<EmotionPoint[]>([]);
@@ -40,7 +40,12 @@ export function LiveCallMonitor({
         if (json.calls) {
           setActiveCalls(json.calls);
           if (json.calls.length > 0 && !selectedSessionId) {
-            setSelectedSessionId(json.calls[0].id || json.calls[0].sessionId);
+            // Live events (emotion/cai/transcript) are published to
+            // `session:${sessionId}` — the "tel-xxx" id TelephonyStreamHandler
+            // generates per call — not `session:${callSid}`. call.id is
+            // always truthy, so it must be checked second or the SSE
+            // subscription below silently listens on the wrong channel.
+            setSelectedSessionId(json.calls[0].sessionId || json.calls[0].id);
           }
           if (json.calls.length === 0) {
             onLiveUpdate?.({ active: false, intensity: 0, caiScore: 0, emotionLabel: "neutral" });
@@ -171,12 +176,14 @@ export function LiveCallMonitor({
           {/* Active Call Selector */}
           <div className="space-y-3 lg:border-r lg:border-[var(--color-border-subtle)] lg:pr-6">
             <h3 className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2">Active Calls</h3>
-            {activeCalls.map((call) => (
+            {activeCalls.map((call) => {
+              const callSessionId = call.sessionId || call.id;
+              return (
               <button
                 key={call.id}
-                onClick={() => setSelectedSessionId(call.id)}
+                onClick={() => setSelectedSessionId(callSessionId)}
                 className={`w-full text-left p-3 rounded-lg border transition-colors ${
-                  selectedSessionId === call.id
+                  selectedSessionId === callSessionId
                     ? "bg-[var(--color-accent-violet)]/10 border-[var(--color-accent-violet)]/40 text-[var(--color-text-primary)]"
                     : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-muted)] hover:border-[var(--color-accent-violet)]/30"
                 }`}
@@ -189,7 +196,8 @@ export function LiveCallMonitor({
                   ID: {call.id.slice(0, 10)}...
                 </div>
               </button>
-            ))}
+              );
+            })}
           </div>
 
           {/* Live Emotion & CAI Display */}

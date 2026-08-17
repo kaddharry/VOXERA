@@ -1,7 +1,17 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  /**
+   * NOT "standalone" — the app now runs behind custom-server.ts (a plain
+   * Node http.Server) instead of `next start`, so it can handle the raw
+   * WebSocket 'upgrade' event for Twilio's Media Stream connection at
+   * /api/telephony/stream. That event never reaches App Router route
+   * handlers (verified: the old route-handler-based upgrade attempt
+   * returned 500/502 on every real handshake), so a custom server is the
+   * only reliable way to accept it. Standalone output's auto-generated
+   * server.js doesn't know about custom servers, so it's dropped in favor
+   * of a full build + full node_modules at runtime (see Dockerfile).
+   */
   /**
    * pdf-parse (via pdfjs-dist) dynamically resolves its own worker script
    * (pdf.worker.mjs) relative to a real node_modules path at runtime. When

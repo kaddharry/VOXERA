@@ -4,8 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:full": "tsx custom-server.ts",
     "build": "next build",
-    "start": "next start",
+    "start": "tsx custom-server.ts",
     "lint": "eslint",
     "server": "tsx --env-file=.env.local server.ts",
     "test": "vitest",
@@ -37,6 +38,7 @@
     "resend": "^6.12.4",
     "stripe": "^22.3.1",
     "tailwind-merge": "^3.6.0",
+    "tsx": "^4.22.4",
     "twilio": "^6.0.2",
     "ws": "^8.21.0",
     "zod": "^4.3.6"
@@ -50,7 +52,6 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
     "tailwindcss": "^4",
-    "tsx": "^4.22.4",
     "typescript": "^5",
     "vitest": "^4.1.9"
   }
