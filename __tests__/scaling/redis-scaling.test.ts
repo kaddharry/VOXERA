@@ -22,7 +22,7 @@ describe("Distributed Redis Architecture & Telephony Scaling (Issue #13)", () =>
 
       // Enqueue on Instance 1
       await q1.enqueueCaller("call-A", "+15550199", 5, "client-A");
-      
+
       // Enqueue on Instance 2
       await q2.enqueueCaller("call-B", "+15550200", 3, "client-A"); // Higher priority (3 < 5)
 
@@ -71,6 +71,7 @@ describe("Distributed Redis Architecture & Telephony Scaling (Issue #13)", () =>
       // Clear Supabase circuit keys from Redis
       await redis.set("voxera:cb:consecutive_failures", "0");
       await redis.set("voxera:cb:last_failure_at", "0");
+
       // Reset local memory by triggering success
       recordSupabaseSuccess();
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -80,25 +81,23 @@ describe("Distributed Redis Architecture & Telephony Scaling (Issue #13)", () =>
       // Verify healthy initially
       expect(isSupabaseHealthy()).toBe(true);
 
-      // Threshold is 3 (raised from 1 — a single transient timeout used to
-      // black out the whole session's DB access for 30s, see lib/db/supabase.ts).
-      // A lone failure should NOT yet open the circuit...
+      // Threshold is 3 (BUG-D1) — a single transient blip must NOT open the
+      // circuit, or one network hiccup blacks out memory for the rest of a call.
       recordSupabaseFailure();
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(isSupabaseHealthy()).toBe(true);
 
-      // ...but 3 consecutive failures (which writes to Redis and broadcasts
-      // each time) should.
+      // Two more consecutive failures reach the threshold of 3.
       recordSupabaseFailure();
       recordSupabaseFailure();
 
       // Yield to allow Pub/Sub state sync to update other nodes
       await new Promise((resolve) => setTimeout(resolve, 20));
 
-      // Verify circuit is now open
+      // Verify circuit is now open after the threshold is reached
       expect(isSupabaseHealthy()).toBe(false);
 
-      // Verify Redis contains the failures
+      // Verify Redis contains the failures (the point of this test: propagation)
       const redisFailures = await redis.get("voxera:cb:consecutive_failures");
       expect(redisFailures).toBe("3");
     });

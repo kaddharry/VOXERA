@@ -43,9 +43,8 @@ const CIRCUIT_BREAKER = {
    */
   threshold: 3,
   /** How long (ms) the circuit stays open before allowing a retry probe. */
-  cooldownMs: 30_000,
+  cooldownMs: 10_000,
 };
-
 // Subscribe to state change broadcasts from other instances
 redisSub.subscribe("voxera:cb:state_change").catch((err: any) => {
   console.error("[Supabase CB] Failed to subscribe to state change channel:", err);
@@ -112,8 +111,8 @@ export function recordSupabaseFailure(): void {
 }
 
 // ─── Timeout Fetch ───────────────────────────────────────────────────────────
-// Wraps the global fetch with an AbortController timeout so that DNS
-// failures (ENOTFOUND) don't block the pipeline for 10+ seconds.
+// Wraps the global fetch with an AbortController timeout so that DNS failures
+// (ENOTFOUND) don't block the pipeline for 10+ seconds.
 //
 // Was 2000ms (despite this comment always having said "5-second") — live
 // call testing showed this was too tight for ordinary conditions: real
@@ -125,7 +124,7 @@ export function recordSupabaseFailure(): void {
 // too aggressive for concurrent load. Raised to 6000ms; a real DNS failure
 // still fails in well under 100ms regardless of this value, so this only
 // changes behavior for the "actually slow but working" case.
-const FETCH_TIMEOUT_MS = 6_000;
+export const FETCH_TIMEOUT_MS = 6_000;
 
 function timeoutFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
