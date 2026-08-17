@@ -27,7 +27,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::920154934940:role/GitHubActions-VOXERA
+          role-to-assume: arn:aws:iam::920154934940:role/OIDC-Deploy-Role
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
