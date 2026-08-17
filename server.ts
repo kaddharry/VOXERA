@@ -157,6 +157,8 @@ wss.on("connection", async (ws: WebSocket, request) => {
       const audio = await synthesize(output.reply, {
         policy: output.trace.policy,
         emotion: output.trace.emotion.current.label,
+        persona: output.trace.agent?.voicePersona ?? undefined,
+        clientId,
       });
       const ttsMs = Date.now() - ttsStart;
 

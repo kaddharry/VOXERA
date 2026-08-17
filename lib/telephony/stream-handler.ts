@@ -254,7 +254,7 @@ export class TelephonyStreamHandler {
       });
  
       console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
-      await this.speakToTwilio(output.reply, output.trace.emotion.current.label);
+      await this.speakToTwilio(output.reply, output.trace.emotion.current.label, output.trace.agent?.voicePersona ?? undefined);
     } catch (err) {
       console.error(`[TelephonyStream] handleTurn error:`, err);
     } finally {
@@ -268,14 +268,18 @@ export class TelephonyStreamHandler {
   /**
    * Converts text → Linear16 PCM → G.711 μ-law → sends back to the Twilio Media Stream.
    */
-  private async speakToTwilio(text: string, emotionLabel?: EmotionLabel) {
+  private async speakToTwilio(text: string, emotionLabel?: EmotionLabel, persona?: string) {
     if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
- 
+
     try {
       // Get raw 8kHz Linear16 PCM directly from Deepgram (or the tenant's
       // custom ElevenLabs voice, if configured) — already in the exact
-      // format pcmToMulaw expects, no decoding required.
-      const pcmBytes = await synthesizeLinear16(text, { clientId: this.clientId, emotion: emotionLabel });
+      // format pcmToMulaw expects, no decoding required. `persona` is the
+      // Agent Builder agent's own chosen Deepgram voice (voice_persona),
+      // when this call is routed through a custom agent — takes priority
+      // over the CONFIG default but is still overridden by a tenant-level
+      // ElevenLabs voice inside synthesizeLinear16() if one is configured.
+      const pcmBytes = await synthesizeLinear16(text, { clientId: this.clientId, emotion: emotionLabel, persona });
       const mulawAudio = pcmToMulaw(pcmBytes);
       const base64Audio = mulawAudio.toString("base64");
  

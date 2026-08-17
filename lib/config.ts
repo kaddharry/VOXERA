@@ -144,6 +144,17 @@ export const CONFIG = {
      * it past this point.
      */
     localOnnxLatencyBudgetMs: 500,
+    /**
+     * Latency budget (ms) for the wav2vec2 local acoustic-ML diagnostic
+     * engine (lib/emotion/local-audio-detect.ts). Unlike the text ONNX
+     * model, this one has no existing race/timeout at all — verified live,
+     * its cold load is ~56s and even warm inference is ~330ms, both far
+     * past what a live turn can afford to block on. This budget is enforced
+     * by runDiagnosticEmotion() (lib/emotion/emotion-debug.ts) the same way
+     * localOnnxLatencyBudgetMs is: it doesn't cancel in-flight inference,
+     * it just stops the diagnostics pass from waiting on it past this point.
+     */
+    localAudioMlLatencyBudgetMs: 1500,
     /** Maximum audio confidence for short utterances (<5s). */
     audioConfidenceCeiling: 0.75,
     /** Maximum audio confidence for long utterances (>8s) with clear patterns. */

@@ -96,8 +96,10 @@ export interface TurnTrace {
   emotionDiagnostics?: DiagnosticEmotionResult;
   /** Present when this turn was routed through a custom Agent Builder agent
    * (TurnInput.agentId resolved successfully) — lets the UI show which
-   * agent actually generated the reply. */
-  agent?: { id: string; name: string };
+   * agent actually generated the reply, and lets the TTS call site (server.ts,
+   * stream-handler.ts) synthesize with the agent's own chosen voice instead
+   * of silently falling back to the global default. */
+  agent?: { id: string; name: string; voicePersona?: string | null };
   /** Wall-clock ms spent in each server-side stage of this turn — real
    * measurements, not estimates, wired into the Live Engine Console's
    * pipeline visual. sttMs/ttsMs are filled in by server.ts for realtime
@@ -129,14 +131,14 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   // any lookup failure (unknown id, Supabase unreachable) rather than
   // failing the turn.
   let customInstructions: string | undefined;
-  let resolvedAgent: { id: string; name: string } | undefined;
+  let resolvedAgent: { id: string; name: string; voicePersona?: string | null } | undefined;
   if (input.agentId) {
     try {
       const agentInfo = await getAgentWithTenant(supabaseService, input.agentId);
       if (agentInfo) {
         input.clientId = agentInfo.tenant_auth_user_id;
         customInstructions = agentInfo.system_prompt ?? undefined;
-        resolvedAgent = { id: agentInfo.id, name: agentInfo.name };
+        resolvedAgent = { id: agentInfo.id, name: agentInfo.name, voicePersona: agentInfo.voice_persona };
       }
     } catch (err) {
       console.warn("[Orchestrator] Failed to resolve agentId, using default clientId:", err);
@@ -239,18 +241,27 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   const emotionMs = Date.now() - turnStart;
 
   // ── Phase 1 diagnostic instrumentation (off by default, see CONFIG.emotion.diagnosticMode) ──
-  let emotionDiagnostics: DiagnosticEmotionResult | undefined;
-  if (wantsDiagnostics) {
-    try {
-      emotionDiagnostics = await runDiagnosticEmotion(input.transcript, input.acousticFeatures, {
+  // Fired here but NOT awaited yet — kicked off concurrently with the
+  // retrieval/LLM/guard work below and only awaited right before the trace
+  // is assembled, so a slow diagnostics pass (e.g. the wav2vec2 acoustic ML
+  // engine) overlaps with reply generation instead of blocking it. This is
+  // the "emotion analysis runs in parallel, answering isn't gated on it"
+  // fix — previously this was a plain serial `await` sitting entirely
+  // before the LLM call even started.
+  const diagnosticsPromise: Promise<DiagnosticEmotionResult | undefined> = wantsDiagnostics
+    ? runDiagnosticEmotion(input.transcript, input.acousticFeatures, {
         stm: sttHistory,
         ltmUser: ltmUserAll,
-      }, { textEmoResult, audioSignal: audioEmo, localOnnxResult: textEmoResult.localOnnx }, input.rawAudioPcm16k);
-      void logSessionEvent(makeEvent(evBase, "emotion_diagnostic", emotionDiagnostics as unknown as Record<string, unknown>));
-    } catch (err) {
-      console.warn("[Orchestrator] emotion diagnostic run failed:", err);
-    }
-  }
+      }, { textEmoResult, audioSignal: audioEmo, localOnnxResult: textEmoResult.localOnnx }, input.rawAudioPcm16k)
+        .then((result) => {
+          void logSessionEvent(makeEvent(evBase, "emotion_diagnostic", result as unknown as Record<string, unknown>));
+          return result;
+        })
+        .catch((err) => {
+          console.warn("[Orchestrator] emotion diagnostic run failed:", err);
+          return undefined;
+        })
+    : Promise.resolve(undefined);
 
   void logSessionEvent(makeEvent(evBase, "utterance", {
     utteranceId: userTurn.id,
@@ -445,6 +456,15 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
     role: agentTurn.role,
     text: agentTurn.text,
   }));
+
+  // By now the diagnostics promise (kicked off back when emotionCtx was
+  // built, well before retrieval/LLM/guard ran) has had the entire
+  // retrieval+LLM+guard pipeline's worth of time to finish concurrently —
+  // in practice this await resolves immediately. It only actually waits
+  // when diagnostics is unusually slow, and even then it's capped by
+  // CONFIG.emotion.localAudioMlLatencyBudgetMs/localOnnxLatencyBudgetMs
+  // rather than the old unbounded wav2vec2 cold-load risk.
+  const emotionDiagnostics = await diagnosticsPromise;
 
   return {
     reply: guarded.cleaned,

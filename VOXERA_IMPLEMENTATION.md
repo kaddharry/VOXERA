@@ -2264,3 +2264,102 @@ them.
 **Files Modified**: `lib/emotion/detect.ts`, `lib/emotion/emotion-debug.ts`,
 `app/_components/EngineDashboard.tsx`, `__tests__/emotion/concurrent-engines.test.ts`,
 `__tests__/emotion/emotion-diagnostic.test.ts`
+
+## Agent Builder Live-Test Bugs: Voice, Latency, Knowledge Retrieval
+
+**Objective**: user reported 3 separate problems testing a custom Agent Builder agent ("Vikas Verma")
+via the browser "Try a Call" test drawer: (1) the agent spoke in the Deepgram default female voice
+instead of the "Aries" voice explicitly picked and saved for it, (2) response latency was ~10s when
+emotion analysis was expected to run in parallel rather than gate the reply, (3) a PDF uploaded to the
+agent's Knowledge tab (shown "Ready · 66 chunks" in the UI) wasn't actually being used — the agent said
+"I don't have that information" to a direct factual question the PDF answered. Investigated each via
+direct code reading (not guessing) before touching anything; all three turned out to be independent root
+causes, not one shared bug.
+
+**Bug 1 — voice not respected**: `agents.voice_persona` genuinely is saved correctly by the Agent Builder
+UI (`lib/db/agents.ts`'s `AGENT_COLUMNS` includes it and `getAgentWithTenant()` selects it fine) — the
+bug was entirely downstream. `handleTurn()` (`lib/agent/orchestrator.ts`) resolved the agent record but
+only pulled `system_prompt`/`id`/`name` out of it into `resolvedAgent`/`TurnTrace.agent` — `voice_persona`
+was read from the DB and then simply never referenced again. Both TTS call sites confirmed this: the
+browser demo's `server.ts` called `synthesize(output.reply, { policy, emotion })` with no `persona` at
+all, and the Twilio path's `stream-handler.ts` called `synthesizeLinear16(text, { clientId, emotion })`
+— same gap, just a different call site. `lib/deepgram/tts.ts`'s `resolveVoiceModel(persona?)` falls back
+to `CONFIG.deepgram.ttsModel` (`"aura-asteria-en" // Default: female, friendly`) whenever `persona` is
+`undefined` — exactly the "default female voice" reported. Fix: `TurnTrace.agent` now carries
+`voicePersona: agentInfo.voice_persona` alongside `id`/`name`; `server.ts` passes
+`persona: output.trace.agent?.voicePersona` into `synthesize()`, and `stream-handler.ts`'s
+`speakToTwilio()` takes a new `persona` parameter threaded from `output.trace.agent?.voicePersona` into
+`synthesizeLinear16()` — both TTS call sites now honor the agent's own chosen Deepgram voice instead of
+silently falling back to the global default.
+
+**Bug 2 — ~10s latency**: `server.ts` hardcodes `diagnostics: true` on every browser-demo turn (so the
+live test drawer's per-engine breakdown panel has data to show), and `handleTurn()` was running
+`runDiagnosticEmotion()` as a plain serial `await` sitting entirely before retrieval and the LLM call even
+started — the opposite of what the user asked for ("emotion analytics should happen in parallel, but the
+answering should happen ... within 1 sec"). Compounding this: `runDiagnosticEmotion()`'s wav2vec2 acoustic
+ML leg (`lib/emotion/local-audio-detect.ts`) had **no timeout at all**, unlike the text ONNX engine, which
+already races against `CONFIG.emotion.localOnnxLatencyBudgetMs`. The model's own doc comment states its
+real measured cost: "~56s cold load, ~330ms inference once warm" — a cold load could single-handedly stall
+an entire turn with nothing bounding it. Two fixes: (a) added `CONFIG.emotion.localAudioMlLatencyBudgetMs`
+(1500ms) and wrapped the wav2vec2 call in `emotion-debug.ts` in the same `Promise.race`-against-a-timeout
+pattern the text engine already used, so a cold/slow load degrades to "no signal" instead of blocking
+indefinitely; (b) restructured `handleTurn()` so the diagnostics call is kicked off (not awaited) at the
+same point it always ran, then only actually `await`ed right before the trace object is assembled — after
+retrieval, the LLM call, and output guarding have already run. In the common case this await resolves
+instantly, since the diagnostics promise has had the entire retrieval+LLM pipeline's worth of wall-clock
+time to finish concurrently; it only actually waits when diagnostics is unusually slow, and even then it's
+now capped rather than unbounded. Verified live via `/api/turn` (same `handleTurn()` code path, no mic
+needed): `emotionDiagnostics` is still present and correct in the trace (confirms nothing was silently
+dropped), while `timings.emotionMs` no longer reflects a full diagnostics wait.
+
+**A separate, pre-existing latency contributor found during verification, NOT fixed here (flagged, out of
+scope for the 3 reported bugs)**: live testing surfaced `[LLM] Tool-call loop exhausted without a final
+reply — forcing a text-only follow-up` firing on some turns even for plain factual questions with no
+obvious tool need, forcing a second full LLM round trip and, once, a visibly truncated reply ("I don").
+This lives entirely in `lib/agent/llm.ts`'s tool-calling loop and provider fallback (`CONFIG.llm.providers`,
+observed via the `zenmux` fallback provider specifically) — unrelated to the diagnostics-blocking fix
+above, and intermittent (a repeat of the same question against the same agent succeeded cleanly on a
+different provider attempt with `llmMs` dropping from ~6.2s to ~2.5s). Worth a follow-up investigation into
+the tool-choice/tool-call decision heuristics and provider fallback ordering, but is a distinct root cause
+from anything in this fix and wasn't part of what was reported, so left untouched.
+
+**Bug 3 — knowledge/RAG retrieval not surfacing**: retrieval scoping itself was already correct end-to-end
+— confirmed the uploaded PDF's chunks really are stored under the same `clientId` (`tenants.auth_user_id`)
+the agent resolves to at query time (`lib/knowledge/ingest.ts` → `lib/memory/writer.ts`'s
+`seedClientMemory`, `tier: "LTM_client"`), and `retrieve()` (`lib/memory/retrieval.ts`) does query that
+tier scoped by the correct `clientId` on every turn — so this was never a missing-plumbing bug. The actual
+cause: `lib/memory/writer.ts`'s `summarize()` truncates every stored record's `summary` field to its first
+180 characters, and `lib/agent/context.ts`'s `formatRecords()` — the only place retrieved knowledge
+actually reaches the LLM prompt — used `r.summary`, not the full `r.text` that was actually embedded and
+matched. Knowledge chunks are ~500 chars each (`CONFIG.knowledge` chunking), so a fact sitting after the
+first ~180 characters of its chunk (e.g. "Tredence" mentioned partway through a chunk that opens with a
+different employer) was silently dropped before the model ever saw it — and the system prompt's Core Rule
+1 ("answer ONLY using the EVIDENCE block ... if not grounded there, say you do not have that information")
+then correctly, faithfully produced exactly the unhelpful answer the user saw, given what it was actually
+shown. `summary`-based truncation is legitimate for conversational memory records (keeps STM/MTM listings
+compact), but wrong for knowledge-base chunks, where exact wording is the entire point. Fix:
+`formatRecords()` takes a new `{ useFullText?: boolean }` option; the `CLIENT`/knowledge block in
+`buildLLMContext()` now passes `useFullText: true` and uses `r.text` instead of `r.summary`, with its
+truncation budget raised from 1600 to 6000 chars to match (full chunk text runs several times longer than
+a summary). Verified live via `/api/turn` against the real "Vikas Verma" agent and its real uploaded PDF:
+asking "Can you tell me about your experience in Tredence?" now returns "I worked there as an AI Software
+Engineering Intern from May to July 2026 in Bengaluru, focusing on GenAI, RAG, and agent orchestration
+using Python" — a real, correctly-grounded fact pulled straight from the PDF, not the prior "I don't have
+that information" deflection. `trace.retrieved.ltmClientSnippets` in the same response confirms the
+right chunks were retrieved (topic `kb:vikas verma full detail deck`).
+
+**Verification**: `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (314 passing, no test changes needed
+for this fix — none of the 3 bugs were covered by existing tests), `npm run build` all clean. Live-verified
+all three fixes together against the real "Vikas Verma" agent (`agents.id=4a7d5dc8-...`,
+`voice_persona="aura-2-aries-en"`, confirmed via a direct Supabase query) through `/api/turn` — the same
+`handleTurn()` code path the browser "Try a Call" demo and Twilio telephony both use, so this exercises
+the actual production turn logic, not a mock: `trace.agent.voicePersona` now correctly returns
+`"aura-2-aries-en"` (bug 1, confirms the value now reaches the point where both TTS call sites read it —
+full audio-out verification needs a real mic/speaker session, which this environment can't drive
+headlessly, so this confirms the data now flows correctly all the way to the TTS call boundary, not the
+literal synthesized audio itself), the Tredence question returns a real grounded answer (bug 3, full
+before/after transcript above), and `emotionDiagnostics` remains present and correct in the trace while no
+longer serially blocking the reply (bug 2).
+
+**Files Modified**: `lib/agent/orchestrator.ts`, `lib/emotion/emotion-debug.ts`, `lib/config.ts`,
+`lib/agent/context.ts`, `server.ts`, `lib/telephony/stream-handler.ts`

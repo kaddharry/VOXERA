@@ -30,9 +30,16 @@ export function buildLLMContext(args: {
 }): LLMContext {
   const { retrieved, emotion, policy, userTurn, customInstructions } = args;
 
+  // Uses full record `text`, not the 180-char `summary` — `summary` exists
+  // to keep conversational-memory listings compact, but knowledge-base
+  // chunks (uploaded PDFs/docs, tier LTM_client) are the one place where the
+  // exact wording matters: a fact like "experience at Tredence" sitting
+  // after the first sentence of a ~500-char chunk was silently getting cut
+  // off before the LLM ever saw it. Budget raised accordingly (1600 -> 6000)
+  // since full chunk text is several times longer than a summary.
   const clientBlock = truncate(
-    formatRecords("CLIENT", retrieved.ltmClient, ["brand_voice", "compliance", "escalation"]),
-    1600,
+    formatRecords("CLIENT", retrieved.ltmClient, ["brand_voice", "compliance", "escalation"], { useFullText: true }),
+    6000,
   );
   const timelineBlock = retrieved.timeline && retrieved.timeline.length > 0
     ? truncate(formatTimeline(retrieved.timeline), 7200)
@@ -131,12 +138,12 @@ export function buildLLMContext(args: {
   return { system, user, citations };
 }
 
-function formatRecords(kind: string, recs: MemoryRecord[], preferredTopics?: string[]): string {
+function formatRecords(kind: string, recs: MemoryRecord[], preferredTopics?: string[], opts?: { useFullText?: boolean }): string {
   if (recs.length === 0) return "";
   const sorted = preferredTopics
     ? [...recs].sort((a, b) => Number(preferredTopics.includes(b.topic)) - Number(preferredTopics.includes(a.topic)))
     : recs;
-  const lines = sorted.map((r) => `- [${r.topic}] ${r.summary}`);
+  const lines = sorted.map((r) => `- [${r.topic}] ${opts?.useFullText ? r.text : r.summary}`);
   return `=== ${kind} ===\n${lines.join("\n")}`;
 }
 

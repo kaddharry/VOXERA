@@ -128,14 +128,24 @@ export async function runDiagnosticEmotion(
   let lexiconResult: ReturnType<typeof detectTextEmotionLexicon>;
   let localOnnxResult: LocalOnnxDetectResult;
 
-  // Kick off the (potentially slow, cold-start-loaded) wav2vec2 classifier
-  // concurrently with everything else rather than after it, so its latency
-  // overlaps instead of stacking on top.
+  // Kick off the (potentially slow, cold-start-loaded — verified live: ~56s
+  // cold, ~330ms warm) wav2vec2 classifier concurrently with everything else
+  // rather than after it, so its latency overlaps instead of stacking on
+  // top. Unlike the text ONNX engine, this call previously had no timeout at
+  // all, so a cold load could single-handedly stall an entire live turn —
+  // raced against a budget the same way localOnnxLatencyBudgetMs already
+  // bounds the text engine.
+  const audioMlBudgetMs = CONFIG.emotion.localAudioMlLatencyBudgetMs;
   const acousticMlPromise: Promise<LocalAudioDetectResult | null> = rawAudio16kHz
-    ? detectAudioEmotionWav2Vec2(rawAudio16kHz).catch((err): LocalAudioDetectResult => {
-        console.warn("[EmotionDiagnostic] wav2vec2 threw:", err);
-        return { signal: null, latencyMs: 0, errored: true };
-      })
+    ? Promise.race([
+        detectAudioEmotionWav2Vec2(rawAudio16kHz).catch((err): LocalAudioDetectResult => {
+          console.warn("[EmotionDiagnostic] wav2vec2 threw:", err);
+          return { signal: null, latencyMs: 0, errored: true };
+        }),
+        new Promise<LocalAudioDetectResult>((resolve) =>
+          setTimeout(() => resolve({ signal: null, latencyMs: audioMlBudgetMs, errored: false }), audioMlBudgetMs)
+        ),
+      ])
     : Promise.resolve(null);
 
   if (precomputed) {
