@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Activity, Radio, Volume2, ShieldAlert, Zap, MessageSquare } from "lucide-react";
 import { EmotionSparkline, type EmotionPoint } from "./EmotionSparkline";
+import { GlassCard } from "@/app/_components/GlassCard";
 
 const MAX_HISTORY_POINTS = 60;
 
@@ -125,66 +126,66 @@ export function LiveCallMonitor({
       case "anger":
       case "frustration":
       case "distress":
-        return "text-red-400 border-red-500/40 bg-red-500/10";
+        return "text-red-600 border-red-500/30 bg-red-500/10";
       case "fear":
       case "confusion":
       case "disappointment":
-        return "text-amber-400 border-amber-500/40 bg-amber-500/10";
+        return "text-amber-600 border-amber-500/30 bg-amber-500/10";
       case "joy":
       case "gratitude":
       case "excitement":
       case "calm":
-        return "text-emerald-400 border-emerald-500/40 bg-emerald-500/10";
+        return "text-emerald-600 border-emerald-500/30 bg-emerald-500/10";
       default:
-        return "text-[var(--console-cyan)] border-[var(--console-cyan)]/40 bg-[var(--console-cyan)]/10";
+        return "text-[var(--color-accent-cyan)] border-[var(--color-accent-cyan)]/30 bg-[var(--color-accent-cyan)]/10";
     }
   };
 
   return (
-    <div className="voxera-console rounded-2xl p-6 shadow-[0_20px_60px_-15px_rgba(10,12,20,0.5)]">
-      <div className="flex items-center justify-between mb-6 pb-4 border-b voxera-console-hairline">
+    <GlassCard className="p-6">
+      <div className="flex items-center justify-between mb-6 pb-4 border-b border-[var(--color-border-subtle)]">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-[var(--console-violet)]/10 border border-[var(--console-violet)]/25 rounded-lg text-[var(--console-violet)]">
+          <div className="p-2 bg-[var(--color-accent-violet)]/10 border border-[var(--color-accent-violet)]/25 rounded-lg text-[var(--color-accent-violet)]">
             <Radio className="w-5 h-5 animate-pulse" />
           </div>
           <div>
-            <h2 className="text-[15px] font-semibold text-[var(--console-text)]">Live Call & Emotion Monitor</h2>
-            <p className="text-[11.5px] text-[var(--console-text-dim)]">Real-time SSE emotion stream &amp; prosody monitoring</p>
+            <h2 className="text-[15px] font-semibold text-[var(--color-text-primary)]">Live Call & Emotion Monitor</h2>
+            <p className="text-[11.5px] text-[var(--color-text-muted)]">Real-time SSE emotion stream &amp; prosody monitoring</p>
           </div>
         </div>
-        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-600 border border-emerald-500/25">
           <Activity className="w-3.5 h-3.5 mr-1 animate-spin" /> Stream Active
         </span>
       </div>
 
       {activeCalls.length === 0 ? (
-        <div className="text-center py-8 text-[var(--console-text-dim)]">
-          <Volume2 className="w-8 h-8 mx-auto mb-2 opacity-50" />
+        <div className="text-center py-8 text-[var(--color-text-muted)]">
+          <Volume2 className="w-8 h-8 mx-auto mb-2 opacity-40" />
           <p className="text-[13.5px]">No active calls streaming at the moment.</p>
           <p className="text-[11.5px] mt-1">
-            <a href="/admin/try-call" className="text-[var(--console-violet)] hover:underline">Try a call</a> or receive a phone call to monitor the live stream.
+            <a href="/admin/try-call" className="text-[var(--color-accent-violet)] hover:underline">Try a call</a> or receive a phone call to monitor the live stream.
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Active Call Selector */}
-          <div className="space-y-3 lg:border-r voxera-console-hairline lg:pr-6">
-            <h3 className="voxera-console-label text-[10px] font-bold mb-2">Active Calls</h3>
+          <div className="space-y-3 lg:border-r lg:border-[var(--color-border-subtle)] lg:pr-6">
+            <h3 className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2">Active Calls</h3>
             {activeCalls.map((call) => (
               <button
                 key={call.id}
                 onClick={() => setSelectedSessionId(call.id)}
                 className={`w-full text-left p-3 rounded-lg border transition-colors ${
                   selectedSessionId === call.id
-                    ? "bg-[var(--console-violet)]/15 border-[var(--console-violet)]/50 text-[var(--console-text)]"
-                    : "bg-[var(--console-surface)] border-[var(--console-border)] text-[var(--console-text-dim)] hover:border-[var(--console-border-active)]"
+                    ? "bg-[var(--color-accent-violet)]/10 border-[var(--color-accent-violet)]/40 text-[var(--color-text-primary)]"
+                    : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-muted)] hover:border-[var(--color-accent-violet)]/30"
                 }`}
               >
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-[13px] font-medium">{call.callerNumber || call.id}</span>
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
                 </div>
-                <div className="text-[10.5px] text-[var(--console-text-dim)] mt-1">
+                <div className="text-[10.5px] text-[var(--color-text-muted)] mt-1">
                   ID: {call.id.slice(0, 10)}...
                 </div>
               </button>
@@ -197,26 +198,26 @@ export function LiveCallMonitor({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Emotion Ring / Badge */}
                 <div className={`p-4 rounded-xl border ${getEmotionColor(liveState.emotionLabel)}`}>
-                  <div className="text-[10.5px] uppercase font-medium tracking-wider opacity-80 mb-1">Detected Emotion</div>
+                  <div className="text-[10.5px] uppercase font-medium tracking-wider opacity-70 mb-1">Detected Emotion</div>
                   <div className="text-2xl font-bold capitalize flex items-center justify-between font-mono">
                     <span>{liveState.emotionLabel}</span>
-                    <span className="text-[11px] px-2 py-0.5 rounded bg-black/20 font-mono">
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-black/5 font-mono">
                       Conf: {(liveState.confidence * 100).toFixed(0)}%
                     </span>
                   </div>
-                  <div className="text-[11px] mt-2 opacity-80">
+                  <div className="text-[11px] mt-2 opacity-70">
                     Intensity: {(liveState.intensity * 100).toFixed(0)}%
                   </div>
                 </div>
 
                 {/* CAI Score */}
-                <div className="p-4 rounded-xl border border-[var(--console-border)] bg-[var(--console-surface)]">
-                  <div className="text-[10.5px] uppercase font-medium tracking-wider text-[var(--console-text-dim)] mb-1">Engagement Index (CAI)</div>
-                  <div className="text-2xl font-bold text-[var(--console-text)] flex items-center justify-between font-mono">
-                    <span>{liveState.caiScore} <span className="text-[13px] font-normal text-[var(--console-text-dim)]">/ 100</span></span>
-                    <Zap className="w-5 h-5 text-amber-400" />
+                <div className="p-4 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)]">
+                  <div className="text-[10.5px] uppercase font-medium tracking-wider text-[var(--color-text-muted)] mb-1">Engagement Index (CAI)</div>
+                  <div className="text-2xl font-bold text-[var(--color-text-primary)] flex items-center justify-between font-mono">
+                    <span>{liveState.caiScore} <span className="text-[13px] font-normal text-[var(--color-text-muted)]">/ 100</span></span>
+                    <Zap className="w-5 h-5 text-amber-500" />
                   </div>
-                  <div className="text-[11px] text-[var(--console-text-dim)] mt-2">
+                  <div className="text-[11px] text-[var(--color-text-muted)] mt-2">
                     {liveState.caiCategory}
                   </div>
                 </div>
@@ -226,7 +227,7 @@ export function LiveCallMonitor({
 
               {/* Active Emotion Pattern Flags */}
               {Object.values(liveState.flags).some(Boolean) && (
-                <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-lg flex items-center gap-2 text-red-400 text-[11.5px] font-medium">
+                <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-lg flex items-center gap-2 text-red-600 text-[11.5px] font-medium">
                   <ShieldAlert className="w-4 h-4" />
                   <span>
                     Pattern Triggered: {Object.entries(liveState.flags).filter(([, v]) => v).map(([k]) => k.replace(/_/g, " ")).join(", ")}
@@ -236,16 +237,16 @@ export function LiveCallMonitor({
 
               {/* Real-time Transcript */}
               <div>
-                <h3 className="voxera-console-label text-[10px] font-bold mb-2 flex items-center">
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2 flex items-center">
                   <MessageSquare className="w-3.5 h-3.5 mr-1" /> Live Transcript Stream
                 </h3>
-                <div className="bg-[var(--console-bg)] rounded-lg p-3 border border-[var(--console-border)] max-h-48 overflow-y-auto space-y-2">
+                <div className="bg-[var(--color-bg-elevated)] rounded-lg p-3 border border-[var(--color-border-subtle)] max-h-48 overflow-y-auto space-y-2">
                   {liveState.transcript.length === 0 ? (
-                    <p className="text-[11.5px] text-[var(--console-text-dim)] italic">Waiting for turn transcript…</p>
+                    <p className="text-[11.5px] text-[var(--color-text-muted)] italic">Waiting for turn transcript…</p>
                   ) : (
                     liveState.transcript.map((t, idx) => (
-                      <div key={idx} className={`text-[11.5px] p-2 rounded ${t.role === "user" ? "bg-[var(--console-surface)] text-[var(--console-text)]" : "bg-[var(--console-violet)]/10 text-[var(--console-text)] border border-[var(--console-violet)]/25"}`}>
-                        <span className="font-semibold uppercase text-[9.5px] block opacity-70 mb-0.5">{t.role}</span>
+                      <div key={idx} className={`text-[11.5px] p-2 rounded ${t.role === "user" ? "bg-white/70 text-[var(--color-text-primary)]" : "bg-[var(--color-accent-violet)]/10 text-[var(--color-text-primary)] border border-[var(--color-accent-violet)]/20"}`}>
+                        <span className="font-semibold uppercase text-[9.5px] block opacity-60 mb-0.5">{t.role}</span>
                         {t.text}
                       </div>
                     ))
@@ -256,6 +257,6 @@ export function LiveCallMonitor({
           )}
         </div>
       )}
-    </div>
+    </GlassCard>
   );
 }

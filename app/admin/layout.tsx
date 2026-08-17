@@ -3,6 +3,8 @@ import { createClient } from "../../lib/db/server";
 import Link from "next/link";
 import { LayoutDashboard, MessageSquare, Database, Settings, LogOut, Sparkles, Users, PhoneCall, Bot } from "lucide-react";
 import { AdminMobileNav } from "../../components/admin/AdminMobileNav";
+import { AmbientBackground } from "../_components/GlassCard";
+import { CursorGlow } from "../_components/CursorGlow";
 
 export default async function AdminLayout({
   children,
@@ -57,11 +59,16 @@ export default async function AdminLayout({
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto">
-        <AdminMobileNav userEmail={user.email ?? ""} />
-
-        {children}
+      {/* Main Content — ambient glass-morphism background + cursor glow are
+          rendered once here rather than per-page, so every admin page gets
+          the same consistent surface treatment automatically. */}
+      <main className="flex-1 overflow-y-auto relative">
+        <AmbientBackground />
+        <CursorGlow />
+        <div className="relative z-10">
+          <AdminMobileNav userEmail={user.email ?? ""} />
+          {children}
+        </div>
       </main>
     </div>
   );

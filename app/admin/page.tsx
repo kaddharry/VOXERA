@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   CheckCircle2,
   Circle,
@@ -21,6 +21,7 @@ import Link from "next/link";
 import { LiveCallMonitor } from "@/components/admin/LiveCallMonitor";
 import { OutboundCallModal } from "@/components/admin/OutboundCallModal";
 import { VoiceOrb } from "@/app/_components/VoiceOrb";
+import { GlassCard } from "@/app/_components/GlassCard";
 
 interface AnalyticsData {
   metrics: {
@@ -81,33 +82,6 @@ function timeOfDayGreeting(): string {
   if (h < 12) return "Good morning";
   if (h < 18) return "Good afternoon";
   return "Good evening";
-}
-
-/** Soft glow that follows the cursor over the page's card surfaces — a
- * tasteful "premium SaaS" touch. Doesn't replace or hide the real system
- * cursor, so normal pointer affordances and accessibility stay intact. */
-function CursorGlow() {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const handleMove = (e: MouseEvent) => {
-      el.style.transform = `translate(${e.clientX - 200}px, ${e.clientY - 200}px)`;
-    };
-    window.addEventListener("mousemove", handleMove);
-    return () => window.removeEventListener("mousemove", handleMove);
-  }, []);
-  return (
-    <div
-      ref={ref}
-      aria-hidden="true"
-      className="pointer-events-none fixed top-0 left-0 w-[400px] h-[400px] z-0 opacity-[0.05] will-change-transform"
-      style={{
-        background: "radial-gradient(circle, var(--color-accent-violet) 0%, transparent 70%)",
-        filter: "blur(10px)",
-      }}
-    />
-  );
 }
 
 export default function AnalyticsDashboard() {
@@ -201,23 +175,11 @@ export default function AnalyticsDashboard() {
   const strokeDashoffset = circumference - (circumference * m.conversionRate) / 100;
 
   return (
-    <div className="relative min-h-screen">
-      <CursorGlow />
-      {/* Ambient background wash — the "glass" in glassmorphism needs
-          something soft underneath it to actually show through. Kept very
-          low-opacity so it reads as atmosphere, not decoration competing
-          with the data. */}
-      <div
-        aria-hidden="true"
-        className="fixed inset-0 pointer-events-none z-0"
-        style={{
-          background:
-            "radial-gradient(ellipse 800px 500px at 10% -5%, rgba(124,58,237,0.06), transparent 60%), " +
-            "radial-gradient(ellipse 700px 500px at 95% 15%, rgba(6,182,212,0.06), transparent 55%)",
-        }}
-      />
-
-      <div className="relative z-10 p-6 md:p-10 font-body">
+    <div className="min-h-screen">
+      {/* Ambient background wash + cursor glow are now rendered once at the
+          admin layout level (app/admin/layout.tsx) so every page gets the
+          same glass surface treatment consistently. */}
+      <div className="p-6 md:p-10 font-body">
         <header className="mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="font-display text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)] flex items-center gap-3">
@@ -557,18 +519,6 @@ export default function AnalyticsDashboard() {
 }
 
 type Accent = keyof typeof ACCENT;
-
-/** Frosted-glass card surface — translucent white + backdrop blur over the
- * page's ambient gradient wash, with a soft glow-tinted shadow instead of a
- * flat drop shadow. This is the page's one deliberate "glassmorphism"
- * signature, applied consistently rather than as one-off decoration. */
-function GlassCard({ className = "", children }: { className?: string; children: React.ReactNode }) {
-  return (
-    <div className={`bg-white/70 backdrop-blur-xl rounded-2xl border border-white/60 shadow-[0_8px_32px_rgba(124,58,237,0.07)] hover:shadow-[0_8px_32px_rgba(124,58,237,0.12)] transition-shadow ${className}`}>
-      {children}
-    </div>
-  );
-}
 
 function ImpactCard({
   icon: Icon,
