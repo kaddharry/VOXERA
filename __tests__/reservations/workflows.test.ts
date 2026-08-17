@@ -141,6 +141,71 @@ describe("Reservation Workflows", () => {
         id: "BKG-12345",
       }));
     });
+
+    // ── BUG-D3 ───────────────────────────────────────────────────────────────
+    // Booking.customerEmail is optional, but sendBookingConfirmation(email: string)
+    // is not. The `!` non-null assertion papered over that gap, so a row coming
+    // back without an email sent `undefined` to the email provider.
+    describe("when the RPC returns no customerEmail (BUG-D3)", () => {
+      beforeEach(() => {
+        vi.mocked(supabase.rpc).mockResolvedValue({
+          data: {
+            id: "BKG-67890",
+            userId: "user-abc",
+            clientId: "client-xyz",
+            date: "2026-12-25",
+            time: "19:00",
+            partySize: 4,
+            customerName: "Alice Smith",
+            customerEmail: null,
+            customerPhone: "+15555555555",
+          },
+          error: null,
+        } as any);
+      });
+
+      it("does not dispatch a confirmation email", async () => {
+        await createBooking({
+          userId: "user-abc",
+          clientId: "client-xyz",
+          date: "2026-12-25",
+          time: "19:00",
+          partySize: 4,
+          customerEmail: "alice@example.com",
+        });
+
+        expect(sendBookingConfirmation).not.toHaveBeenCalled();
+      });
+
+      it("never passes undefined as the recipient", async () => {
+        await createBooking({
+          userId: "user-abc",
+          clientId: "client-xyz",
+          date: "2026-12-25",
+          time: "19:00",
+          partySize: 4,
+          customerEmail: "alice@example.com",
+        });
+
+        for (const call of vi.mocked(sendBookingConfirmation).mock.calls) {
+          expect(call[0]).toBeTruthy();
+        }
+      });
+
+      it("still returns the booking and syncs the calendar", async () => {
+        const booking = await createBooking({
+          userId: "user-abc",
+          clientId: "client-xyz",
+          date: "2026-12-25",
+          time: "19:00",
+          partySize: 4,
+          customerEmail: "alice@example.com",
+        });
+
+        expect(booking.id).toBe("BKG-67890");
+        expect(createCalendarEvent).toHaveBeenCalled();
+      });
+    });
   });
 
   describe("modifyBooking", () => {
