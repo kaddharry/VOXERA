@@ -4,6 +4,56 @@ This document records the exact test suites, validation steps, and outcomes for 
 
 ---
 
+## 2026-08-18 — Reliability Bug Fix Validation
+
+### BUG-D1/D2 — Supabase resilience hardening (PR #70)
+
+Targeted validation:
+- 2 test files passed
+- 9 tests passed
+
+Command:
+`npx vitest run __tests__/db/circuit-breaker.test.ts __tests__/scaling/redis-scaling.test.ts`
+
+### BUG-M1 — Undefined VAD handling (PR #69)
+
+Targeted validation:
+- 1 test file passed
+- 4 tests passed
+
+Command:
+`npx vitest run __tests__/memory/store-torow.test.ts`
+
+### BUG-D3 — Booking confirmation email safety (PR #68)
+
+Targeted validation:
+- 1 test file passed
+- 9 tests passed
+
+Command:
+`npx vitest run __tests__/reservations/workflows.test.ts`
+
+### BUG-O4 — Empty LLM choices handling (PR #67)
+
+Targeted validation:
+- 1 test file passed
+- 6 tests passed
+
+Command:
+`npx vitest run __tests__/agent/llm-empty-choices.test.ts`
+
+### BUG-E4 — Emotion waiting/frustration fix (PR #66)
+
+Targeted validation:
+- 1 test file passed
+- 7 tests passed
+- 1 intentional todo
+
+Command:
+`npx vitest run __tests__/emotion/lexicon-frustration.test.ts`
+
+The E4 todo covers the existing `"sick"` slang collision and is intentionally outside BUG-E4.
+
 ## 2026-08-18 — Issue #61: AWS OIDC AssumeRole Configuration (PR #61)
 **Status:** ✅ VERIFIED
 **Key Technologies:** AWS IAM, OIDC, GitHub Actions

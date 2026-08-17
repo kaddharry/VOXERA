@@ -350,6 +350,15 @@ CREATE TABLE public.call_logs (
 ---
 
 ## 8. Changelog
+### 2026-08-18 — Reliability & Production Hardening (BUG-D1/D2, D3, E4, M1, O4)
+
+Five production-facing reliability fixes were implemented and validated with targeted regression tests:
+
+- **BUG-D1/D2 — Supabase resilience:** Circuit-breaker behavior was hardened so a single transient failure does not immediately open the circuit. The breaker uses a threshold of 3 failures with a 10-second cooldown. Supabase timeout behavior was also covered with regression tests.
+- **BUG-D3 — Booking email safety:** Booking confirmation emails are skipped when `customerEmail` is unavailable, preventing invalid email dispatch while preserving booking and calendar workflows.
+- **BUG-E4 — Emotion lexicon precision:** Standalone `wait` is no longer treated as a frustration trigger. Explicit waiting complaints such as `still waiting`, `waiting too long`, and `long wait` remain supported.
+- **BUG-M1 — Memory persistence safety:** Missing or partially populated VAD values are safely persisted using `0` defaults, while existing VAD values are preserved.
+- **BUG-O4 — LLM provider resilience:** Empty or malformed provider `choices` responses are handled as provider failures instead of producing a `TypeError`, allowing provider/offline fallback behavior to continue safely.
 
 ### 2026-08-11 — Emotion Engine Phase 1 Integration (Issues #26–#31)
 

@@ -41,6 +41,16 @@ For in-depth technical details on the platform's design, integrations, and engin
 - **📈 Real-Time Analytics:** Dashboard visualizing the Commitment Acoustic Index (CAI), user emotional states (VAD tracking), escalation triggers, and tool invocations.
 - **🛠️ Automated Workflows:** Integrated tool-calling for intelligent calendar availability checks, reservation creation, and live email confirmation dispatches.
 
+### Reliability & Production Hardening
+
+Recent reliability improvements include:
+
+- **Supabase resilience:** Hardened circuit-breaker behavior and timeout handling for transient database failures.
+- **Booking safety:** Confirmation emails are skipped when a booking has no customer email.
+- **Emotion precision:** Standalone `wait` is no longer treated as a frustration trigger, while explicit waiting complaints remain supported.
+- **Memory safety:** Missing or partially populated VAD values are handled safely during persistence.
+- **LLM resilience:** Empty or malformed provider responses are handled gracefully with provider/offline fallback support.
+
 ---
 
 ## 🛡️ Security First
