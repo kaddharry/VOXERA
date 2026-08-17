@@ -52,3 +52,6 @@ VOXERA_USER_SETUP_GUIDE.md
 VOXERA_AGENT_INSTRUCTIONS.md
 
 _env.local
+
+# Tesseract.js downloads its OCR language model to cwd at runtime — not source
+*.traineddata
