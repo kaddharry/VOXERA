@@ -37,16 +37,17 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-COPY --from=builder /app/public ./public
-
-# Set the correct permission for prerender cache
-RUN mkdir .next
-RUN chown nextjs:nodejs .next
-
-# Automatically leverage output traces to reduce image size
-# https://nextjs.org/docs/advanced-features/output-file-tracing
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# The app runs behind a custom server (server/index.ts) so it can own the
+# HTTP listener and handle the Twilio Media Stream WebSocket upgrade on
+# /api/telephony/stream. That rules out Next's standalone output, whose
+# tracing prunes the deps the custom server needs, so we ship .next plus a
+# full node_modules and the TypeScript sources tsx loads at runtime.
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/server ./server
+COPY --from=builder --chown=nextjs:nodejs /app/lib ./lib
+COPY --from=builder --chown=nextjs:nodejs /app/package.json /app/next.config.ts /app/tsconfig.json ./
 
 USER nextjs
 
@@ -56,6 +57,5 @@ ENV PORT=3000
 # set hostname to localhost
 ENV HOSTNAME="0.0.0.0"
 
-# server.js is created by next build from the standalone output
-# https://nextjs.org/docs/pages/api-reference/next-config-js/output
-CMD ["node", "server.js"]
+# Exec form so tsx is PID 1 and receives SIGTERM directly on container stop.
+CMD ["./node_modules/.bin/tsx", "server/index.ts"]

@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "server": "tsx server.ts",
+    "start:prod": "tsx server/index.ts",
     "test": "vitest",
     "test:run": "vitest run",
     "test:e2e": "vitest run __tests__/e2e"
@@ -23,13 +24,14 @@
     "ioredis": "^5.11.1",
     "lucide-react": "^1.20.0",
     "nanoid": "^5.1.9",
-    "next": "16.2.4",
+    "next": "^16.3.1",
     "openai": "^6.42.0",
     "pdf-parse": "^2.4.5",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "resend": "^6.12.4",
     "tailwind-merge": "^3.6.0",
+    "tsx": "^4.22.4",
     "twilio": "^6.0.2",
     "ws": "^8.21.0",
     "zod": "^4.3.6"
@@ -43,7 +45,6 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
     "tailwindcss": "^4",
-    "tsx": "^4.22.4",
     "typescript": "^5",
     "vitest": "^4.1.9"
   }
