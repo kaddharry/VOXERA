@@ -53,6 +53,16 @@ app.prepare().then(() => {
     handle(req, res, parsedUrl);
   });
 
+  // Next's own dev server needs the 'upgrade' event too — its Hot Module
+  // Reload client opens a WebSocket to /_next/hmr. Destroying every upgrade
+  // that isn't our telephony path (the original version of this handler)
+  // silently broke HMR in dev: the browser console filled with repeated
+  // "WebSocket connection to 'ws://localhost:3000/_next/hmr?...' failed"
+  // and the page would never pick up file changes without a manual reload.
+  // getUpgradeHandler() (stable since Next 13's custom-server support)
+  // hands upgrade requests we don't own back to Next itself.
+  const nextUpgradeHandler = app.getUpgradeHandler();
+
   server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
     const { pathname, query } = parse(req.url || "/", true);
 
@@ -66,7 +76,7 @@ app.prepare().then(() => {
         new TelephonyStreamHandler({ ws, callSid, clientId, callerNumber, agentId });
       });
     } else {
-      socket.destroy();
+      nextUpgradeHandler(req, socket, head);
     }
   });
 
