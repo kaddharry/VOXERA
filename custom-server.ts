@@ -6,6 +6,19 @@ import { WebSocketServer } from "ws";
 import { TelephonyStreamHandler } from "./lib/telephony/stream-handler";
 
 /**
+ * Local dev MUST run this via `npm run dev:full`, which passes
+ * `--env-file=.env.local` to node directly. ES module imports (above) are
+ * hoisted and evaluated before any other statement in this file runs, so a
+ * `dotenv.config()` call here would execute too late to help — the
+ * KeyRotator/Deepgram client/etc. imported transitively above already read
+ * process.env at import time. This bit us once already: GROQ_API_KEYS came
+ * back empty ("[KeyRotator] No keys found") when this file was briefly run
+ * as plain `tsx custom-server.ts`, which silently broke every LLM call on
+ * real phone calls placed against that instance. Production doesn't need
+ * this — ECS injects env vars into the process before Node even starts.
+ */
+
+/**
  * Production entrypoint for the Next.js app, replacing `next start`.
  *
  * Why this exists: Twilio's <Connect><Stream> opens a raw WebSocket to

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "dev:full": "tsx custom-server.ts",
+    "dev:full": "tsx --env-file=.env.local custom-server.ts",
     "build": "next build",
     "start": "tsx custom-server.ts",
     "lint": "eslint",

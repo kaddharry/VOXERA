@@ -65,6 +65,21 @@ ws.on("unexpected-response", (r,res) => console.log("FAIL", res.statusCode));
 # without needing a real Twilio account to send the request.
 ```
 
+**If check 1 times out**: that's exactly Twilio's own error 31901 ("Stream - WebSocket - Connection
+Timeout") — the call will connect, play the greeting, then go dead the instant `<Connect><Stream>`
+fires, no matter what's downstream. It means whatever's on port 3000 isn't actually running
+`custom-server.ts` (plain `next dev`/`next-server` doesn't support the WS upgrade at all — see the top
+of this doc). `lsof -ti:3000 | xargs kill -9` and restart with `npm run dev:full` if this happens; it
+can silently regress if something else gets started on the same port later in a session.
+
+**If the call connects and plays the greeting, but goes silent or drops the moment you speak**: check
+the dev server's boot log for `[KeyRotator] No keys found in process.env.GROQ_API_KEYS`. `dev:full`
+must load `.env.local` *before* its own imports run — `custom-server.ts` transitively imports the LLM
+client at module scope, and ES imports are hoisted ahead of any in-file `dotenv.config()` call, so the
+only thing that actually works is the `--env-file=.env.local` flag already baked into the `dev:full`
+script. If you see that log line, something invoked `tsx custom-server.ts` directly instead of through
+`npm run dev:full`.
+
 ## 3. Production (AWS / ECS)
 
 The app is deployed at `https://vo-2882c61ad83f44399c60d35c29921a12.ecs.ap-south-1.on.aws`

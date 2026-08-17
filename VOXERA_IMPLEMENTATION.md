@@ -1990,3 +1990,47 @@ a synthetic campaign row, then deleted it — no leftover test data. Also remove
 added during verification. The connection string is stored only in the gitignored `.env.local`
 (confirmed via `.gitignore`), used solely for this one-off migration run — the app itself continues to
 talk to Supabase exclusively through the REST API (`SUPABASE_URL`/keys), unchanged.
+
+### 2026-08-17, later — Real Call Placed Through a Campaign Failed: Two Real Bugs, Not One
+
+**Objective**: User ran an actual bulk-calling campaign against their own phone number. The call
+connected, played "please hold," then cut out the moment they spoke — never got a reply.
+
+**Root cause #1 — the local dev server wasn't actually running `custom-server.ts`.** At some point the
+process on port 3000 had been replaced by a plain Next.js server (confirmed via `ps` showing a bare
+`next-server` process, not `tsx`/`custom-server.ts`) — the WS-upgrade-capable server the whole telephony
+path depends on. Directly testing the WS media-stream endpoint at the time reproduced Twilio's own error
+console exactly: **error 31901, "Stream - WebSocket - Connection Timeout"** — Twilio's media servers got
+no response at all when trying to open the audio WebSocket, so the call had no audio path in either
+direction the instant `<Connect><Stream>` fired, regardless of anything downstream. Fixed by killing
+the stray process and restarting via `npm run dev:full`, then verified: a raw WS client got `open`
+against the same ngrok URL, and Twilio's error class (a connection timeout) cannot happen once that
+handshake genuinely succeeds — this isn't a maybe-fixed, the exact failure mode is now unreachable.
+
+**Root cause #2 — `dev:full` never loaded `.env.local` before its own imports ran.** Found while
+verifying the fix above: the restarted server's boot log read `[KeyRotator] No keys found in
+process.env.GROQ_API_KEYS` — the same class of bug `server.ts` already carries an explicit comment
+about and works around via `tsx --env-file=.env.local server.ts`. `custom-server.ts`'s `dev:full` script
+was just `tsx custom-server.ts`, no `--env-file` flag. ES module imports are hoisted and evaluated
+before any other statement in a file runs, so by the time any in-file `dotenv.config()` call could
+execute, `TelephonyStreamHandler` (and everything it transitively imports — the LLM `KeyRotator`,
+Deepgram client, etc.) had already read `process.env` at import time and permanently captured empty
+values for anything only defined in `.env.local`. This meant that even with the WS fix above, a real
+call reaching the LLM/STT stage would have every API call fail with missing-credential errors — plainly
+consistent with "connects, then goes silent/drops the moment the caller actually needs a reply."
+
+Fixed by adding `--env-file=.env.local` to the `dev:full` script (the flag that actually matters, same
+mechanism as `server.ts`) and adding an explanatory comment in `custom-server.ts` itself — deliberately
+*not* a redundant in-file `dotenv.config()` call, since that would execute too late to help for the
+exact hoisting reason above and would be actively misleading to leave in as if it were a working
+fallback. Verified: boot log now reads `[KeyRotator] Initialized GROQ_API_KEYS with 2 key(s)`, re-ran
+the WS handshake and signed-webhook checks (both still pass after this change and after a `npm run
+build` ran concurrently, to make sure the dev server survived it), and cleaned up the synthetic
+`call_logs` row the verification created.
+
+**What still needs the user's own action**: place another real test call — everything checkable from
+this sandbox (the WS handshake, the signed webhook round-trip, the env-var loading) is now verified
+correct, but the actual LLM-reply/TTS-back-to-caller experience can only be confirmed by an real call
+this session cannot place itself.
+
+**Files Modified**: `package.json` (`dev:full` script), `custom-server.ts`
