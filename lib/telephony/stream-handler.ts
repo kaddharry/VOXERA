@@ -101,6 +101,13 @@ export class TelephonyStreamHandler {
   // Issue #14: Barge-in interruption counter (per turn, reset on each transcript)
   private turnInterruptionCount = 0;
 
+  // Cleanup is reachable from three paths (ws close, ws error, init failure);
+  // it must run exactly once or the active-call counter drifts.
+  private hasEnded = false;
+  // Tracks whether markCallStarted() actually incremented the counter, so a
+  // failure *before* that point doesn't release a slot it never took.
+  private slotTaken = false;
+
   constructor(opts: StreamHandlerOptions) {
     this.ws = opts.ws;
     this.callSid = opts.callSid;
@@ -111,11 +118,16 @@ export class TelephonyStreamHandler {
     this.startedAt = Date.now();
 
     this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), { sampleRate: 8000 });
-    this.init();
+    // init() is async and the constructor cannot await it. Without this catch,
+    // a failure (e.g. Deepgram unreachable) becomes an unhandled rejection AND
+    // leaks the call slot, because the ws listeners that reach onCallEnded()
+    // are registered at the end of init() and never get attached.
+    this.init().catch((err) => this.onInitFailed(err));
   }
 
   private async init() {
     await callQueue.markCallStarted();
+    this.slotTaken = true;
     await this.deepgram.connect();
     await this.updateCallLog({ sessionId: this.sessionId });
     console.log(`[TelephonyStream] Call started: ${this.callSid}, session: ${this.sessionId}`);
@@ -126,6 +138,39 @@ export class TelephonyStreamHandler {
       console.error(`[TelephonyStream] WebSocket error on ${this.callSid}:`, err);
       this.onCallEnded();
     });
+  }
+
+  /**
+   * Cleanup path for a call that never finished initialising. Deliberately does
+   * not reuse onCallEnded(): that runs the Issue #16 post-call SMS recovery,
+   * which would text a caller whose call never actually connected.
+   */
+  private async onInitFailed(err: unknown) {
+    console.error(`[TelephonyStream] Initialisation failed for ${this.callSid}:`, err);
+    this.hasEnded = true;
+
+    try {
+      this.deepgram.close();
+    } catch {
+      // may have failed before connecting
+    }
+
+    if (this.slotTaken) {
+      await callQueue.markCallEnded();
+    }
+
+    const endedAt = Date.now();
+    await this.updateCallLog({
+      status: "failed",
+      endedAt,
+      durationMs: endedAt - this.startedAt,
+    });
+
+    try {
+      this.ws.close(1011, "stream initialisation failed");
+    } catch {
+      // socket may already be gone
+    }
   }
 
   private onTwilioMessage(raw: Buffer) {
@@ -268,6 +313,11 @@ export class TelephonyStreamHandler {
   }
 
   private async onCallEnded() {
+    // Both the "close" and "error" listeners land here; without this guard a
+    // socket that errors then closes decrements the active-call counter twice.
+    if (this.hasEnded) return;
+    this.hasEnded = true;
+
     const endedAt = Date.now();
     const durationMs = endedAt - this.startedAt;
 
