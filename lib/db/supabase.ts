@@ -24,11 +24,14 @@ const CIRCUIT_BREAKER = {
   consecutiveFailures: 0,
   lastFailureAt: 0,
   /** After this many consecutive failures, the circuit opens.
-   *  Set to 1 because DNS ENOTFOUND is deterministic — if the host
-   *  can't be resolved once, it won't resolve on the next call either. */
-  threshold: 1,
-  /** How long (ms) the circuit stays open before allowing a retry probe. */
-  cooldownMs: 30_000,
+   *  A threshold of 1 was too aggressive: it also caught cold starts and
+   *  transient 5xx, so a single blip blacked out all memory for the rest of
+   *  a call. 3 still trips quickly on a real outage (DNS ENOTFOUND fails
+   *  deterministically, so all 3 attempts resolve within one fetch timeout each). */
+  threshold: 3,
+  /** How long (ms) the circuit stays open before allowing a retry probe.
+   *  Kept short so a mid-call blackout costs a turn, not the rest of the call. */
+  cooldownMs: 10_000,
 };
 
 // Subscribe to state change broadcasts from other instances
@@ -97,10 +100,12 @@ export function recordSupabaseFailure(): void {
 }
 
 // ─── Timeout Fetch ───────────────────────────────────────────────────────────
-// Wraps the global fetch with a 5-second AbortController timeout so that
-// DNS failures (ENOTFOUND) don't block the pipeline for 10+ seconds.
+// Wraps the global fetch with an AbortController timeout so that DNS failures
+// (ENOTFOUND) don't block the pipeline for 10+ seconds. 8s clears the documented
+// 2-5s Supabase cold start; at 2s every cold start timed out and tripped the
+// circuit breaker above, which then blocked the retry that would have succeeded.
 
-const FETCH_TIMEOUT_MS = 2_000;
+export const FETCH_TIMEOUT_MS = 8_000;
 
 function timeoutFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();

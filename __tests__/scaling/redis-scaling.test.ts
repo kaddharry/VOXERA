@@ -86,12 +86,20 @@ describe("Distributed Redis Architecture & Telephony Scaling (Issue #13)", () =>
       // Yield to allow Pub/Sub state sync to update other nodes
       await new Promise((resolve) => setTimeout(resolve, 20));
 
-      // Verify circuit is now open (fails since threshold is 1)
+      // Threshold is 3 (BUG-D1) — a single transient blip must NOT open the
+      // circuit, or one network hiccup blacks out memory for the rest of a call.
+      expect(isSupabaseHealthy()).toBe(true);
+
+      recordSupabaseFailure();
+      recordSupabaseFailure();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // Verify circuit is now open after the threshold is reached
       expect(isSupabaseHealthy()).toBe(false);
 
-      // Verify Redis contains the failures
+      // Verify Redis contains the failures (the point of this test: propagation)
       const redisFailures = await redis.get("voxera:cb:consecutive_failures");
-      expect(redisFailures).toBe("1");
+      expect(redisFailures).toBe("3");
     });
   });
 });
