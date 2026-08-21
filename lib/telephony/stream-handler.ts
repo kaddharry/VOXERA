@@ -391,20 +391,6 @@ export class TelephonyStreamHandler {
 
     console.log(`[TelephonyStream] Transcript (${this.callSid}): "${text}"`);
 
-    // Safety net for an unusually slow turn (see CONFIG.realtime) — if
-    // handleTurn() hasn't produced any spoken reply within the threshold,
-    // speak a short filler so the caller isn't sitting in silence on a real
-    // phone call wondering if it dropped. Cleared the moment the first real
-    // clause is spoken (not just when handleTurn() resolves — streaming
-    // means audio can start well before that).
-    let fillerTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      fillerTimer = null;
-      if (myGeneration !== this.generation) return;
-      void this.speakBuffered(CONFIG.realtime.turnFillerPhrase).catch((err) =>
-        console.warn(`[TelephonyStream] Filler synthesis failed for ${this.callSid}:`, err)
-      );
-    }, CONFIG.realtime.turnFillerThresholdMs);
-
     const abortController = new AbortController();
     this.currentAbortController = abortController;
 
@@ -434,7 +420,6 @@ export class TelephonyStreamHandler {
         // Tenant has a custom ElevenLabs voice — no streaming Speak WS
         // support for that path yet, use the original buffered flow.
         const output = await handleTurn(turnInput);
-        if (fillerTimer) clearTimeout(fillerTimer);
         if (myGeneration === this.generation) {
           console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
           await this.speakBuffered(output.reply, output.trace.emotion.current.label, output.trace.agent?.voicePersona ?? undefined);
@@ -457,10 +442,6 @@ export class TelephonyStreamHandler {
         abortSignal: abortController.signal,
         onReplyChunk: (clause) => {
           if (myGeneration !== this.generation) return; // stale — dropped by barge-in
-          if (fillerTimer) {
-            clearTimeout(fillerTimer);
-            fillerTimer = null;
-          }
           this.isSpeaking = true;
           void speakStreamReady.then(() => {
             if (myGeneration !== this.generation) return;
@@ -470,7 +451,6 @@ export class TelephonyStreamHandler {
         },
       });
 
-      if (fillerTimer) clearTimeout(fillerTimer);
       console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
 
       // Deliberately NOT closed here — see ensureSpeakStream()'s doc
@@ -480,7 +460,6 @@ export class TelephonyStreamHandler {
         this.isSpeaking = false;
       }
     } catch (err) {
-      if (fillerTimer) clearTimeout(fillerTimer);
       if (myGeneration !== this.generation) {
         console.log(`[TelephonyStream] Turn cancelled by barge-in for ${this.callSid}.`);
       } else {

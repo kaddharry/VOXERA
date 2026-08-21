@@ -253,20 +253,4 @@ export const CONFIG = {
      */
     personaLockStreakThreshold: 4,
   },
-  realtime: {
-    /**
-     * If a turn (STT-final -> handleTurn() resolving) hasn't produced any
-     * spoken reply within this many ms, server.ts/stream-handler.ts
-     * proactively speak a short "just a moment" filler so the caller isn't
-     * sitting in dead air wondering if the call dropped — then the real
-     * reply follows once it's ready. In steady state this practically
-     * never fires (turns are typically ~1.5-3.5s end to end after this
-     * session's latency fixes), but it's a real safety net for the
-     * occasional slow turn (e.g. a third-party LLM provider's shared-tier
-     * queueing spike, observed live to occasionally run 6-15s with no
-     * error) rather than leaving the caller with silence for that long.
-     */
-    turnFillerThresholdMs: 3000,
-    turnFillerPhrase: "One moment, let me check on that for you.",
-  },
 } as const;
