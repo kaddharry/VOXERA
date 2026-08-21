@@ -40,12 +40,21 @@ export const CONFIG = {
     // over, not just one word group. Both used to be flat 900/1000 — a pure
     // silence timer that alone added up to ~1.9s of dead air per turn before
     // handleTurn() was even invoked, the single biggest fixed latency cost
-    // in the whole pipeline. Lowered conservatively (not down to the
-    // theoretical minimum) because too aggressive a cut reintroduces the
-    // "ordinary mid-sentence thinking pause gets split into two turns" bug
-    // documented in live.ts — tune further only against real call recordings.
+    // in the whole pipeline.
+    //
+    // utteranceEndMs is capped at Deepgram's own hard minimum of 1000ms —
+    // verified live: any value below 1000 gets the WebSocket handshake
+    // itself rejected with a flat HTTP 400 ("Bad Request") before a
+    // connection is ever established, not a soft/ignored clamp. An earlier
+    // version of this config set it to 600 and it looked fine in code
+    // review and typechecked cleanly, but broke STT entirely the moment a
+    // real call/browser session tried to connect — this is a real API
+    // constraint, not a tunable. endpointingMs has no such floor and stays
+    // lowered; tune it further only against real call recordings, since too
+    // aggressive a cut reintroduces the "ordinary mid-sentence thinking
+    // pause gets split into two turns" bug documented in live.ts.
     endpointingMs: 400,
-    utteranceEndMs: 600,
+    utteranceEndMs: 1000,
   },
   deepgram: {
     sttModel: "nova-2-general",
