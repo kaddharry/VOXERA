@@ -25,7 +25,7 @@ config({ path: ".env.local" });
 // turn happens to be first.
 void warmupModels();
 
-const PORT = 3001;
+const PORT = process.env.REALTIME_SERVER_PORT ? Number(process.env.REALTIME_SERVER_PORT) : 3001;
 const wss = new WebSocketServer({ port: PORT });
 
 // Sample rate for browser TTS playback. Not constrained by Twilio's 8kHz
