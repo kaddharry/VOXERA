@@ -211,18 +211,46 @@ export function groupMemoriesIntoTimeline(memories: MemoryRecord[]): TimelineEve
   return events.sort((a, b) => b.startDate - a.startDate);
 }
 
-export async function retrieve(req: RetrievalRequest): Promise<RetrievedContext> {
-  const queryEmb = await embed(req.queryText, { isQuery: true });
-  const stmTurns = await stm.get(req.sessionId);
+export type MemoryCandidate = { rec: MemoryRecord; sim: number };
+
+/**
+ * Lets a caller that already fetched the same tier searches (e.g. the
+ * orchestrator's novelty-score lookup) hand those results straight to
+ * retrieve() instead of it re-querying pgvector for the exact same
+ * MTM/LTM_user candidates a moment later. Also skips the internal stm.get()
+ * when the caller already has the session history. Omit entirely for the
+ * original behavior (used by direct/test callers).
+ */
+export interface RetrievePreFetched {
+  stmTurns?: Utterance[];
+  mtm?: MemoryCandidate[];
+  ltmUser?: MemoryCandidate[];
+  ltmClient?: MemoryCandidate[];
+}
+
+export async function retrieve(req: RetrievalRequest, preFetched?: RetrievePreFetched): Promise<RetrievedContext> {
   const boostEmotion = req.emotion.flags.increasing_distress || req.emotion.flags.repeated_frustration;
 
-  // Fetch candidate sets with pgvector similarity calculated in database
-  const candidateK = 20;
-  const [mtmResults, ltmUserResults, ltmClientResults] = await Promise.all([
-    vectorStore.search({ tier: "MTM", userId: req.userId, clientId: req.clientId, query: queryEmb, topK: candidateK }),
-    vectorStore.search({ tier: "LTM_user", userId: req.userId, clientId: req.clientId, query: queryEmb, topK: candidateK }),
-    vectorStore.search({ tier: "LTM_client", userId: null, clientId: req.clientId, query: queryEmb, topK: candidateK }),
-  ]);
+  const stmTurns = preFetched?.stmTurns ?? (await stm.get(req.sessionId));
+
+  let mtmResults: MemoryCandidate[];
+  let ltmUserResults: MemoryCandidate[];
+  let ltmClientResults: MemoryCandidate[];
+
+  if (preFetched?.mtm && preFetched?.ltmUser && preFetched?.ltmClient) {
+    mtmResults = preFetched.mtm;
+    ltmUserResults = preFetched.ltmUser;
+    ltmClientResults = preFetched.ltmClient;
+  } else {
+    const queryEmb = await embed(req.queryText, { isQuery: true });
+    // Fetch candidate sets with pgvector similarity calculated in database
+    const candidateK = 20;
+    [mtmResults, ltmUserResults, ltmClientResults] = await Promise.all([
+      vectorStore.search({ tier: "MTM", userId: req.userId, clientId: req.clientId, query: queryEmb, topK: candidateK }),
+      vectorStore.search({ tier: "LTM_user", userId: req.userId, clientId: req.clientId, query: queryEmb, topK: candidateK }),
+      vectorStore.search({ tier: "LTM_client", userId: null, clientId: req.clientId, query: queryEmb, topK: candidateK }),
+    ]);
+  }
 
   // Pre-decay candidates and update in DB asynchronously
   const preDecay = (cands: Array<{ rec: MemoryRecord; sim: number }>) => {

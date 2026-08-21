@@ -32,6 +32,30 @@ export const CONFIG = {
     minEmotionConfidence: 0.5,
     minRetrievalScore: 0.4,
   },
+  stt: {
+    // Deepgram live-transcription turn-detection knobs (lib/deepgram/live.ts).
+    // `endpointing` is how long a word group must go quiet before Deepgram
+    // marks it is_final; `utteranceEndMs` is the additional trailing-silence
+    // gap (needs vad_events=true) that decides the CALLER'S TURN is actually
+    // over, not just one word group. Both used to be flat 900/1000 — a pure
+    // silence timer that alone added up to ~1.9s of dead air per turn before
+    // handleTurn() was even invoked, the single biggest fixed latency cost
+    // in the whole pipeline.
+    //
+    // utteranceEndMs is capped at Deepgram's own hard minimum of 1000ms —
+    // verified live: any value below 1000 gets the WebSocket handshake
+    // itself rejected with a flat HTTP 400 ("Bad Request") before a
+    // connection is ever established, not a soft/ignored clamp. An earlier
+    // version of this config set it to 600 and it looked fine in code
+    // review and typechecked cleanly, but broke STT entirely the moment a
+    // real call/browser session tried to connect — this is a real API
+    // constraint, not a tunable. endpointingMs has no such floor and stays
+    // lowered; tune it further only against real call recordings, since too
+    // aggressive a cut reintroduces the "ordinary mid-sentence thinking
+    // pause gets split into two turns" bug documented in live.ts.
+    endpointingMs: 400,
+    utteranceEndMs: 1000,
+  },
   deepgram: {
     sttModel: "nova-2-general",
     sttTier: "enhanced",
@@ -62,26 +86,28 @@ export const CONFIG = {
       {
         name: "groq",
         baseURL: "https://api.groq.com/openai/v1",
-        // Verified live against this account's actual `GET /openai/v1/models`
-        // catalog (not assumed) — "llama-3.1-8b-instant" 404'd despite being
-        // Groq's commonly-documented small/fast model, meaning it isn't on
-        // this account/API version. Of what's actually available,
-        // "allam-2-7b" is smaller but doesn't support tool calling at all
-        // (a hard 400 from Groq, verified live) — a non-starter, since
-        // every live turn needs tools. "openai/gpt-oss-20b" is the smallest
-        // model that both exists on this account AND supports tool calling
-        // (~6x smaller than "openai/gpt-oss-120b", the previous default).
-        // It IS a reasoning model though — verified live it was silently
-        // spending most/all of maxOutputTokens on a hidden `reasoning` field
-        // before ever writing `content`, which is exactly what surfaced as
-        // "[LLM] Tool-call loop exhausted without a final reply" and
-        // occasional visibly truncated replies once this became the
-        // primary provider. `reasoningEffort: "low"` below (Groq/OpenAI's
-        // own supported knob for gpt-oss models) fixes that at the source
-        // rather than just paying for a bigger token budget.
-        model: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
+        // Latency-overhaul finding, verified live against this account's
+        // actual catalog (`GET /openai/v1/models`) and a real streaming
+        // end-to-end harness (scripts/e2e_latency_test.ts): every
+        // tool-calling-capable model this account can currently reach
+        // ("openai/gpt-oss-20b"/"120b", previously the default) is a
+        // reasoning model. Even at `reasoning_effort: "low"`, gpt-oss-20b
+        // was repeatedly measured spending 1.5-5+ seconds of real wall time
+        // on invisible reasoning tokens before ever emitting the first
+        // VISIBLE content token against this codebase's actual system
+        // prompts — the streaming pipeline itself delivered that content
+        // instantly once the model finally produced it, so this was
+        // unambiguously model "thinking" time, not a pipeline bottleneck.
+        // "qwen/qwen3.6-27b" supports `reasoning_effort: "none"` (a value
+        // gpt-oss rejects), which measured a consistent ~240-400ms
+        // time-to-first-content-token on the identical real prompts/tools —
+        // still correctly calls tools (verified live) — a 4-10x improvement
+        // with no code change beyond the model/param swap. "allam-2-7b" is
+        // faster still (~100ms) but doesn't support tool calling at all — a
+        // non-starter since every live turn needs tools.
+        model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
         envKey: "GROQ_API_KEYS",
-        reasoningEffort: "low" as const,
+        reasoningEffort: "none" as const,
       },
       {
         name: "zenmux",
@@ -90,11 +116,20 @@ export const CONFIG = {
         envKey: "ZENMUX_API_KEY",
       },
       { name: "openai", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", envKey: "OPENAI_API_KEY" },
-    ] as Array<{ name: string; baseURL: string; model: string; envKey: string; reasoningEffort?: "low" | "medium" | "high" }>,
+    ] as Array<{ name: string; baseURL: string; model: string; envKey: string; reasoningEffort?: "none" | "low" | "medium" | "high" }>,
     maxInputTokens: 6000,
-    // Kept tight for voice/realtime turns — long completions add seconds of
-    // TTS-wait latency and break the "feels like a phone call" pacing.
-    maxOutputTokens: 160,
+    // Raised from 160 — real replies were measured well under the old cap
+    // (150-260 chars, ~50-80 tokens) even for questions that should've
+    // gotten a fuller answer, so the shortness wasn't token truncation, it
+    // was the CORE RULES' voice-style instruction defaulting to "1-2 short
+    // sentences" for everything (see context.ts rule #4, now intent-aware:
+    // quick factual questions stay short, open-ended ones like "tell me
+    // about your experience" get a real multi-sentence answer). This is
+    // headroom for that fuller answer to not get cut off mid-sentence with
+    // streaming enabled — TTS starts on clause 1 immediately either way, so
+    // a longer reply no longer means a longer wait before the caller hears
+    // anything, just a slightly longer total reply.
+    maxOutputTokens: 300,
   },
   taskCritical: [
     "payment",
@@ -140,6 +175,27 @@ export const CONFIG = {
      * multi-hundred-page document could still make an upload request hang
      * far too long. */
     ocrMaxPages: 15,
+    /**
+     * Minimum acceptable Tesseract OCR confidence (0-100, its own reported
+     * mean confidence across recognized text) before the extraction is
+     * trusted enough to ingest. Added after a real tenant upload (a
+     * decorative/stylized restaurant menu image) sailed through with no
+     * quality check at all — Tesseract happily returned text like "Black
+     * Paper ... $27" (garbled from what's presumably "Black Pepper") and,
+     * for a second page region, near-total noise ("ANS oN 'e S atl TA |
+     * ARS") — both got embedded and stored as trusted LTM_client evidence,
+     * so the live agent cited genuinely unreadable OCR noise as fact and
+     * gave a different, wrong reading of the same garbled text on every
+     * regeneration. Below this threshold, extractPdfText() throws instead
+     * of returning the text, which ingestDocument() already turns into a
+     * clear "failed" document status with an error message — the same
+     * treatment as "no extractable text" — rather than silently ingesting
+     * something no one should trust as fact. 55 is deliberately not very
+     * strict — real menus/flyers with an ordinary photo/scan still clear
+     * this comfortably; it's aimed at "this is mostly noise," not "this
+     * has a few OCR misreads."
+     */
+    minOcrConfidence: 55,
     /**
      * Above this many chunks for one document, group them into
      * "stacks" of ~stackGroupSize chunks each and generate a one-line LLM
@@ -226,21 +282,5 @@ export const CONFIG = {
      * override in resolvePersonaLock().
      */
     personaLockStreakThreshold: 4,
-  },
-  realtime: {
-    /**
-     * If a turn (STT-final -> handleTurn() resolving) hasn't produced any
-     * spoken reply within this many ms, server.ts/stream-handler.ts
-     * proactively speak a short "just a moment" filler so the caller isn't
-     * sitting in dead air wondering if the call dropped — then the real
-     * reply follows once it's ready. In steady state this practically
-     * never fires (turns are typically ~1.5-3.5s end to end after this
-     * session's latency fixes), but it's a real safety net for the
-     * occasional slow turn (e.g. a third-party LLM provider's shared-tier
-     * queueing spike, observed live to occasionally run 6-15s with no
-     * error) rather than leaving the caller with silence for that long.
-     */
-    turnFillerThresholdMs: 3000,
-    turnFillerPhrase: "One moment, let me check on that for you.",
   },
 } as const;

@@ -2,12 +2,17 @@ import { WebSocketServer, WebSocket } from "ws";
 import { nanoid } from "nanoid";
 import { DeepgramLiveWrapper } from "./lib/deepgram/live";
 import { handleTurn } from "./lib/agent/orchestrator";
-import { synthesize } from "./lib/deepgram/tts";
+import { synthesize, resolveVoiceModel, getClientVoiceSettings } from "./lib/deepgram/tts";
+import { DeepgramSpeakStream } from "./lib/deepgram/tts-stream";
+import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "./lib/emotion/tts-params";
+import { getAgentWithTenant } from "./lib/db/agents";
+import { supabase } from "./lib/db/supabase";
 import { extractAcousticFeatures } from "./lib/audio/acoustic";
 import { int16ToFloat32Pcm } from "./lib/emotion/local-audio-detect";
 import { DEMO, ensureSeeded } from "./lib/bootstrap";
 import { CONFIG } from "./lib/config";
 import { config } from "dotenv";
+import { warmupModels } from "./lib/warmup";
 
 // Belt-and-suspenders env loading: `npm run server` passes `--env-file=.env.local`
 // to tsx/node directly, which is what actually matters — ES module imports are
@@ -17,8 +22,19 @@ import { config } from "dotenv";
 // permanently capture an empty env var if dotenv only loaded here.
 config({ path: ".env.local" });
 
-const PORT = 3001;
+// See lib/warmup.ts — avoids paying ONNX model cold-load cost on whichever
+// turn happens to be first.
+void warmupModels();
+
+const PORT = process.env.REALTIME_SERVER_PORT ? Number(process.env.REALTIME_SERVER_PORT) : 3001;
 const wss = new WebSocketServer({ port: PORT });
+
+// Sample rate for browser TTS playback. Not constrained by Twilio's 8kHz
+// requirement (unlike lib/telephony/stream-handler.ts) — the browser's Web
+// Audio API resamples an AudioBuffer at any declared rate transparently, so
+// this is just "what quality does Deepgram render at," picked for clarity
+// over telephony-grade compression.
+const BROWSER_TTS_SAMPLE_RATE = 24000;
 
 console.log(`\n🚀 VOXERA Real-Time Audio Server starting on ws://localhost:${PORT}`);
 
@@ -57,13 +73,66 @@ wss.on("connection", async (ws: WebSocket, request) => {
 
   // Bumped on every user-initiated barge-in. A reply that started synthesizing
   // before the bump is stale by the time it resolves — drop it instead of
-  // playing audio over what the user is now saying.
+  // playing audio over what the user is now saying. Same generation-counter
+  // pattern as lib/telephony/stream-handler.ts.
   let generation = 0;
   let turnAudioChunks: Buffer[] = [];
   // Manual acoustic-engine calibration knob (-1..1, default 0), set via the
   // "set_sensitivity_bias" control message — see detectAudioEmotion()'s
   // opts doc in lib/emotion/audio-emotion.ts. Persists for this connection.
   let sensitivityBias = 0;
+
+  // Cancels the in-flight LLM generation for the current turn on barge-in.
+  let currentAbortController: AbortController | null = null;
+  // ONE Speak connection reused for the whole session (see
+  // ensureSpeakStream() in stream-handler.ts for the same pattern and its
+  // rationale — a fresh handshake per turn measured 900ms-5.3s live).
+  let currentSpeakStream: DeepgramSpeakStream | null = null;
+  let speakStreamReadyPromise: Promise<void> | null = null;
+  let voiceModel: string = CONFIG.deepgram.ttsModel;
+  let useBufferedTts = false;
+
+  function ensureSpeakStream(): { stream: DeepgramSpeakStream; ready: Promise<void> } {
+    if (!currentSpeakStream) {
+      const stream = new DeepgramSpeakStream(
+        { model: voiceModel, encoding: "linear16", sampleRate: BROWSER_TTS_SAMPLE_RATE },
+        () => {} // rebound per-turn via setAudioHandler before first use
+      );
+      currentSpeakStream = stream;
+      speakStreamReadyPromise = stream.connect().catch((err) => {
+        console.error(`[Server] Speak stream connect failed for ${sessionId}:`, err);
+        currentSpeakStream = null;
+        speakStreamReadyPromise = null;
+      });
+    }
+    return { stream: currentSpeakStream, ready: speakStreamReadyPromise! };
+  }
+
+  // Resolved once per connection (agent voice persona / tenant ElevenLabs
+  // override), same rationale as stream-handler.ts's setupVoiceForCall() —
+  // avoids a per-turn DB round trip, and kicked off here (not awaited yet)
+  // so it overlaps with ensureSeeded()/Deepgram STT connect below.
+  const voiceSetupPromise = (async () => {
+    try {
+      const [agentInfo, voiceSettings] = await Promise.all([
+        agentId ? getAgentWithTenant(supabase, agentId).catch(() => null) : Promise.resolve(null),
+        getClientVoiceSettings(clientId).catch(() => null),
+      ]);
+      if (agentInfo?.voice_persona) {
+        voiceModel = resolveVoiceModel(agentInfo.voice_persona);
+      }
+      if (voiceSettings?.provider === "elevenlabs" && voiceSettings.voiceId) {
+        // Deepgram's streaming Speak WS doesn't cover a tenant's custom
+        // cloned ElevenLabs voice — fall back to the original buffered
+        // synth-then-send path for this session only.
+        useBufferedTts = true;
+      } else {
+        ensureSpeakStream();
+      }
+    } catch (err) {
+      console.warn(`[Server] Voice setup failed for ${sessionId}, using defaults:`, err);
+    }
+  })();
 
   // Initialize Deepgram Live stream wrapper (16kHz — browser mic default)
   const dg = new DeepgramLiveWrapper((text, isFinal) => {
@@ -98,6 +167,9 @@ wss.on("connection", async (ws: WebSocket, request) => {
     // approximates it well enough for the pipeline visual's "Listen" stage.
     const sttMs = Math.round((turnPcm.length / 2 / 16000) * 1000);
 
+    const abortController = new AbortController();
+    currentAbortController = abortController;
+
     try {
       console.log(`[STT] User: "${text}"`);
 
@@ -110,32 +182,9 @@ wss.on("connection", async (ws: WebSocket, request) => {
       // model's native sample rate, so no resampling is needed here.
       const rawAudioPcm16k = turnPcm.length > 0 ? int16ToFloat32Pcm(turnPcm) : undefined;
 
-      // Safety net for an unusually slow turn (see CONFIG.realtime) — if
-      // handleTurn() hasn't resolved within the threshold, speak a short
-      // filler so the caller isn't sitting in silence wondering if the
-      // call dropped, then continue waiting for the real reply. Cleared
-      // the moment handleTurn() actually resolves, so this never fires on
-      // an ordinary-latency turn.
-      let fillerTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-        fillerTimer = null;
-        if (myGeneration !== generation) return;
-        void synthesize(CONFIG.realtime.turnFillerPhrase, { clientId })
-          .then((audio) => {
-            if (myGeneration !== generation) return;
-            ws.send(
-              JSON.stringify({
-                type: "reply_audio",
-                turnId: `filler-${nanoid(6)}`,
-                audio: Buffer.from(audio).toString("base64"),
-                mime: "audio/mpeg",
-                isFiller: true,
-              })
-            );
-          })
-          .catch((err) => console.warn("[Server] Filler synthesis failed:", err));
-      }, CONFIG.realtime.turnFillerThresholdMs);
+      await voiceSetupPromise;
 
-      const output = await handleTurn({
+      const turnInput = {
         sessionId,
         userId: DEMO.userId,
         clientId,
@@ -149,72 +198,103 @@ wss.on("connection", async (ws: WebSocket, request) => {
         // live test drawer can show the same diagnostics the Text demo does,
         // not just the fused label.
         diagnostics: true,
+      };
+
+      // Shared id lets the client correlate reply_text and reply_audio_chunk
+      // (sent separately, further below) back to the same turn.
+      const replyTurnId = nanoid(8);
+
+      if (useBufferedTts) {
+        // Tenant has a custom ElevenLabs voice — no streaming Speak WS
+        // support for that path yet, use the original buffered flow.
+        const output = await handleTurn(turnInput);
+        if (myGeneration !== generation) {
+          console.log(`[Server] Dropping stale reply (generation ${myGeneration} != ${generation}).`);
+          return;
+        }
+        console.log(`[LLM] Reply: "${output.reply}"`);
+        if (output.trace.timings) output.trace.timings.sttMs = sttMs;
+        ws.send(JSON.stringify({ type: "reply_text", turnId: replyTurnId, text: output.reply, trace: output.trace }));
+
+        const ttsStart = Date.now();
+        const audio = await synthesize(output.reply, {
+          policy: output.trace.policy,
+          emotion: output.trace.emotion.current.label,
+          persona: output.trace.agent?.voicePersona ?? undefined,
+          clientId,
+          callerText: text,
+        });
+        const ttsMs = Date.now() - ttsStart;
+        if (myGeneration !== generation) return;
+        ws.send(JSON.stringify({ type: "reply_audio", turnId: replyTurnId, ttsMs, audio: Buffer.from(audio).toString("base64"), mime: "audio/mpeg" }));
+        return;
+      }
+
+      const { stream: speakStream, ready: speakStreamReady } = ensureSpeakStream();
+      speakStream.setAudioHandler((audioChunk) => {
+        if (myGeneration !== generation) return; // stale — dropped by barge-in
+        ws.send(
+          JSON.stringify({
+            type: "reply_audio_chunk",
+            turnId: replyTurnId,
+            audio: audioChunk.toString("base64"),
+            sampleRate: BROWSER_TTS_SAMPLE_RATE,
+          })
+        );
       });
 
-      if (fillerTimer) clearTimeout(fillerTimer);
+      // Resolved via onEmotionResolved below, well before the first clause
+      // arrives — lets each streamed clause get the same adaptive-tone
+      // pause shaping (BUG-V1) the buffered path applies to the whole
+      // reply at once.
+      let prosodyParams: TTSProsodyParams | null = null;
+
+      const output = await handleTurn(turnInput, {
+        abortSignal: abortController.signal,
+        onEmotionResolved: (emotion, policy) => {
+          prosodyParams = getEmotionTTSParams(emotion, policy, text);
+        },
+        onReplyChunk: (clause) => {
+          if (myGeneration !== generation) return; // stale — dropped by barge-in
+          const shaped = prosodyParams ? applyEmotionProsody(clause, prosodyParams) : clause;
+          void speakStreamReady.then(() => {
+            if (myGeneration !== generation) return;
+            speakStream.sendText(shaped);
+            speakStream.flush();
+          });
+        },
+      });
 
       if (myGeneration !== generation) {
-        // A barge-in happened while this turn was being generated — the
-        // user has already moved on, don't speak a stale reply.
         console.log(`[Server] Dropping stale reply (generation ${myGeneration} != ${generation}).`);
         return;
       }
 
       console.log(`[LLM] Reply: "${output.reply}"`);
+      if (output.trace.timings) output.trace.timings.sttMs = sttMs;
 
-      // Shared id lets the client correlate reply_text and reply_audio (sent
-      // separately, further below) back to the same turn — needed to merge
-      // ttsMs into the right turn's timings once synthesis finishes.
-      const replyTurnId = nanoid(8);
-      if (output.trace.timings) {
-        output.trace.timings.sttMs = sttMs;
-      }
-
-      // Send the reply text (and emotion/engine trace for the dashboard)
-      // immediately so the transcript feels instant, then synthesize audio.
-      ws.send(
-        JSON.stringify({
-          type: "reply_text",
-          turnId: replyTurnId,
-          text: output.reply,
-          trace: output.trace,
-        })
-      );
-
-      const ttsStart = Date.now();
-      const audio = await synthesize(output.reply, {
-        policy: output.trace.policy,
-        emotion: output.trace.emotion.current.label,
-        persona: output.trace.agent?.voicePersona ?? undefined,
-        clientId,
-        callerText: text,
-      });
-      const ttsMs = Date.now() - ttsStart;
-
-      if (myGeneration !== generation) {
-        console.log(`[Server] Dropping stale reply audio (generation ${myGeneration} != ${generation}).`);
-        return;
-      }
-
-      ws.send(
-        JSON.stringify({
-          type: "reply_audio",
-          turnId: replyTurnId,
-          ttsMs,
-          audio: Buffer.from(audio).toString("base64"),
-          mime: "audio/mpeg",
-        })
-      );
+      // Sent after the clauses have already started streaming as audio —
+      // the transcript/trace panel updates a beat behind the caller's first
+      // words, same tradeoff lib/telephony/stream-handler.ts makes. Not
+      // synthesizing again here (unlike the pre-streaming version) — every
+      // clause's audio (already prosody-shaped — see onReplyChunk above)
+      // was sent as it was generated.
+      ws.send(JSON.stringify({ type: "reply_text", turnId: replyTurnId, text: output.reply, trace: output.trace }));
     } catch (err) {
-      console.error("[Server] Turn error:", err);
-      ws.send(
-        JSON.stringify({
-          type: "error",
-          message: "Something went wrong generating a reply. Please try again.",
-        })
-      );
+      if (myGeneration !== generation) {
+        console.log(`[Server] Turn cancelled by barge-in for ${sessionId}.`);
+      } else {
+        console.error("[Server] Turn error:", err);
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: "Something went wrong generating a reply. Please try again.",
+          })
+        );
+      }
     } finally {
       isBusy = false;
+      currentAbortController = null;
       ws.send(JSON.stringify({ type: "turn_end" }));
     }
   }
@@ -276,6 +356,10 @@ wss.on("connection", async (ws: WebSocket, request) => {
           generation++;
           isBusy = false;
           turnAudioChunks = [];
+          currentAbortController?.abort();
+          // clear() only, not close() — the connection stays open for the
+          // next turn (see ensureSpeakStream()).
+          currentSpeakStream?.clear();
           console.log(`[Server] Barge-in — generation now ${generation}.`);
         } else if (payload.type === "set_sensitivity_bias") {
           const value = Number(payload.value);
@@ -293,11 +377,13 @@ wss.on("connection", async (ws: WebSocket, request) => {
   ws.on("close", (code, reason) => {
     console.log(`[Server] Client disconnected (session ${sessionId}), code=${code}, reason="${reason.toString()}", audioChunksReceived=${audioChunkCount}.`);
     dg.close();
+    currentSpeakStream?.close();
   });
 
   ws.on("error", (err) => {
     console.error("[Server] Connection error:", err);
     dg.close();
+    currentSpeakStream?.close();
   });
 
   // Now that every handler above is attached and Deepgram is already

@@ -4,6 +4,13 @@ import type { Socket } from "net";
 import next from "next";
 import { WebSocketServer } from "ws";
 import { TelephonyStreamHandler } from "./lib/telephony/stream-handler";
+import { warmupModels } from "./lib/warmup";
+
+// Kicked off as early as possible in process lifetime — see warmup.ts's doc
+// comment. Not awaited: server startup shouldn't block on it, but starting
+// it here (before app.prepare() even begins) gives it the most possible
+// head start against the first real call.
+void warmupModels();
 
 /**
  * Local dev MUST run this via `npm run dev:full`, which passes

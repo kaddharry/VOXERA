@@ -15,10 +15,10 @@ import { retrieve, topScore } from "../memory/retrieval";
 import { stm } from "../memory/stm";
 import { vectorStore } from "../memory/store";
 import { writeMemory } from "../memory/writer";
-import type { Utterance, EmotionSignal, AcousticFeatures } from "../types";
+import type { Utterance, EmotionSignal, EmotionLabel, AcousticFeatures, PolicyDirectives } from "../types";
 import { embed } from "../util/embed";
 import { buildLLMContext } from "./context";
-import { guardOutput } from "./guard";
+import { guardOutput, guardBeforeLLM, guardOpeningClause, cleanClause, guardTrailingClause, type GuardResult } from "./guard";
 import { guardInput, type InputGuardResult } from "./input-guard";
 import { generateReply } from "./llm";
 import { decidePolicy } from "./policy";
@@ -126,7 +126,28 @@ export interface TurnOutput {
   trace: TurnTrace;
 }
 
-export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
+export interface HandleTurnOpts {
+  /** When provided, the reply is streamed clause-by-clause as soon as each
+   * one is ready (and safety-guarded — see lib/agent/guard.ts's clause-safe
+   * helpers) instead of only becoming available once the whole turn
+   * resolves. This is what lets a telephony caller start hearing a reply
+   * while the LLM is still generating the rest of it. Omit entirely for the
+   * original all-at-once behavior (used by /api/turn, admin "try-call",
+   * and existing callers that don't need streaming). */
+  onReplyChunk?: (clause: string) => void;
+  /** Cancels the in-flight LLM generation (used for barge-in). Only
+   * meaningful together with onReplyChunk. */
+  abortSignal?: AbortSignal;
+  /** Fires once — as soon as this turn's emotion label and policy
+   * directives are resolved, well before the LLM call even starts — so a
+   * streaming caller can compute TTS prosody params (lib/emotion/tts-
+   * params.ts's getEmotionTTSParams) up front and apply them to each
+   * clause as it streams in, instead of only finding out the emotion/
+   * policy once the whole turn (and all its audio) is already done. */
+  onEmotionResolved?: (emotion: EmotionLabel, policy: PolicyDirectives) => void;
+}
+
+export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promise<TurnOutput> {
   const turnStart = Date.now();
   const ts = turnStart;
   const sttConf = input.sttConfidence ?? 1;
@@ -137,26 +158,38 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   // context below. Falls back silently to the plain clientId/DEMO agent on
   // any lookup failure (unknown id, Supabase unreachable) rather than
   // failing the turn.
+  //
+  // Kicked off here but NOT awaited yet — this is a Supabase round trip that
+  // doesn't depend on (or get depended on by) detectTextEmotion/embed below,
+  // so it runs concurrently with them instead of serializing in front of
+  // them. Only actually awaited once its result (the resolved clientId) is
+  // needed, further down.
+  const agentInfoPromise = input.agentId
+    ? getAgentWithTenant(supabaseService, input.agentId).catch((err) => {
+        console.warn("[Orchestrator] Failed to resolve agentId, using default clientId:", err);
+        return null;
+      })
+    : Promise.resolve(null);
   let customInstructions: string | undefined;
   let resolvedAgent: { id: string; name: string; voicePersona?: string | null } | undefined;
-  if (input.agentId) {
-    try {
-      const agentInfo = await getAgentWithTenant(supabaseService, input.agentId);
-      if (agentInfo) {
-        input.clientId = agentInfo.tenant_auth_user_id;
-        customInstructions = agentInfo.system_prompt ?? undefined;
-        resolvedAgent = { id: agentInfo.id, name: agentInfo.name, voicePersona: agentInfo.voice_persona };
-      }
-    } catch (err) {
-      console.warn("[Orchestrator] Failed to resolve agentId, using default clientId:", err);
+  function applyAgentInfo(agentInfo: Awaited<typeof agentInfoPromise>) {
+    if (agentInfo) {
+      input.clientId = agentInfo.tenant_auth_user_id;
+      customInstructions = agentInfo.system_prompt ?? undefined;
+      resolvedAgent = { id: agentInfo.id, name: agentInfo.name, voicePersona: agentInfo.voice_persona };
     }
   }
 
-  const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
-
   // ── Issue #14: Pre-LLM Input Guard ─────────────────────────────────────
+  // Synchronous (no I/O) — safe to run before agent resolution finishes.
   const inputGuard = guardInput(input.transcript);
   if (!inputGuard.safe) {
+    // Blocked-input logging must still land under the resolved tenant's
+    // clientId (not whatever raw clientId was passed in), same as before
+    // this function was reordered for concurrency — so await agent
+    // resolution here specifically, on this rare path only.
+    applyAgentInfo(await agentInfoPromise);
+    const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
     console.warn(
       `[Orchestrator] Input guard BLOCKED (score=${inputGuard.threatScore.toFixed(2)}, ` +
       `patterns=[${inputGuard.patterns.join(", ")}]): "${input.transcript.slice(0, 80)}..."`
@@ -201,7 +234,20 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   // routing (Local ONNX > HF > Lexicon — see detect.ts), so its result is
   // already available on textEmoResult.localOnnx for the diagnostics
   // breakdown below — no need for a second, separate Local ONNX call here.
-  const textEmoResult = await detectTextEmotion(input.transcript);
+  //
+  // detectTextEmotion() and embed() both only depend on input.transcript —
+  // neither needs the resolved clientId — so they run concurrently with the
+  // still-in-flight agentInfoPromise instead of waiting behind it. This is
+  // the join point: whichever of the three is slowest determines how long
+  // this section takes, instead of the sum of all three.
+  const [agentInfo, textEmoResult, queryEmbedding] = await Promise.all([
+    agentInfoPromise,
+    detectTextEmotion(input.transcript),
+    embed(input.transcript, { isQuery: true }),
+  ]);
+  applyAgentInfo(agentInfo);
+  const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
+
   const textEmo = textEmoResult.primary;
   const audioEmo = input.acousticFeatures
     ? detectAudioEmotion(input.acousticFeatures, { sensitivityBias: input.sensitivityBias })
@@ -218,26 +264,21 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   };
   await stm.push(input.sessionId, userTurn, input.clientId);
 
-
-  const queryEmbedding = await embed(input.transcript, { isQuery: true });
-  const [ltmUserResults, mtmSearchResults] = await Promise.all([
-    vectorStore.search({
-      tier: "LTM_user",
-      userId: input.userId,
-      clientId: input.clientId,
-      query: queryEmbedding,
-      topK: 10,
-    }),
-    vectorStore.search({
-      tier: "MTM",
-      userId: input.userId,
-      clientId: input.clientId,
-      query: queryEmbedding,
-      topK: 20,
-    }),
+  // Single shared candidate fetch for all three memory tiers — this used to
+  // be a separate LTM_user/MTM search here (just for the novelty score
+  // below) PLUS retrieve() re-running the same two searches from scratch a
+  // moment later (further down) plus its own LTM_client search. Fetching
+  // once and handing the same candidates to both the novelty calc and
+  // retrieve() (via its preFetched param) cuts 2 duplicate pgvector round
+  // trips per turn down to zero.
+  const candidateK = 20;
+  const [mtmCandidates, ltmUserCandidates, ltmClientCandidates] = await Promise.all([
+    vectorStore.search({ tier: "MTM", userId: input.userId, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
+    vectorStore.search({ tier: "LTM_user", userId: input.userId, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
+    vectorStore.search({ tier: "LTM_client", userId: null, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
   ]);
-  const ltmUserAll = ltmUserResults.map((r) => r.rec);
-  const mtmExisting = mtmSearchResults.map((r) => r.rec);
+  const ltmUserAll = ltmUserCandidates.map((r) => r.rec);
+  const mtmExisting = mtmCandidates.map((r) => r.rec);
 
   const sttHistory = await stm.get(input.sessionId);
   const emotionCtx = buildEmotionContext({
@@ -352,13 +393,18 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
       emotion: emotionCtx,
       importance: I,
     }),
-    retrieve({
-      sessionId: input.sessionId,
-      userId: input.userId,
-      clientId: input.clientId,
-      queryText: input.transcript,
-      emotion: emotionCtx,
-    }),
+    retrieve(
+      {
+        sessionId: input.sessionId,
+        userId: input.userId,
+        clientId: input.clientId,
+        queryText: input.transcript,
+        emotion: emotionCtx,
+      },
+      // Hand retrieve() the exact candidates/history already fetched above
+      // instead of letting it re-query pgvector and stm.get() a second time.
+      { stmTurns: sttHistory, mtm: mtmCandidates, ltmUser: ltmUserCandidates, ltmClient: ltmClientCandidates }
+    ),
   ]);
   const retrievalMs = Date.now() - retrievalStart;
 
@@ -375,6 +421,7 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   const ltmClientSnippets = retrieved.ltmClient.map(toSnippet);
 
   const policy = decidePolicy(emotionCtx);
+  opts?.onEmotionResolved?.(fused.label, policy);
 
   void logSessionEvent(makeEvent(evBase, "memory_write", {
     tier: memoryWrite.tier,
@@ -421,24 +468,85 @@ export async function handleTurn(input: TurnInput): Promise<TurnOutput> {
   });
 
   const llmStart = Date.now();
-  const llmReply = await generateReply({
-    system: llmContext.system,
-    user: llmContext.user,
-    clientId: input.clientId,
-    sessionId: input.sessionId,
-    userId: input.userId,
-  });
-  const llmMs = Date.now() - llmStart;
+  let llmReply;
+  let guarded: GuardResult;
 
-  const guarded = guardOutput({
-    reply: llmReply.text,
-    allowedCitations: llmContext.citations,
-    policy,
-    sttConfidence: sttConf,
-    topRetrievalScore: topScore(retrieved),
-    minStt: CONFIG.gates.minSttConfidence,
-    minRetrieval: CONFIG.gates.minRetrievalScore,
-  });
+  if (opts?.onReplyChunk) {
+    const onReplyChunk = opts.onReplyChunk;
+    // STT-confidence gate is knowable before the LLM is even called — skip
+    // the network round trip entirely and speak the clarification directly,
+    // matching what guardOutput's whole-text version would have replaced
+    // the reply with anyway (see guard.ts's clause-safe helpers doc).
+    const beforeGate = guardBeforeLLM({ sttConfidence: sttConf, minStt: CONFIG.gates.minSttConfidence });
+    if (beforeGate) {
+      onReplyChunk(beforeGate.deflection);
+      llmReply = { text: beforeGate.deflection, model: "none", usedLive: false };
+      guarded = { ok: false, reasons: beforeGate.reasons, cleaned: beforeGate.deflection };
+    } else {
+      let clauseCount = 0;
+      let spokenSoFar = "";
+      const reasons: string[] = [];
+      const speak = (clause: string) => {
+        onReplyChunk(clause);
+        spokenSoFar += (spokenSoFar ? " " : "") + clause;
+      };
+
+      llmReply = await generateReply({
+        system: llmContext.system,
+        user: llmContext.user,
+        clientId: input.clientId,
+        sessionId: input.sessionId,
+        userId: input.userId,
+        abortSignal: opts.abortSignal,
+        onClause: (rawClause) => {
+          const { cleaned, reasons: cleanReasons } = cleanClause(rawClause, llmContext.citations);
+          reasons.push(...cleanReasons);
+          if (!cleaned) return;
+
+          if (clauseCount === 0) {
+            const { leadingClauses, reasons: openingReasons } = guardOpeningClause({
+              firstClause: cleaned,
+              policy,
+              topRetrievalScore: topScore(retrieved),
+              minRetrieval: CONFIG.gates.minRetrievalScore,
+              allowedCitations: llmContext.citations,
+            });
+            reasons.push(...openingReasons);
+            for (const lead of leadingClauses) speak(lead);
+          }
+          clauseCount++;
+          speak(cleaned);
+        },
+      });
+
+      const { trailingClause, reasons: trailingReasons } = guardTrailingClause({ fullSpokenText: spokenSoFar, policy });
+      reasons.push(...trailingReasons);
+      if (trailingClause) speak(trailingClause);
+
+      // Already guarded clause-by-clause above — no need (and real risk of
+      // double-applying the ack/hedge injections) to run the whole-text
+      // guardOutput() again. `cleaned` here is exactly what was spoken.
+      guarded = { ok: true, reasons, cleaned: spokenSoFar || llmReply.text };
+    }
+  } else {
+    llmReply = await generateReply({
+      system: llmContext.system,
+      user: llmContext.user,
+      clientId: input.clientId,
+      sessionId: input.sessionId,
+      userId: input.userId,
+    });
+    guarded = guardOutput({
+      reply: llmReply.text,
+      allowedCitations: llmContext.citations,
+      policy,
+      sttConfidence: sttConf,
+      topRetrievalScore: topScore(retrieved),
+      minStt: CONFIG.gates.minSttConfidence,
+      minRetrieval: CONFIG.gates.minRetrievalScore,
+    });
+  }
+  const llmMs = Date.now() - llmStart;
 
   const agentTurn: Utterance = {
     id: nanoid(8),

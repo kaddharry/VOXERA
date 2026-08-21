@@ -2,12 +2,64 @@ import OpenAI from "openai";
 import { CONFIG } from "../config";
 import { KeyRotator } from "../util/keys";
 import { TOOLS, dispatchToolCall } from "./tools";
+import { ClauseChunker } from "./clause-chunker";
 
 export interface LLMReply {
   text: string;
   model: string;
   usedLive: boolean;
   provider?: string;
+}
+
+/** Accumulates OpenAI-compatible streamed chunk deltas into the same
+ * `message` shape the non-streaming code path already works with (content +
+ * tool_calls), so everything downstream of a completion call (the tool-loop
+ * branch, sanitizeReply, etc.) stays identical whether or not streaming is
+ * in use. `onContentDelta` fires per raw text delta as it arrives — the
+ * caller feeds it into a ClauseChunker to get sentence-level chunks instead
+ * of raw token deltas. */
+async function streamChatCompletion(
+  openai: OpenAI,
+  params: Record<string, unknown>,
+  opts: { onContentDelta?: (delta: string) => void; signal?: AbortSignal }
+): Promise<{ content: string; tool_calls?: any[] }> {
+  const stream = (await openai.chat.completions.create(
+    { ...params, stream: true } as any,
+    opts.signal ? { signal: opts.signal } : undefined
+  )) as unknown as AsyncIterable<any>;
+
+  let content = "";
+  const toolCallsByIndex: Record<number, { id?: string; type?: string; function: { name?: string; arguments: string } }> = {};
+
+  for await (const chunk of stream) {
+    const delta = chunk.choices?.[0]?.delta;
+    if (!delta) continue;
+
+    if (delta.content) {
+      content += delta.content;
+      opts.onContentDelta?.(delta.content);
+    }
+
+    if (delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        const idx = tc.index ?? 0;
+        if (!toolCallsByIndex[idx]) {
+          toolCallsByIndex[idx] = { id: tc.id, type: tc.type ?? "function", function: { name: tc.function?.name, arguments: "" } };
+        }
+        if (tc.id) toolCallsByIndex[idx].id = tc.id;
+        if (tc.function?.name) toolCallsByIndex[idx].function.name = tc.function.name;
+        if (tc.function?.arguments) toolCallsByIndex[idx].function.arguments += tc.function.arguments;
+      }
+    }
+  }
+
+  const toolCallsArr = Object.values(toolCallsByIndex);
+  return {
+    content,
+    tool_calls: toolCallsArr.length > 0
+      ? toolCallsArr.map((tc, i) => ({ id: tc.id ?? `call_${i}`, type: "function", function: { name: tc.function.name ?? "", arguments: tc.function.arguments } }))
+      : undefined,
+  };
 }
 
 export async function generateReply(args: {
@@ -24,7 +76,27 @@ export async function generateReply(args: {
    * latency/tokens) for one-off generation tasks like drafting a prompt,
    * as opposed to an actual live conversational turn. Defaults to true. */
   useTools?: boolean;
+  /** When provided, the completion is streamed and this fires with each
+   * sanitized, sentence-level clause as soon as it's ready — letting a
+   * caller start TTS on clause 1 while the LLM is still generating later
+   * clauses. Only ever fires for the final, non-tool-call completion (tool
+   * calls carry no spoken content). The function's return value is
+   * unaffected either way — it still resolves with the full concatenated
+   * reply text once everything is done, for logging/trace purposes. */
+  onClause?: (clause: string) => void;
+  /** Cancels the in-flight completion (used for barge-in). Only meaningful
+   * together with onClause — the non-streaming path has no long-running
+   * request worth aborting mid-flight. */
+  abortSignal?: AbortSignal;
 }): Promise<LLMReply> {
+  const streaming = !!args.onClause;
+  const clauseChunker = streaming ? new ClauseChunker() : null;
+  // If any clause has already been spoken from a provider's partial stream,
+  // we can never fall back to a different provider for this turn — doing so
+  // would speak two unrelated completions back to back. Tracked across the
+  // whole function (not per-attempt) so a failure after streaming started
+  // propagates instead of silently trying the next provider.
+  let anyClauseEmitted = false;
 
   for (const provider of CONFIG.llm.providers) {
     const rotator = new KeyRotator(provider.envKey);
@@ -54,26 +126,45 @@ export async function generateReply(args: {
         const reasoningOpt = provider.reasoningEffort ? { reasoning_effort: provider.reasoningEffort } : {};
 
         for (let i = 0; i < 3; i++) {
-          const resp = await openai.chat.completions.create({
+          const baseParams = {
             model: provider.model,
             messages,
             max_tokens: args.maxOutputTokens ?? CONFIG.llm.maxOutputTokens,
             ...(useTools ? { tools: TOOLS as any, tool_choice: "auto" as const } : {}),
             ...reasoningOpt,
-          } as any);
+          };
 
-          const choice = resp.choices?.[0];
-          if (!choice?.message) {
-            // Content-filter rejections and overload responses can come back with
-            // an empty choices array. Throw a named error so the provider loop
-            // logs why this provider failed instead of a bare TypeError.
-            // NB: the message must not contain "timeout"/"timed out" — KeyRotator
-            // string-matches those (lib/util/keys.ts) and would retry 3x with backoff.
-            throw new Error(
-              `Provider "${provider.name}" returned no message (choices=${resp.choices?.length ?? 0})`
-            );
+          let message: any;
+          if (streaming) {
+            const streamed = await streamChatCompletion(openai, baseParams, {
+              signal: args.abortSignal,
+              onContentDelta: (delta) => {
+                const clauses = clauseChunker!.push(delta);
+                for (const raw of clauses) {
+                  anyClauseEmitted = true;
+                  args.onClause!(sanitizeReply(raw));
+                }
+              },
+            });
+            if (!streamed.content && !streamed.tool_calls) {
+              throw new Error(`Provider "${provider.name}" returned no content or tool_calls (streamed)`);
+            }
+            message = { role: "assistant", content: streamed.content || null, tool_calls: streamed.tool_calls };
+          } else {
+            const resp = await openai.chat.completions.create(baseParams as any);
+            const choice = resp.choices?.[0];
+            if (!choice?.message) {
+              // Content-filter rejections and overload responses can come back with
+              // an empty choices array. Throw a named error so the provider loop
+              // logs why this provider failed instead of a bare TypeError.
+              // NB: the message must not contain "timeout"/"timed out" — KeyRotator
+              // string-matches those (lib/util/keys.ts) and would retry 3x with backoff.
+              throw new Error(
+                `Provider "${provider.name}" returned no message (choices=${resp.choices?.length ?? 0})`
+              );
+            }
+            message = choice.message;
           }
-          const message = choice.message;
           messages.push(message);
 
           if (message.tool_calls && message.tool_calls.length > 0) {
@@ -134,6 +225,28 @@ export async function generateReply(args: {
           if (!finalResponseText.trim()) {
             finalResponseText = "Sorry, I just want to double check that — could you tell me again what you'd like me to do?";
           }
+
+          // This fallback call is deliberately non-streamed (a rare path —
+          // the tool-loop exhausted its cap — not worth the extra
+          // complexity), so its text never went through the clause chunker
+          // above. Push it through now so onClause() still sees it.
+          if (streaming) {
+            for (const clause of clauseChunker!.push(finalResponseText)) {
+              anyClauseEmitted = true;
+              args.onClause!(sanitizeReply(clause));
+            }
+          }
+        }
+
+        if (streaming) {
+          // Anything still sitting in the chunker's buffer — a trailing
+          // clause that never hit sentence-ending punctuation — needs to
+          // reach the caller too, not just get silently dropped.
+          const remainder = clauseChunker!.flush();
+          if (remainder) {
+            anyClauseEmitted = true;
+            args.onClause!(sanitizeReply(remainder));
+          }
         }
 
         return { text: sanitizeReply(finalResponseText), model: provider.model, usedLive: true, provider: provider.name };
@@ -143,6 +256,13 @@ export async function generateReply(args: {
       return result;
     } catch (err) {
       console.warn(`[LLM] Provider "${provider.name}" failed:`, err instanceof Error ? err.message : err);
+      if (streaming && anyClauseEmitted) {
+        // Part of this provider's reply has already been spoken via
+        // onClause — falling back to a different provider now would speak
+        // a second, unrelated completion on top of it. Propagate instead
+        // of silently retrying with the next provider.
+        throw err;
+      }
       continue;
     }
   }

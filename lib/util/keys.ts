@@ -93,6 +93,38 @@ export class KeyRotator {
       } catch (error: any) {
         lastError = error;
         const status = error?.status || error?.response?.status;
+
+        // A 429 for exceeding a tokens-per-minute OR tokens-per-day budget
+        // (TPM/TPD) is scoped to the whole ORGANIZATION on Groq (and
+        // equivalent providers), not the individual API key — verified live
+        // against two different real 429 bodies, one TPM ("...on tokens per
+        // minute (TPM): Limit 8000...") and one TPD ("...on tokens per day
+        // (TPD): Limit 200000, Used 197130..." — this account's daily quota
+        // for the whole day, not just a per-minute burst). Rotating to a
+        // different key from the SAME account/org does nothing to help
+        // either way (confirmed live: the very next key hit the identical
+        // error immediately) — it just burns the exponential backoff time
+        // (1s, 2s, ...) on retries guaranteed to fail the same way, which is
+        // exactly what was making turns that should fail over to a working
+        // provider (e.g. ZenMux) in milliseconds instead take 3+ extra
+        // seconds first. Detected via Groq's own `type`/`code` fields when
+        // available (present on both the TPM and TPD variants), falling
+        // back to matching the message text for other OpenAI-compatible
+        // providers that report these limits similarly but without those
+        // exact fields.
+        const errorBody = error?.error ?? error?.response?.data?.error;
+        const isOrgWideRateOrQuotaLimit =
+          status === 429 &&
+          (errorBody?.type === "tokens" ||
+            errorBody?.code === "rate_limit_exceeded" ||
+            /tokens per (minute|day)|TPM\b|TPD\b/i.test(error?.message ?? ""));
+        if (isOrgWideRateOrQuotaLimit) {
+          console.warn(
+            `[KeyRotator] Org-wide token rate/quota limit for ${this.name} — rotating keys within this account can't help, failing fast so the caller can move to a different provider.`,
+          );
+          throw error;
+        }
+
         const isQuotaError = status === 429 || status === 401 || status === 403;
         const isTimeoutError =
           error?.name === "TimeoutError" ||

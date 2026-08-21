@@ -356,10 +356,16 @@ export function TestAgentDrawer() {
   const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const playerRef = useRef<HTMLAudioElement | null>(null);
   const playbackAudioContextRef = useRef<AudioContext | null>(null);
-  const playbackSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const playbackGainRef = useRef<GainNode | null>(null);
   const playbackAnalyserRef = useRef<AnalyserNode | null>(null);
+  // Streamed TTS playback: each reply_audio_chunk becomes its own
+  // AudioBufferSourceNode, scheduled back-to-back (gapless) via this
+  // cursor instead of waiting for one full buffered clip like the old
+  // <audio src="data:..."> approach. Tracked so barge-in can stop every
+  // node that's scheduled but hasn't finished playing yet.
+  const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const nextPlayTimeRef = useRef(0);
   const orbRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const statusRef = useRef<CallStatus>("idle");
@@ -371,6 +377,10 @@ export function TestAgentDrawer() {
   // larger batches instead, same chunking pattern AcousticDemo.tsx uses.
   const captureBufferRef = useRef<Int16Array[]>([]);
   const captureBufferedSamplesRef = useRef(0);
+  // Turn-latency bookkeeping for the streamed TTS path — see the
+  // reply_audio_chunk handler below.
+  const turnStartAtRef = useRef<number | null>(null);
+  const firstChunkAtByTurnRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     setMicSupported(getMicSupport());
@@ -391,14 +401,29 @@ export function TestAgentDrawer() {
 
   // Deep-link support: /demo?agentId=<id> (used by the "Test this agent"
   // button in /admin/agents) pre-selects that agent and opens the drawer
-  // automatically, once its info has loaded.
+  // automatically. TestAgentDrawer is mounted once in the root layout
+  // (app/layout.tsx) and never unmounts across client-side navigation, so
+  // reading the URL only on mount would silently go stale the moment any
+  // future entry point navigates to a new ?agentId= without a full page
+  // reload — today's one entry point (admin/agents's "Talk to Agent" link)
+  // happens to use target="_blank", which sidesteps that by always forcing
+  // a fresh mount, but that's incidental to how that link is styled, not a
+  // guarantee about how agent-selection deep links work. Re-reading on
+  // `popstate` too (back/forward navigation) means this keeps working if
+  // that ever changes, instead of silently locking onto whichever agent
+  // happened to be selected on this tab's very first load.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const agentId = params.get("agentId");
-    if (agentId) {
-      setSelectedAgentId(agentId);
-      setOpen(true);
-    }
+    const applyAgentIdFromUrl = () => {
+      const params = new URLSearchParams(window.location.search);
+      const agentId = params.get("agentId");
+      if (agentId) {
+        setSelectedAgentId(agentId);
+        setOpen(true);
+      }
+    };
+    applyAgentIdFromUrl();
+    window.addEventListener("popstate", applyAgentIdFromUrl);
+    return () => window.removeEventListener("popstate", applyAgentIdFromUrl);
   }, []);
 
   // Lets other pages (e.g. the /demo mode switcher's "Live Call" CTA) open
@@ -416,20 +441,25 @@ export function TestAgentDrawer() {
     }
   }, [status]);
 
-  // One persistent AudioContext + MediaElementSourceNode for the reply
-  // player — a source node can only be created once per <audio> element.
+  // One persistent AudioContext for streamed TTS playback — each reply
+  // clause arrives as its own raw PCM chunk (reply_audio_chunk) and gets
+  // scheduled as an AudioBufferSourceNode straight into this graph
+  // (analyser for the level meter, gain for mute) rather than going through
+  // an <audio> element, which can only play one complete, fully-buffered
+  // clip at a time and can't do gapless incremental playback of arriving
+  // chunks.
   useEffect(() => {
-    if (!playerRef.current || playbackAudioContextRef.current) return;
+    if (playbackAudioContextRef.current) return;
     const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const ctx = new AudioCtx();
-    const source = ctx.createMediaElementSource(playerRef.current);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
-    source.connect(analyser);
-    analyser.connect(ctx.destination);
+    const gain = ctx.createGain();
+    analyser.connect(gain);
+    gain.connect(ctx.destination);
     playbackAudioContextRef.current = ctx;
-    playbackSourceRef.current = source;
     playbackAnalyserRef.current = analyser;
+    playbackGainRef.current = gain;
   }, [open]);
 
   // Toggling mid-call disables/re-enables the live mic track directly —
@@ -440,13 +470,27 @@ export function TestAgentDrawer() {
     streamRef.current?.getAudioTracks().forEach((t) => { t.enabled = !micMuted; });
   }, [micMuted]);
 
-  // HTMLMediaElement.muted silences output immediately, including audio
-  // already mid-playback, and persists across future `audio.src` swaps on
-  // the same element (the reply_audio handler above only sets .src, not
-  // .muted, so this doesn't need to re-run per reply).
+  // Zeroing the shared gain node silences output immediately, including
+  // whatever's mid-playback, and applies to every future scheduled chunk
+  // automatically — no need to touch each AudioBufferSourceNode individually.
   useEffect(() => {
-    if (playerRef.current) playerRef.current.muted = speakerMuted;
+    if (playbackGainRef.current) playbackGainRef.current.gain.value = speakerMuted ? 0 : 1;
   }, [speakerMuted]);
+
+  // Stops every currently-scheduled/playing reply audio chunk and resets
+  // the gapless-scheduling cursor — used on barge-in (the caller starts
+  // talking over the agent) and on call end.
+  const stopScheduledAudio = useCallback(() => {
+    for (const node of scheduledSourcesRef.current) {
+      try {
+        node.stop();
+      } catch {
+        // may have already finished naturally
+      }
+    }
+    scheduledSourcesRef.current = [];
+    nextPlayTimeRef.current = playbackAudioContextRef.current?.currentTime ?? 0;
+  }, []);
 
   const stopLevelLoop = useCallback(() => {
     if (rafRef.current !== null) {
@@ -472,6 +516,7 @@ export function TestAgentDrawer() {
   const endCall = useCallback(() => {
     active.current = false;
     stopLevelLoop();
+    stopScheduledAudio();
     vad.destroy();
     captureNodeRef.current?.port.close();
     captureNodeRef.current?.disconnect();
@@ -488,23 +533,21 @@ export function TestAgentDrawer() {
     wsRef.current = null;
     captureBufferRef.current = [];
     captureBufferedSamplesRef.current = 0;
+    turnStartAtRef.current = null;
+    firstChunkAtByTurnRef.current.clear();
     setStatus("idle");
     setInterim("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stopLevelLoop]);
+  }, [stopLevelLoop, stopScheduledAudio]);
 
   useEffect(() => () => endCall(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const bargeIn = useCallback(() => {
     if (statusRef.current !== "speaking") return;
-    const audio = playerRef.current;
-    if (audio) {
-      audio.pause();
-      audio.currentTime = 0;
-    }
+    stopScheduledAudio();
     wsRef.current?.send(JSON.stringify({ type: "barge_in" }));
     setStatus("listening");
-  }, []);
+  }, [stopScheduledAudio]);
 
   const setSensitivityBias = useCallback((value: number) => {
     setSensitivityBiasState(value);
@@ -580,11 +623,20 @@ export function TestAgentDrawer() {
               break;
             case "turn_start":
               setStatus("thinking");
+              turnStartAtRef.current = Date.now();
               break;
             case "reply_text": {
               const emotion = msg.trace?.emotion?.current;
               const diagnostics: DiagnosticEmotionResult | undefined = msg.trace?.emotionDiagnostics;
               const turnId: string = msg.turnId ?? `a-${Date.now()}`;
+              // Streamed audio chunks for this turn typically arrive BEFORE
+              // reply_text (clauses are spoken as the LLM generates them,
+              // reply_text only lands once the whole turn is done) — pull
+              // whatever "time to first audio" was already recorded for
+              // this turnId in by the reply_audio_chunk handler below,
+              // rather than waiting for a later message to merge it in.
+              const firstChunkAt = firstChunkAtByTurnRef.current.get(turnId);
+              const ttsMs = firstChunkAt && turnStartAtRef.current ? firstChunkAt - turnStartAtRef.current : undefined;
               setTurns((prev) => [
                 ...prev,
                 {
@@ -597,7 +649,7 @@ export function TestAgentDrawer() {
                   cai: msg.trace?.cai ? { score: msg.trace.cai.score, category: msg.trace.cai.category } : undefined,
                   policy: msg.trace?.policy,
                   memory: { write: msg.trace?.memoryWrite, retrieved: msg.trace?.retrieved },
-                  timings: msg.trace?.timings,
+                  timings: ttsMs !== undefined && msg.trace?.timings ? { ...msg.trace.timings, ttsMs } : msg.trace?.timings,
                   resolvedAgent: msg.trace?.agent,
                   llmModel: msg.trace?.llmModel,
                   usedLiveLlm: msg.trace?.usedLiveLlm,
@@ -609,37 +661,54 @@ export function TestAgentDrawer() {
               }
               break;
             }
-            case "reply_audio": {
+            case "reply_audio_chunk": {
+              const ctx = playbackAudioContextRef.current;
+              const analyser = playbackAnalyserRef.current;
+              if (!ctx || !analyser) break;
+
+              if (msg.turnId && !firstChunkAtByTurnRef.current.has(msg.turnId)) {
+                firstChunkAtByTurnRef.current.set(msg.turnId, Date.now());
+              }
+
               setStatus("speaking");
-              // Synthesis finishes after reply_text already landed — merge its
-              // ttsMs into the matching turn (by server-assigned turnId)
-              // instead of waiting to send timings all at once, so the text
-              // and analytics still appear the instant they're ready. A
-              // filler's turnId never matches an existing turn (no reply_text
-              // preceded it), so this is a harmless no-op for those.
-              if (msg.turnId && typeof msg.ttsMs === "number") {
-                setTurns((prev) =>
-                  prev.map((t) =>
-                    t.id === msg.turnId && t.timings ? { ...t, timings: { ...t.timings, ttsMs: msg.ttsMs } } : t
-                  )
-                );
+              void ctx.resume().catch(() => {});
+
+              // Decode base64 linear16 PCM -> Float32 samples in [-1, 1],
+              // then schedule as its own node, gapless-appended after
+              // whatever's already queued (nextPlayTimeRef), instead of
+              // waiting for a complete buffered clip like the old
+              // <audio src="data:..."> approach — this is what actually
+              // lets the caller start hearing clause 1 while later clauses
+              // are still being generated.
+              const bytes = Uint8Array.from(atob(msg.audio), (c) => c.charCodeAt(0));
+              const sampleCount = bytes.length / 2;
+              const float32 = new Float32Array(sampleCount);
+              const view = new DataView(bytes.buffer);
+              for (let i = 0; i < sampleCount; i++) {
+                float32[i] = view.getInt16(i * 2, true) / 32768;
               }
-              const audio = playerRef.current;
-              if (audio) {
-                audio.src = `data:${msg.mime};base64,${msg.audio}`;
-                // A "one moment" filler (server-side safety net for an
-                // unusually slow turn — see CONFIG.realtime) means the real
-                // reply is still on its way; go back to "thinking", not
-                // "listening", so the UI doesn't imply it's the caller's
-                // turn to speak again.
-                audio.onended = () => {
-                  if (active.current) setStatus(msg.isFiller ? "thinking" : "listening");
-                };
-                playbackAudioContextRef.current?.resume().catch(() => {});
-                void audio.play().catch(() => {
-                  if (active.current) setStatus(msg.isFiller ? "thinking" : "listening");
-                });
-              }
+
+              const sampleRate = typeof msg.sampleRate === "number" ? msg.sampleRate : 24000;
+              const buffer = ctx.createBuffer(1, sampleCount, sampleRate);
+              buffer.copyToChannel(float32, 0);
+
+              const source = ctx.createBufferSource();
+              source.buffer = buffer;
+              source.connect(analyser);
+
+              const startAt = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+              source.start(startAt);
+              nextPlayTimeRef.current = startAt + buffer.duration;
+
+              scheduledSourcesRef.current.push(source);
+              source.onended = () => {
+                scheduledSourcesRef.current = scheduledSourcesRef.current.filter((n) => n !== source);
+                // Only the last node still playing flips status back —
+                // if others are still scheduled/queued, stay "speaking".
+                if (active.current && scheduledSourcesRef.current.length === 0) {
+                  setStatus("listening");
+                }
+              };
               break;
             }
             case "turn_end":
@@ -1046,8 +1115,6 @@ export function TestAgentDrawer() {
           aria-hidden="true"
         />
       )}
-
-      <audio ref={playerRef} className="hidden" crossOrigin="anonymous" />
     </>
   );
 }

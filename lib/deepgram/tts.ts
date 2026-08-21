@@ -14,7 +14,7 @@ import { isDeepgramModelId } from "./voices";
  * picker — which covers the full ~50-voice catalog without needing a
  * migration or an expanded config map.
  */
-function resolveVoiceModel(persona?: string): string {
+export function resolveVoiceModel(persona?: string): string {
   if (!persona) return CONFIG.deepgram.ttsModel;
   if (isDeepgramModelId(persona)) return persona;
   const personaConfig = CONFIG.deepgram.voicePersonas[persona as keyof typeof CONFIG.deepgram.voicePersonas];
@@ -43,7 +43,7 @@ export function __clearVoiceSettingsCacheForTesting(): void {
 }
 
 // Resolve voice settings for client
-async function getClientVoiceSettings(clientId?: string): Promise<{ provider?: string; voiceId?: string } | null> {
+export async function getClientVoiceSettings(clientId?: string): Promise<{ provider?: string; voiceId?: string } | null> {
   if (!clientId || clientId === "demo") return null;
 
   const cached = voiceSettingsCache.get(clientId);
