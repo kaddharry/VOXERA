@@ -118,9 +118,18 @@ export const CONFIG = {
       { name: "openai", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", envKey: "OPENAI_API_KEY" },
     ] as Array<{ name: string; baseURL: string; model: string; envKey: string; reasoningEffort?: "none" | "low" | "medium" | "high" }>,
     maxInputTokens: 6000,
-    // Kept tight for voice/realtime turns — long completions add seconds of
-    // TTS-wait latency and break the "feels like a phone call" pacing.
-    maxOutputTokens: 160,
+    // Raised from 160 — real replies were measured well under the old cap
+    // (150-260 chars, ~50-80 tokens) even for questions that should've
+    // gotten a fuller answer, so the shortness wasn't token truncation, it
+    // was the CORE RULES' voice-style instruction defaulting to "1-2 short
+    // sentences" for everything (see context.ts rule #4, now intent-aware:
+    // quick factual questions stay short, open-ended ones like "tell me
+    // about your experience" get a real multi-sentence answer). This is
+    // headroom for that fuller answer to not get cut off mid-sentence with
+    // streaming enabled — TTS starts on clause 1 immediately either way, so
+    // a longer reply no longer means a longer wait before the caller hears
+    // anything, just a slightly longer total reply.
+    maxOutputTokens: 300,
   },
   taskCritical: [
     "payment",
