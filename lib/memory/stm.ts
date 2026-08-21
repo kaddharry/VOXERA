@@ -81,17 +81,27 @@ export const stm = {
     if (arr.length > max) arr.splice(0, arr.length - max);
     cache.set(sessionId, { utterances: arr, lastAccessed: Date.now() });
 
-    // Persist to Supabase (fire-and-forget with error logging)
-    try {
-      await supabase.from("stm_sessions").upsert({
-        session_id: sessionId,
-        client_id: clientId ?? "unknown",
-        utterances: JSON.stringify(arr),
-        updated_at: Date.now(),
-      });
-    } catch (err) {
-      console.error("[STM] Failed to persist session:", err);
-    }
+    // Persist to Supabase — genuinely fire-and-forget (not awaited). This
+    // used to `await` here despite the comment already claiming
+    // fire-and-forget, which meant every push() (including the one for the
+    // agent's own reply, sitting on handleTurn()'s return path) blocked a
+    // full Supabase network round trip before the caller could proceed —
+    // directly gating TTS start on a DB write that has nothing to do with
+    // producing the reply. The in-memory cache above is already updated
+    // synchronously, so callers relying on stm.get() right after push()
+    // still see the new turn immediately regardless of when this resolves.
+    void (async () => {
+      try {
+        await supabase.from("stm_sessions").upsert({
+          session_id: sessionId,
+          client_id: clientId ?? "unknown",
+          utterances: JSON.stringify(arr),
+          updated_at: Date.now(),
+        });
+      } catch (err) {
+        console.error("[STM] Failed to persist session:", err);
+      }
+    })();
   },
 
   async get(sessionId: string): Promise<Utterance[]> {

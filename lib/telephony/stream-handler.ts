@@ -1,10 +1,12 @@
 import { nanoid } from "nanoid";
 import WebSocket from "ws";
 import { DeepgramLiveWrapper } from "../deepgram/live";
-import { synthesizeLinear16 } from "../deepgram/tts";
+import { synthesizeLinear16, resolveVoiceModel, getClientVoiceSettings } from "../deepgram/tts";
+import { DeepgramSpeakStream } from "../deepgram/tts-stream";
 import { handleTurn } from "../agent/orchestrator";
 import type { EmotionLabel } from "../types";
 import { supabase } from "../db/supabase";
+import { getAgentWithTenant } from "../db/agents";
 import { callQueue } from "../queue/manager";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
@@ -13,7 +15,7 @@ import { computeRmsEnergy, extractAcousticFeatures } from "../audio/acoustic";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
- 
+
 const MULAW_DECODE_TABLE: number[] = (() => {
   const table: number[] = new Array(256);
   for (let i = 0; i < 256; i++) {
@@ -28,7 +30,7 @@ const MULAW_DECODE_TABLE: number[] = (() => {
   }
   return table;
 })();
- 
+
 function decodeMulaw(mulawBytes: Buffer): Buffer {
   const pcm = Buffer.alloc(mulawBytes.length * 2); // 16-bit per sample
   for (let i = 0; i < mulawBytes.length; i++) {
@@ -37,7 +39,7 @@ function decodeMulaw(mulawBytes: Buffer): Buffer {
   }
   return pcm;
 }
- 
+
 // Encode linear16 PCM → mulaw (for TTS audio back to Twilio)
 function encodeMulaw(pcmSample: number): number {
   const BIAS = 0x84;
@@ -55,7 +57,7 @@ function encodeMulaw(pcmSample: number): number {
   const mulawByte = ~(sign | (exponent << 4) | mantissa);
   return mulawByte & 0xff;
 }
- 
+
 function pcmToMulaw(pcmBuffer: Buffer): Buffer {
   const mulaw = Buffer.alloc(pcmBuffer.length / 2);
   for (let i = 0; i < mulaw.length; i++) {
@@ -64,7 +66,15 @@ function pcmToMulaw(pcmBuffer: Buffer): Buffer {
   }
   return mulaw;
 }
- 
+
+// Twilio Media Streams expect audio delivered as a sequence of small frames,
+// not one giant payload — 160 bytes = 20ms at 8kHz mulaw, the standard frame
+// size. Splitting each Deepgram audio chunk into frames this size is also
+// what makes barge-in actually responsive: the smaller each outbound `media`
+// message is, the less already-sent-but-unplayed audio a `clear` event has
+// to cut through.
+const TWILIO_FRAME_BYTES = 160;
+
 export interface StreamHandlerOptions {
   ws: WebSocket; // The WebSocket connection to Twilio
   callSid: string;
@@ -75,21 +85,32 @@ export interface StreamHandlerOptions {
    * to the tenant's default prompt (handleTurn's existing behavior). */
   agentId?: string;
 }
- 
+
 /**
  * TelephonyStreamHandler manages the full real-time audio loop for one phone call.
  *
  * Lifecycle:
  *  1. Twilio opens a WebSocket (Media Stream) → this handler receives audio frames
  *  2. Audio is decoded mulaw → PCM → streamed to Deepgram STT
- *  3. On final transcript → handleTurn() (existing orchestrator, zero changes)
- *  4. LLM reply → Deepgram TTS (Linear16 PCM) → μ-law → sent back to Twilio
+ *  3. On final transcript → handleTurn() (orchestrator), streaming clause-by-clause
+ *  4. Each clause → Deepgram's streaming Speak WebSocket → μ-law → sent to Twilio
+ *     as soon as it's ready, not buffered until the whole reply is done
  *  5. Call ends → DB updated, queue updated
  *
- * Issue #14 enhancements:
- *  - Energy-based barge-in: only interrupts TTS when RMS exceeds threshold
- *  - PCM accumulation: collects audio for turn-level acoustic analysis
- *  - Interruption tracking: counts barge-in events for CAI scoring
+ * Latency-overhaul notes (see /Users/vikasverma/.claude/plans/structured-zooming-quiche.md):
+ *  - TTS is streamed (DeepgramSpeakStream, lib/deepgram/tts-stream.ts) so the
+ *    caller starts hearing clause 1 while the LLM is still generating later
+ *    clauses, instead of waiting for the entire reply to finish synthesizing.
+ *  - Barge-in uses the generation-counter pattern already proven in
+ *    server.ts (the browser demo path): bumping `generation` invalidates
+ *    whatever's in flight, so a stale turn's audio/clauses are dropped
+ *    instead of racing with the caller's actual interruption.
+ *  - On barge-in: cancels the in-flight LLM call (AbortController) and
+ *    clears/closes the in-flight Speak stream, instead of only stopping
+ *    Twilio playback of audio already sent.
+ *  - A tenant's custom ElevenLabs voice (no streaming Speak WS support yet)
+ *    falls back to the original buffered synth-then-send path for that call
+ *    only — see setupVoiceForCall().
  */
 export class TelephonyStreamHandler {
   private ws: WebSocket;
@@ -112,6 +133,26 @@ export class TelephonyStreamHandler {
   // Issue #14: Barge-in interruption counter (per turn, reset on each transcript)
   private turnInterruptionCount = 0;
 
+  // Bumped on every barge-in — a turn whose captured generation no longer
+  // matches this is stale and must not speak or be spoken over. Same
+  // pattern already proven in server.ts for the browser demo path.
+  private generation = 0;
+  // Cancels the in-flight LLM generation for the current turn on barge-in.
+  private currentAbortController: AbortController | null = null;
+  // ONE Speak connection reused for the entire call (see
+  // ensureSpeakStream()) — reachable from the barge-in handler (a different
+  // method) so it can be cleared immediately instead of only stopping
+  // Twilio playback of audio already sent.
+  private currentSpeakStream: DeepgramSpeakStream | null = null;
+  private speakStreamReadyPromise: Promise<void> | null = null;
+
+  // Resolved once per call (not per turn) in setupVoiceForCall() — an
+  // agent's voice and a tenant's custom-voice provider don't change
+  // mid-call, so there's no reason to re-resolve either on every reply.
+  private voiceModel: string = CONFIG.deepgram.ttsModel;
+  private useBufferedTts = false;
+  private voiceSetupPromise: Promise<void> | null = null;
+
   constructor(opts: StreamHandlerOptions) {
     this.ws = opts.ws;
     this.callSid = opts.callSid;
@@ -121,7 +162,7 @@ export class TelephonyStreamHandler {
     this.sessionId = `tel-${nanoid(12)}`;
     this.userId = `caller-${opts.callerNumber.replace(/\D/g, "")}`;
     this.startedAt = Date.now();
- 
+
     this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), { sampleRate: 8000 });
 
     // Register every ws event handler in this same synchronous tick, before
@@ -131,10 +172,10 @@ export class TelephonyStreamHandler {
     // real network round-trip to Deepgram before it used to reach this
     // wiring, which silently dropped "start" (never setting streamSid) on
     // real calls: STT still worked once later "media" frames arrived after
-    // the listener attached, but every speakToTwilio() call after that
-    // silently no-op'd on `if (!this.streamSid) return;` — the caller heard
-    // nothing back despite the agent generating real replies. Same bug
-    // class server.ts's realtime demo path already documents fixing.
+    // the listener attached, but every speak call after that silently
+    // no-op'd on `if (!this.streamSid) return;` — the caller heard nothing
+    // back despite the agent generating real replies. Same bug class
+    // server.ts's realtime demo path already documents fixing.
     this.ws.on("message", (data: Buffer) => this.onTwilioMessage(data));
     this.ws.on("close", () => this.onCallEnded());
     this.ws.on("error", (err) => {
@@ -180,7 +221,65 @@ export class TelephonyStreamHandler {
   }
 }
 
- 
+  /**
+   * Resolves the voice model/provider to use for the rest of this call.
+   * Kicked off once (from the "start" event, as soon as agentId/clientId are
+   * known) and NOT awaited there — by the time the first turn's first
+   * clause is ready to speak, this has almost always already resolved, so
+   * it doesn't add latency to the hot path the way a per-turn DB lookup
+   * would (which is what the old buffered path paid on every single reply).
+   */
+  private async setupVoiceForCall(): Promise<void> {
+    try {
+      const [agentInfo, voiceSettings] = await Promise.all([
+        this.agentId ? getAgentWithTenant(supabase, this.agentId).catch(() => null) : Promise.resolve(null),
+        getClientVoiceSettings(this.clientId).catch(() => null),
+      ]);
+      if (agentInfo?.voice_persona) {
+        this.voiceModel = resolveVoiceModel(agentInfo.voice_persona);
+      }
+      if (voiceSettings?.provider === "elevenlabs" && voiceSettings.voiceId) {
+        // Deepgram's streaming Speak WS doesn't cover a tenant's custom
+        // cloned ElevenLabs voice — fall back to the original buffered
+        // synth-then-send path for this call only, so the customization
+        // keeps working correctly (streaming ElevenLabs is good follow-up
+        // work, not core to this latency fix).
+        this.useBufferedTts = true;
+      }
+    } catch (err) {
+      console.warn(`[TelephonyStream] Voice setup failed for ${this.callSid}, using defaults:`, err);
+    }
+  }
+
+  /**
+   * Lazily creates and connects ONE Speak stream for the whole call, reused
+   * across every turn. A fresh WebSocket handshake per turn (the original
+   * design) cost ~50-150ms on every single reply; keeping one connection
+   * alive for the call's lifetime pays that cost once — and per
+   * setupVoiceForCall()'s caller, that "once" happens as soon as the
+   * caller's voice/persona is resolved, in parallel with everything else,
+   * so in practice it's usually already connected before the first turn
+   * even needs it. Each turn rebinds the audio handler (setAudioHandler)
+   * to its own generation-checked callback rather than opening a new
+   * connection; barge-in calls clear() on it, never close() — see
+   * onTwilioMessage's "media" case.
+   */
+  private ensureSpeakStream(): { stream: DeepgramSpeakStream; ready: Promise<void> } {
+    if (!this.currentSpeakStream) {
+      const stream = new DeepgramSpeakStream(
+        { model: this.voiceModel, encoding: "linear16", sampleRate: 8000 },
+        () => {} // replaced per-turn via setAudioHandler before first use
+      );
+      this.currentSpeakStream = stream;
+      this.speakStreamReadyPromise = stream.connect().catch((err) => {
+        console.error(`[TelephonyStream] Speak stream connect failed for ${this.callSid}:`, err);
+        this.currentSpeakStream = null;
+        this.speakStreamReadyPromise = null;
+      });
+    }
+    return { stream: this.currentSpeakStream, ready: this.speakStreamReadyPromise! };
+  }
+
   private onTwilioMessage(raw: Buffer) {
     let msg: Record<string, unknown>;
     try {
@@ -188,12 +287,12 @@ export class TelephonyStreamHandler {
     } catch {
       return;
     }
- 
+
     switch (msg.event) {
       case "connected":
         console.log(`[TelephonyStream] Stream connected for ${this.callSid}`);
         break;
- 
+
       case "start": {
         const startData = msg.start as Record<string, unknown>;
         this.streamSid = startData?.streamSid as string;
@@ -217,9 +316,20 @@ export class TelephonyStreamHandler {
         // earlier (e.g. in init()) would target a row keyed by whatever
         // wrong/placeholder id we started with and silently match nothing.
         void this.updateCallLog({ sessionId: this.sessionId });
+
+        // Only now do we know the real clientId/agentId either — kick off
+        // voice setup here, not in init(), for the same reason. Chained to
+        // also eagerly open the Speak WS connection the instant the right
+        // voice model is known — by the time the caller actually finishes
+        // their first utterance (at least a second or two of real time),
+        // this has almost always already connected, so the ~50-150ms
+        // handshake doesn't sit on the first turn's critical path either.
+        this.voiceSetupPromise = this.setupVoiceForCall().then(() => {
+          if (!this.useBufferedTts) this.ensureSpeakStream();
+        });
         break;
       }
- 
+
       case "media": {
         // Twilio sends base64-encoded mulaw audio chunks
         const media = msg.media as Record<string, unknown>;
@@ -239,42 +349,64 @@ export class TelephonyStreamHandler {
               this.isSpeaking = false;
               this.turnInterruptionCount++;
               this.sendClearMessage();
+
+              // Invalidate the in-flight turn: cancel LLM generation, stop
+              // generating audio nobody will hear, and let the caller's
+              // actual interruption (still being transcribed by Deepgram in
+              // the background — never gated) be processed as a fresh turn
+              // instead of being silently dropped by isBusy below.
+              this.generation++;
+              this.currentAbortController?.abort();
+              // clear() only — NOT close(). The Speak connection is kept
+              // alive for the whole call (see ensureSpeakStream()) so the
+              // next turn doesn't pay another ~50-150ms WS handshake;
+              // clear() just discards whatever audio was queued/in-flight
+              // for the turn that just got interrupted.
+              this.currentSpeakStream?.clear();
+              this.isBusy = false;
+
               console.log(
                 `[TelephonyStream] Barge-in triggered (RMS=${rms.toFixed(0)}, ` +
                 `threshold=${CONFIG.telephony.bargeInEnergyThreshold}) for ${this.callSid}`
               );
             }
           }
- 
+
           this.deepgram.sendAudio(pcmBuf);
         }
         break;
       }
- 
+
       case "stop":
         console.log(`[TelephonyStream] Stream stop event for ${this.callSid}`);
         this.onCallEnded();
         break;
     }
   }
- 
+
   private async onTranscript(text: string, isFinal: boolean) {
     if (!isFinal || !text.trim() || this.isBusy) return;
     this.isBusy = true;
- 
+    const myGeneration = this.generation;
+
     console.log(`[TelephonyStream] Transcript (${this.callSid}): "${text}"`);
- 
+
     // Safety net for an unusually slow turn (see CONFIG.realtime) — if
-    // handleTurn() hasn't resolved within the threshold, speak a short
-    // filler so the caller isn't sitting in silence on a real phone call
-    // wondering if it dropped, then continue waiting for the real reply.
-    // Cleared the moment handleTurn() actually resolves.
+    // handleTurn() hasn't produced any spoken reply within the threshold,
+    // speak a short filler so the caller isn't sitting in silence on a real
+    // phone call wondering if it dropped. Cleared the moment the first real
+    // clause is spoken (not just when handleTurn() resolves — streaming
+    // means audio can start well before that).
     let fillerTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       fillerTimer = null;
-      void this.speakToTwilio(CONFIG.realtime.turnFillerPhrase).catch((err) =>
+      if (myGeneration !== this.generation) return;
+      void this.speakBuffered(CONFIG.realtime.turnFillerPhrase).catch((err) =>
         console.warn(`[TelephonyStream] Filler synthesis failed for ${this.callSid}:`, err)
       );
     }, CONFIG.realtime.turnFillerThresholdMs);
+
+    const abortController = new AbortController();
+    this.currentAbortController = abortController;
 
     try {
       // Issue #14: Extract acoustic features from accumulated PCM
@@ -284,7 +416,9 @@ export class TelephonyStreamHandler {
         ? extractAcousticFeatures(turnPcm, wordCount)
         : undefined;
 
-      const output = await handleTurn({
+      if (this.voiceSetupPromise) await this.voiceSetupPromise;
+
+      const turnInput = {
         sessionId: this.sessionId,
         userId: this.userId,
         clientId: this.clientId,
@@ -294,41 +428,108 @@ export class TelephonyStreamHandler {
         audioEmotion: null,
         acousticFeatures,
         bargeInCount: this.turnInterruptionCount,
+      };
+
+      if (this.useBufferedTts) {
+        // Tenant has a custom ElevenLabs voice — no streaming Speak WS
+        // support for that path yet, use the original buffered flow.
+        const output = await handleTurn(turnInput);
+        if (fillerTimer) clearTimeout(fillerTimer);
+        if (myGeneration === this.generation) {
+          console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
+          await this.speakBuffered(output.reply, output.trace.emotion.current.label, output.trace.agent?.voicePersona ?? undefined);
+        }
+        return;
+      }
+
+      // Kicked off now (not lazily inside onReplyChunk) — reuses the
+      // call-lifetime connection if a prior turn already opened one, or
+      // starts connecting immediately, in parallel with the LLM call below,
+      // instead of only starting once the first clause is ready. Rebound to
+      // this turn's own generation-checked handler right away.
+      const { stream: speakStream, ready: speakStreamReady } = this.ensureSpeakStream();
+      speakStream.setAudioHandler((audioChunk) => {
+        if (myGeneration !== this.generation) return; // stale — barge-in happened
+        this.sendAudioChunkToTwilio(audioChunk);
+      });
+
+      const output = await handleTurn(turnInput, {
+        abortSignal: abortController.signal,
+        onReplyChunk: (clause) => {
+          if (myGeneration !== this.generation) return; // stale — dropped by barge-in
+          if (fillerTimer) {
+            clearTimeout(fillerTimer);
+            fillerTimer = null;
+          }
+          this.isSpeaking = true;
+          void speakStreamReady.then(() => {
+            if (myGeneration !== this.generation) return;
+            speakStream.sendText(clause);
+            speakStream.flush();
+          });
+        },
       });
 
       if (fillerTimer) clearTimeout(fillerTimer);
-
       console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
-      await this.speakToTwilio(output.reply, output.trace.emotion.current.label, output.trace.agent?.voicePersona ?? undefined);
+
+      // Deliberately NOT closed here — see ensureSpeakStream()'s doc
+      // comment. It stays open for the next turn and is only closed in
+      // onCallEnded().
+      if (myGeneration === this.generation) {
+        this.isSpeaking = false;
+      }
     } catch (err) {
       if (fillerTimer) clearTimeout(fillerTimer);
-      console.error(`[TelephonyStream] handleTurn error:`, err);
+      if (myGeneration !== this.generation) {
+        console.log(`[TelephonyStream] Turn cancelled by barge-in for ${this.callSid}.`);
+      } else {
+        console.error(`[TelephonyStream] handleTurn error:`, err);
+      }
     } finally {
       this.isBusy = false;
+      this.currentAbortController = null;
       // Reset turn-level accumulators for next utterance
       this.turnAudioChunks = [];
       this.turnInterruptionCount = 0;
     }
   }
- 
+
   /**
-   * Converts text → Linear16 PCM → G.711 μ-law → sends back to the Twilio Media Stream.
+   * Splits one Deepgram Speak audio chunk into Twilio-sized (~20ms) mulaw
+   * frames and sends each as its own `media` message, as soon as it's
+   * available — this, plus DeepgramSpeakStream's streaming synthesis, is
+   * what actually produces "starts speaking while still generating" instead
+   * of the old buffered "wait for 100% of the audio, send one giant blob".
    */
-  private async speakToTwilio(text: string, emotionLabel?: EmotionLabel, persona?: string) {
+  private sendAudioChunkToTwilio(pcmChunk: Buffer): void {
+    if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
+    const mulaw = pcmToMulaw(pcmChunk);
+    for (let offset = 0; offset < mulaw.length; offset += TWILIO_FRAME_BYTES) {
+      const frame = mulaw.subarray(offset, Math.min(offset + TWILIO_FRAME_BYTES, mulaw.length));
+      const mediaMessage = JSON.stringify({
+        event: "media",
+        streamSid: this.streamSid,
+        media: { payload: frame.toString("base64") },
+      });
+      this.ws.send(mediaMessage);
+    }
+  }
+
+  /**
+   * Buffered synth-then-send path — converts text → Linear16 PCM → G.711
+   * μ-law → sends the whole thing to Twilio in one go. Kept for the filler
+   * phrase (a short fixed string, not worth streaming) and as the fallback
+   * for tenants with a custom ElevenLabs voice (see setupVoiceForCall()).
+   */
+  private async speakBuffered(text: string, emotionLabel?: EmotionLabel, persona?: string) {
     if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
 
     try {
-      // Get raw 8kHz Linear16 PCM directly from Deepgram (or the tenant's
-      // custom ElevenLabs voice, if configured) — already in the exact
-      // format pcmToMulaw expects, no decoding required. `persona` is the
-      // Agent Builder agent's own chosen Deepgram voice (voice_persona),
-      // when this call is routed through a custom agent — takes priority
-      // over the CONFIG default but is still overridden by a tenant-level
-      // ElevenLabs voice inside synthesizeLinear16() if one is configured.
       const pcmBytes = await synthesizeLinear16(text, { clientId: this.clientId, emotion: emotionLabel, persona });
       const mulawAudio = pcmToMulaw(pcmBytes);
       const base64Audio = mulawAudio.toString("base64");
- 
+
       this.isSpeaking = true;
       const mediaMessage = JSON.stringify({
         event: "media",
@@ -337,14 +538,14 @@ export class TelephonyStreamHandler {
           payload: base64Audio,
         },
       });
- 
+
       this.ws.send(mediaMessage);
     } catch (err) {
       console.error(`[TelephonyStream] TTS error:`, err);
       this.isSpeaking = false;
     }
   }
- 
+
   /**
    * Issue #8: Send a clear message to Twilio to stop any in-progress audio playback (barge-in).
    */
@@ -357,25 +558,26 @@ export class TelephonyStreamHandler {
     this.ws.send(clearMsg);
     console.log(`[TelephonyStream] Barge-in: cleared TTS playback for ${this.callSid}`);
   }
- 
+
   private async onCallEnded() {
     if (this.hasEnded) return;
     this.hasEnded = true;
 
     const endedAt = Date.now();
     const durationMs = endedAt - this.startedAt;
- 
+
     console.log(`[TelephonyStream] Call ended: ${this.callSid}, duration: ${durationMs}ms`);
 
     await callQueue.markCallEnded();
     this.deepgram.close();
- 
+    this.currentSpeakStream?.close();
+
     await this.updateCallLog({
       status: "completed",
       endedAt,
       durationMs,
     });
- 
+
     // Post-Call SMS Recovery Trigger (Issue #16)
     try {
       const { data: tenant } = await supabase
@@ -383,29 +585,29 @@ export class TelephonyStreamHandler {
         .select("id")
         .eq("auth_user_id", this.clientId)
         .single();
- 
+
       if (tenant) {
         const { data: settings } = await supabase
           .from("business_settings")
           .select("sms_recovery_enabled, sms_recovery_template, sms_recovery_link")
           .eq("tenant_id", tenant.id)
           .single();
- 
+
         if (settings?.sms_recovery_enabled && this.callerNumber && this.callerNumber !== "unknown") {
           const utterances = await stm.get(this.sessionId);
           const userUtterances = utterances.filter((u) => u.role === "user");
           const lastUserUtterance = userUtterances[userUtterances.length - 1];
           const lastEmotion = lastUserUtterance?.emotion?.label || "neutral";
- 
+
           const NEGATIVE_EMOTIONS = new Set(["anger", "frustration", "sadness", "distress", "disappointment"]);
- 
+
           if (NEGATIVE_EMOTIONS.has(lastEmotion)) {
             console.log(`[TelephonyStream] Call ended with negative emotion "${lastEmotion}". Triggering recovery SMS to ${this.callerNumber}`);
- 
+
             const template = settings.sms_recovery_template || "We noticed you had a bad experience. Use {{link}} to get in touch.";
             const link = settings.sms_recovery_link || "";
             const body = template.replace("{{link}}", link);
- 
+
             await sendSMS({
               to: this.callerNumber,
               body,
@@ -417,13 +619,13 @@ export class TelephonyStreamHandler {
       console.error("[TelephonyStream] Error checking/triggering recovery SMS:", err);
     }
   }
- 
+
   private async updateCallLog(updates: Record<string, unknown>) {
     const { error } = await supabase
       .from("call_logs")
       .update(updates)
       .eq("id", this.callSid);
- 
+
     if (error) {
       console.error(`[TelephonyStream] Failed to update call_logs:`, error);
     }

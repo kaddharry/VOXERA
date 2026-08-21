@@ -4,7 +4,20 @@ import { policyToPrompt } from "./policy";
 import { getEmotionPersona, formatPersonaBlock } from "../emotion/persona";
 
 // Character-based budget approximation. Assumes ~4 chars/token.
-const BUDGET_CHARS = 24000;
+//
+// Cut sharply (was 24000 ≈ 6000 tokens) as part of the latency overhaul —
+// a real end-to-end measurement against this account's live Groq API
+// (scripts/e2e_latency_test.ts) surfaced prompts in the 3000-6000+ token
+// range routinely triggering 429 rate-limit responses (8000 TPM on the
+// on_demand/free tier), which is what was actually producing multi-second
+// turn latency on real calls, not raw model inference time — a single
+// oversized turn could burn most of an entire minute's token budget by
+// itself. Smaller prompts are also strictly faster to prefill regardless
+// of rate limits. This is a real quality/context tradeoff (less retrieved
+// history fits per turn) traded deliberately for latency — if the account
+// moves to a paid tier with a much higher TPM limit, this can be raised
+// again.
+const BUDGET_CHARS = 6000;
 
 // Matches natural hand-off phrasing so we can tell the model "you already
 // offered this" instead of letting it repeat the offer verbatim every turn.
@@ -42,30 +55,34 @@ export function buildLLMContext(args: {
   // chunks (uploaded PDFs/docs, tier LTM_client) are the one place where the
   // exact wording matters: a fact like "experience at Tredence" sitting
   // after the first sentence of a ~500-char chunk was silently getting cut
-  // off before the LLM ever saw it. Budget raised accordingly (1600 -> 6000)
-  // since full chunk text is several times longer than a summary.
+  // off before the LLM ever saw it.
+  //
+  // Per-block caps cut roughly 3x (latency overhaul — see BUDGET_CHARS's
+  // comment above) as part of keeping total prompt size well under this
+  // account's live 8000-TPM Groq rate limit, and to cut raw prefill time
+  // regardless of provider.
   const clientBlock = truncate(
     formatRecords("CLIENT", retrieved.ltmClient, ["brand_voice", "compliance", "escalation"], { useFullText: true }),
-    6000,
+    2000,
   );
   const timelineBlock = retrieved.timeline && retrieved.timeline.length > 0
-    ? truncate(formatTimeline(retrieved.timeline), 7200)
+    ? truncate(formatTimeline(retrieved.timeline), 2000)
     : "";
 
   const userLtmBlock = timelineBlock
     ? "" // Grouped in timeline instead of isolated records
-    : truncate(formatRecords("USER_PROFILE", retrieved.ltmUser), 1200);
+    : truncate(formatRecords("USER_PROFILE", retrieved.ltmUser), 800);
 
   const evidenceBlock = timelineBlock
     ? timelineBlock
-    : truncate(formatEvidence(retrieved.mtm), 6000);
+    : truncate(formatEvidence(retrieved.mtm), 2000);
 
   const emotionBlock = formatEmotion(emotion);
   const alreadyOfferedHandoff = retrieved.stm.some(
     (t) => t.role === "agent" && HANDOFF_OFFER_RE.test(t.text)
   );
   const policyBlock = policyToPrompt(policy, alreadyOfferedHandoff);
-  const stmBlock = truncate(formatStm(retrieved.stm, userTurn.id), 8000);
+  const stmBlock = truncate(formatStm(retrieved.stm, userTurn.id), 3000);
 
   // FR-11: Build dynamic emotion persona for this turn — uses the locked
   // label (if a lock was resolved this turn) rather than the raw per-turn

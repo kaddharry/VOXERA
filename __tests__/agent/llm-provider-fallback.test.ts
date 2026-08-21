@@ -38,9 +38,10 @@ describe("CONFIG.llm.providers — explicit priority order", () => {
     expect(groq.envKey).toBe("GROQ_API_KEYS");
   });
 
-  it("defaults Groq to a small/fast model, not the large one it used to fall back to", () => {
+  it("defaults Groq to a non-reasoning-latency model (qwen3.6-27b, reasoning_effort=none) — gpt-oss models measured 1.5-5s+ of invisible reasoning time on real prompts, see config.ts's comment", () => {
     const groq = CONFIG.llm.providers.find((p) => p.name === "groq")!;
-    expect(groq.model).toBe("openai/gpt-oss-20b");
+    expect(groq.model).toBe("qwen/qwen3.6-27b");
+    expect(groq.reasoningEffort).toBe("none");
   });
 });
 

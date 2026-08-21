@@ -32,6 +32,21 @@ export const CONFIG = {
     minEmotionConfidence: 0.5,
     minRetrievalScore: 0.4,
   },
+  stt: {
+    // Deepgram live-transcription turn-detection knobs (lib/deepgram/live.ts).
+    // `endpointing` is how long a word group must go quiet before Deepgram
+    // marks it is_final; `utteranceEndMs` is the additional trailing-silence
+    // gap (needs vad_events=true) that decides the CALLER'S TURN is actually
+    // over, not just one word group. Both used to be flat 900/1000 — a pure
+    // silence timer that alone added up to ~1.9s of dead air per turn before
+    // handleTurn() was even invoked, the single biggest fixed latency cost
+    // in the whole pipeline. Lowered conservatively (not down to the
+    // theoretical minimum) because too aggressive a cut reintroduces the
+    // "ordinary mid-sentence thinking pause gets split into two turns" bug
+    // documented in live.ts — tune further only against real call recordings.
+    endpointingMs: 400,
+    utteranceEndMs: 600,
+  },
   deepgram: {
     sttModel: "nova-2-general",
     sttTier: "enhanced",
@@ -62,26 +77,28 @@ export const CONFIG = {
       {
         name: "groq",
         baseURL: "https://api.groq.com/openai/v1",
-        // Verified live against this account's actual `GET /openai/v1/models`
-        // catalog (not assumed) — "llama-3.1-8b-instant" 404'd despite being
-        // Groq's commonly-documented small/fast model, meaning it isn't on
-        // this account/API version. Of what's actually available,
-        // "allam-2-7b" is smaller but doesn't support tool calling at all
-        // (a hard 400 from Groq, verified live) — a non-starter, since
-        // every live turn needs tools. "openai/gpt-oss-20b" is the smallest
-        // model that both exists on this account AND supports tool calling
-        // (~6x smaller than "openai/gpt-oss-120b", the previous default).
-        // It IS a reasoning model though — verified live it was silently
-        // spending most/all of maxOutputTokens on a hidden `reasoning` field
-        // before ever writing `content`, which is exactly what surfaced as
-        // "[LLM] Tool-call loop exhausted without a final reply" and
-        // occasional visibly truncated replies once this became the
-        // primary provider. `reasoningEffort: "low"` below (Groq/OpenAI's
-        // own supported knob for gpt-oss models) fixes that at the source
-        // rather than just paying for a bigger token budget.
-        model: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
+        // Latency-overhaul finding, verified live against this account's
+        // actual catalog (`GET /openai/v1/models`) and a real streaming
+        // end-to-end harness (scripts/e2e_latency_test.ts): every
+        // tool-calling-capable model this account can currently reach
+        // ("openai/gpt-oss-20b"/"120b", previously the default) is a
+        // reasoning model. Even at `reasoning_effort: "low"`, gpt-oss-20b
+        // was repeatedly measured spending 1.5-5+ seconds of real wall time
+        // on invisible reasoning tokens before ever emitting the first
+        // VISIBLE content token against this codebase's actual system
+        // prompts — the streaming pipeline itself delivered that content
+        // instantly once the model finally produced it, so this was
+        // unambiguously model "thinking" time, not a pipeline bottleneck.
+        // "qwen/qwen3.6-27b" supports `reasoning_effort: "none"` (a value
+        // gpt-oss rejects), which measured a consistent ~240-400ms
+        // time-to-first-content-token on the identical real prompts/tools —
+        // still correctly calls tools (verified live) — a 4-10x improvement
+        // with no code change beyond the model/param swap. "allam-2-7b" is
+        // faster still (~100ms) but doesn't support tool calling at all — a
+        // non-starter since every live turn needs tools.
+        model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
         envKey: "GROQ_API_KEYS",
-        reasoningEffort: "low" as const,
+        reasoningEffort: "none" as const,
       },
       {
         name: "zenmux",
@@ -90,7 +107,7 @@ export const CONFIG = {
         envKey: "ZENMUX_API_KEY",
       },
       { name: "openai", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", envKey: "OPENAI_API_KEY" },
-    ] as Array<{ name: string; baseURL: string; model: string; envKey: string; reasoningEffort?: "low" | "medium" | "high" }>,
+    ] as Array<{ name: string; baseURL: string; model: string; envKey: string; reasoningEffort?: "none" | "low" | "medium" | "high" }>,
     maxInputTokens: 6000,
     // Kept tight for voice/realtime turns — long completions add seconds of
     // TTS-wait latency and break the "feels like a phone call" pacing.

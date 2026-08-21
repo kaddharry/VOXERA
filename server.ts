@@ -8,6 +8,7 @@ import { int16ToFloat32Pcm } from "./lib/emotion/local-audio-detect";
 import { DEMO, ensureSeeded } from "./lib/bootstrap";
 import { CONFIG } from "./lib/config";
 import { config } from "dotenv";
+import { warmupModels } from "./lib/warmup";
 
 // Belt-and-suspenders env loading: `npm run server` passes `--env-file=.env.local`
 // to tsx/node directly, which is what actually matters — ES module imports are
@@ -16,6 +17,10 @@ import { config } from "dotenv";
 // KeyRotator, imported transitively via handleTurn below) would otherwise
 // permanently capture an empty env var if dotenv only loaded here.
 config({ path: ".env.local" });
+
+// See lib/warmup.ts — avoids paying ONNX model cold-load cost on whichever
+// turn happens to be first.
+void warmupModels();
 
 const PORT = 3001;
 const wss = new WebSocketServer({ port: PORT });

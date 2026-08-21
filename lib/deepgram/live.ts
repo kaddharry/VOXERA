@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { CONFIG } from "../config";
 
 export type TranscriptCallback = (text: string, isFinal: boolean) => void;
 
@@ -90,8 +91,8 @@ export class DeepgramLiveWrapper {
       // buffers is_final segments and only fires a turn-triggering callback
       // on UtteranceEnd, using utterance_end_ms as the silence gap for that
       // decision specifically.
-      endpointing: "900",
-      utterance_end_ms: "1000",
+      endpointing: String(CONFIG.stt.endpointingMs),
+      utterance_end_ms: String(CONFIG.stt.utteranceEndMs),
       vad_events: "true",
     });
     const url = `wss://api.deepgram.com/v1/listen?${params.toString()}`;

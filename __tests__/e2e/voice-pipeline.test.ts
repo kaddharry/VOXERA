@@ -199,3 +199,73 @@ describe("Issue #9: E2E Voice Conversation Pipeline", () => {
     expect(result.trace.guardReasons.length).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe("handleTurn — streaming (onReplyChunk), the telephony latency fix", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("forwards each clause from generateReply's onClause callback straight to onReplyChunk", async () => {
+    mockGenerateReply.mockImplementationOnce(async (args: any) => {
+      args.onClause("First clause.");
+      args.onClause("Second clause.");
+      return { text: "First clause. Second clause.", model: "test-model", usedLive: true, provider: "test" };
+    });
+
+    const spoken: string[] = [];
+    const result = await handleTurn(
+      {
+        sessionId: "stream-session-1",
+        userId: "stream-user-1",
+        clientId: "stream-client-1",
+        transcript: "What's the weather like",
+        sttConfidence: 0.95,
+      },
+      { onReplyChunk: (c) => spoken.push(c) }
+    );
+
+    expect(spoken).toEqual(["First clause.", "Second clause."]);
+    expect(result.reply).toBe("First clause. Second clause.");
+    // generateReply must have been asked to stream, with the caller's abort signal (undefined here) threaded through.
+    expect(mockGenerateReply).toHaveBeenCalledWith(expect.objectContaining({ onClause: expect.any(Function) }));
+  });
+
+  it("skips the LLM call entirely and speaks a clarification when STT confidence is below threshold", async () => {
+    const spoken: string[] = [];
+    const result = await handleTurn(
+      {
+        sessionId: "stream-session-2",
+        userId: "stream-user-2",
+        clientId: "stream-client-2",
+        transcript: "mumble mumble",
+        sttConfidence: 0.1,
+      },
+      { onReplyChunk: (c) => spoken.push(c) }
+    );
+
+    expect(mockGenerateReply).not.toHaveBeenCalled();
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0]).toMatch(/say that once more/i);
+    expect(result.reply).toBe(spoken[0]);
+  });
+
+  it("non-streaming callers (no opts) behave exactly as before — generateReply called without onClause", async () => {
+    mockGenerateReply.mockResolvedValueOnce({
+      text: "Plain non-streamed reply.",
+      model: "test-model",
+      usedLive: true,
+      provider: "test",
+    });
+
+    const result = await handleTurn({
+      sessionId: "stream-session-4",
+      userId: "stream-user-4",
+      clientId: "stream-client-4",
+      transcript: "hello",
+      sttConfidence: 0.95,
+    });
+
+    expect(result.reply).toBe("Plain non-streamed reply.");
+    expect(mockGenerateReply).toHaveBeenCalledWith(expect.not.objectContaining({ onClause: expect.anything() }));
+  });
+});
