@@ -15,7 +15,7 @@ import { retrieve, topScore } from "../memory/retrieval";
 import { stm } from "../memory/stm";
 import { vectorStore } from "../memory/store";
 import { writeMemory } from "../memory/writer";
-import type { Utterance, EmotionSignal, AcousticFeatures } from "../types";
+import type { Utterance, EmotionSignal, EmotionLabel, AcousticFeatures, PolicyDirectives } from "../types";
 import { embed } from "../util/embed";
 import { buildLLMContext } from "./context";
 import { guardOutput, guardBeforeLLM, guardOpeningClause, cleanClause, guardTrailingClause, type GuardResult } from "./guard";
@@ -138,6 +138,13 @@ export interface HandleTurnOpts {
   /** Cancels the in-flight LLM generation (used for barge-in). Only
    * meaningful together with onReplyChunk. */
   abortSignal?: AbortSignal;
+  /** Fires once — as soon as this turn's emotion label and policy
+   * directives are resolved, well before the LLM call even starts — so a
+   * streaming caller can compute TTS prosody params (lib/emotion/tts-
+   * params.ts's getEmotionTTSParams) up front and apply them to each
+   * clause as it streams in, instead of only finding out the emotion/
+   * policy once the whole turn (and all its audio) is already done. */
+  onEmotionResolved?: (emotion: EmotionLabel, policy: PolicyDirectives) => void;
 }
 
 export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promise<TurnOutput> {
@@ -414,6 +421,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   const ltmClientSnippets = retrieved.ltmClient.map(toSnippet);
 
   const policy = decidePolicy(emotionCtx);
+  opts?.onEmotionResolved?.(fused.label, policy);
 
   void logSessionEvent(makeEvent(evBase, "memory_write", {
     tier: memoryWrite.tier,

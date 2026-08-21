@@ -60,6 +60,17 @@ The latest reliability hardening pass completed five production-facing fixes:
 
 All five fixes include targeted regression coverage.
 
+- **BUG-V1 (2026-08-19):** The agent's voice now actually reacts to caller emotion. Previously,
+  `lib/emotion/tts-params.ts` computed a `speed`/`pitchHint` pair per emotion that nothing
+  downstream read — and Deepgram's TTS API has no speed/pitch parameter to receive it anyway
+  (verified against the SDK's own request type). Replaced with a 7-mode tone directive (appealing,
+  dominant, pleasing, empathetic, playful, serious, neutral) driving real pause/pacing shaping for
+  every tenant plus real ElevenLabs `voice_settings` (stability/style/speed) for tenants configured
+  for it. A task-critical topic (payment/refund/legal/medical/safety) now forces a measured
+  "serious" tone regardless of mood. Also fixed the real telephony call path
+  (`lib/telephony/stream-handler.ts`) never passing `policy` to TTS at all — only the browser/demo
+  path did. See `VOXERA_TEST_RESULTS.md` (2026-08-19) for validation detail.
+
 ---
 ## 3. Module Status Dashboard
 

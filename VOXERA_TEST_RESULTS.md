@@ -4,6 +4,59 @@ This document records the exact test suites, validation steps, and outcomes for 
 
 ---
 
+## 2026-08-19 — BUG-V1: Adaptive Voice Tone (7-mode) — Emotion-Derived TTS Prosody (PR pending)
+**Status:** ✅ VERIFIED
+**Key Technologies:** Deepgram Aura TTS, ElevenLabs multilingual v2, emotion/policy fusion
+
+**Root cause:** `lib/emotion/tts-params.ts` computed a `speed`/`pitchHint` pair per emotion that
+nothing downstream ever consumed. Verified against the Deepgram SDK's own `SpeakV1Request` type
+that Deepgram's TTS REST API accepts no speed/pitch parameter at all (`text`, `model`, `encoding`,
+`sample_rate`, `container`, `bit_rate`, `callback`, `tag` only) — those fields were unusable through
+Deepgram's API regardless of wiring. Also found `lib/tts/voice-clone.ts` hardcoded stability/
+similarity_boost on every ElevenLabs call (no emotion reactivity) and used `eleven_monolingual_v1`,
+a model no longer listed in ElevenLabs' current model catalog (verified live docs).
+
+**Fix:** Replaced the dead fields with a 7-mode tone directive (`appealing`, `dominant`, `pleasing`,
+`empathetic`, `playful`, `serious`, `neutral`) derived from the emotion label + existing
+`policy.ts` signals (escalate/acknowledgeFirst) + `CONFIG.taskCritical` keyword matching on the
+caller's utterance (Serious/Formal override, highest precedence — e.g. a payment/refund/legal topic
+stays measured even if the caller sounds calm or happy). Drives two real levers: pause/pacing text
+shaping (works for every tenant, any TTS provider) and real ElevenLabs `voice_settings`
+(`stability`/`style`/`speed`, all confirmed-documented fields) for tenants already configured for
+ElevenLabs. Switched the stale `eleven_monolingual_v1` model to `eleven_multilingual_v2`. Threaded
+`policy`/`callerText` into the telephony call site (`lib/telephony/stream-handler.ts`), which
+previously never passed `policy` to TTS at all on real calls — only the browser/demo path did.
+"Flirty" was deliberately not built as a tone (professionalism/liability risk for tenant
+businesses) — "playful" covers the same "more human, less robotic" goal without it.
+
+**Validation Steps:**
+1. **Tone resolution unit tests:** all 12 emotion labels map to the correct tone bucket; escalation/
+   acknowledgeFirst policy forces "appealing" even for a neutral emotion; task-critical caller text
+   forces "serious" and overrides both a positive emotion and an active escalation.
+2. **Regression guard:** asserted the exact Deepgram request payload keys sent to
+   `dg.speak.v1.audio.generate()` never include `speed`/`pitch`/`pitchHint` — so this class of bug
+   (computing a field the API silently can't use) can't reappear unnoticed.
+3. **ElevenLabs wiring:** asserted `synthesizeElevenLabs()` receives the correct per-tone
+   `{ stability, style, speed }` for a configured tenant, and that the Serious/Formal override wins
+   over the emotion-derived tone.
+4. **No regression:** re-ran the pre-existing `voice-personalization-recovery` e2e suite (ElevenLabs
+   routing/fallback) unmodified — still passes.
+5. **CI gates:** `npm run lint` clean; `npm run build` succeeds (Turbopack production build).
+6. **Full suite:** 361 passed / 1 pre-existing todo. One pre-existing failure
+   (`__tests__/emotion/detect.test.ts` confidence threshold) reproduced identically on unmodified
+   `main` — confirmed unrelated to this change. One `telephony-pipeline.test.ts` timeout reproduced
+   once under full-suite load but passed on 2 repeat full-suite runs and in isolation — confirmed
+   pre-existing flake, not a regression (also passed on unmodified `main` under the same full-suite
+   run).
+
+**E2E Test Execution:**
+- `npx vitest run __tests__/emotion/tts-params.test.ts __tests__/deepgram/tts-tone.test.ts __tests__/e2e/voice-personalization-recovery.test.ts` — 21/21 passed
+- `npx vitest run` (full suite) — 361 passed, 1 pre-existing unrelated failure, 1 todo
+- `npm run lint` — clean
+- `npm run build` — succeeded
+
+---
+
 ## 2026-08-18 — Reliability Bug Fix Validation
 
 ### BUG-D1/D2 — Supabase resilience hardening (PR #70)

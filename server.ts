@@ -4,6 +4,7 @@ import { DeepgramLiveWrapper } from "./lib/deepgram/live";
 import { handleTurn } from "./lib/agent/orchestrator";
 import { synthesize, resolveVoiceModel, getClientVoiceSettings } from "./lib/deepgram/tts";
 import { DeepgramSpeakStream } from "./lib/deepgram/tts-stream";
+import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "./lib/emotion/tts-params";
 import { getAgentWithTenant } from "./lib/db/agents";
 import { supabase } from "./lib/db/supabase";
 import { extractAcousticFeatures } from "./lib/audio/acoustic";
@@ -221,6 +222,7 @@ wss.on("connection", async (ws: WebSocket, request) => {
           emotion: output.trace.emotion.current.label,
           persona: output.trace.agent?.voicePersona ?? undefined,
           clientId,
+          callerText: text,
         });
         const ttsMs = Date.now() - ttsStart;
         if (myGeneration !== generation) return;
@@ -241,13 +243,23 @@ wss.on("connection", async (ws: WebSocket, request) => {
         );
       });
 
+      // Resolved via onEmotionResolved below, well before the first clause
+      // arrives — lets each streamed clause get the same adaptive-tone
+      // pause shaping (BUG-V1) the buffered path applies to the whole
+      // reply at once.
+      let prosodyParams: TTSProsodyParams | null = null;
+
       const output = await handleTurn(turnInput, {
         abortSignal: abortController.signal,
+        onEmotionResolved: (emotion, policy) => {
+          prosodyParams = getEmotionTTSParams(emotion, policy, text);
+        },
         onReplyChunk: (clause) => {
           if (myGeneration !== generation) return; // stale — dropped by barge-in
+          const shaped = prosodyParams ? applyEmotionProsody(clause, prosodyParams) : clause;
           void speakStreamReady.then(() => {
             if (myGeneration !== generation) return;
-            speakStream.sendText(clause);
+            speakStream.sendText(shaped);
             speakStream.flush();
           });
         },
@@ -263,7 +275,10 @@ wss.on("connection", async (ws: WebSocket, request) => {
 
       // Sent after the clauses have already started streaming as audio —
       // the transcript/trace panel updates a beat behind the caller's first
-      // words, same tradeoff lib/telephony/stream-handler.ts makes.
+      // words, same tradeoff lib/telephony/stream-handler.ts makes. Not
+      // synthesizing again here (unlike the pre-streaming version) — every
+      // clause's audio (already prosody-shaped — see onReplyChunk above)
+      // was sent as it was generated.
       ws.send(JSON.stringify({ type: "reply_text", turnId: replyTurnId, text: output.reply, trace: output.trace }));
     } catch (err) {
       if (myGeneration !== generation) {

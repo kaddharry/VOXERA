@@ -4,7 +4,8 @@ import { DeepgramLiveWrapper } from "../deepgram/live";
 import { synthesizeLinear16, resolveVoiceModel, getClientVoiceSettings } from "../deepgram/tts";
 import { DeepgramSpeakStream } from "../deepgram/tts-stream";
 import { handleTurn } from "../agent/orchestrator";
-import type { EmotionLabel } from "../types";
+import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "../emotion/tts-params";
+import type { EmotionLabel, PolicyDirectives } from "../types";
 import { supabase } from "../db/supabase";
 import { getAgentWithTenant } from "../db/agents";
 import { callQueue } from "../queue/manager";
@@ -422,7 +423,13 @@ export class TelephonyStreamHandler {
         const output = await handleTurn(turnInput);
         if (myGeneration === this.generation) {
           console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
-          await this.speakBuffered(output.reply, output.trace.emotion.current.label, output.trace.agent?.voicePersona ?? undefined);
+          await this.speakBuffered(
+            output.reply,
+            output.trace.emotion.current.label,
+            output.trace.agent?.voicePersona ?? undefined,
+            output.trace.policy,
+            text
+          );
         }
         return;
       }
@@ -438,14 +445,26 @@ export class TelephonyStreamHandler {
         this.sendAudioChunkToTwilio(audioChunk);
       });
 
+      // Resolved via onEmotionResolved below, well before the first clause
+      // arrives (policy/emotion are computed before the LLM call even
+      // starts) — lets each streamed clause get the same adaptive-tone
+      // pause shaping (BUG-V1) the buffered path applies to the whole
+      // reply at once, instead of losing that feature on the path that's
+      // now actually used for real calls.
+      let prosodyParams: TTSProsodyParams | null = null;
+
       const output = await handleTurn(turnInput, {
         abortSignal: abortController.signal,
+        onEmotionResolved: (emotion, policy) => {
+          prosodyParams = getEmotionTTSParams(emotion, policy, text);
+        },
         onReplyChunk: (clause) => {
           if (myGeneration !== this.generation) return; // stale — dropped by barge-in
           this.isSpeaking = true;
+          const shaped = prosodyParams ? applyEmotionProsody(clause, prosodyParams) : clause;
           void speakStreamReady.then(() => {
             if (myGeneration !== this.generation) return;
-            speakStream.sendText(clause);
+            speakStream.sendText(shaped);
             speakStream.flush();
           });
         },
@@ -455,7 +474,11 @@ export class TelephonyStreamHandler {
 
       // Deliberately NOT closed here — see ensureSpeakStream()'s doc
       // comment. It stays open for the next turn and is only closed in
-      // onCallEnded().
+      // onCallEnded(). Also deliberately NOT calling speakBuffered() here —
+      // unlike the pre-streaming version, every clause's audio (already
+      // prosody-shaped — see onReplyChunk above) was sent as it was
+      // generated; synthesizing the whole reply again here would just
+      // speak it a second time.
       if (myGeneration === this.generation) {
         this.isSpeaking = false;
       }
@@ -500,12 +523,21 @@ export class TelephonyStreamHandler {
    * μ-law → sends the whole thing to Twilio in one go. Kept for the filler
    * phrase (a short fixed string, not worth streaming) and as the fallback
    * for tenants with a custom ElevenLabs voice (see setupVoiceForCall()).
+   * `policy`/`callerText` drive the adaptive tone (BUG-V1) — real calls
+   * previously never passed policy to TTS at all.
    */
-  private async speakBuffered(text: string, emotionLabel?: EmotionLabel, persona?: string) {
+  private async speakBuffered(text: string, emotionLabel?: EmotionLabel, persona?: string, policy?: PolicyDirectives, callerText?: string) {
     if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
 
     try {
-      const pcmBytes = await synthesizeLinear16(text, { clientId: this.clientId, emotion: emotionLabel, persona });
+      // Get raw 8kHz Linear16 PCM directly from Deepgram (or the tenant's
+      // custom ElevenLabs voice, if configured) — already in the exact
+      // format pcmToMulaw expects, no decoding required. `persona` is the
+      // Agent Builder agent's own chosen Deepgram voice (voice_persona),
+      // when this call is routed through a custom agent — takes priority
+      // over the CONFIG default but is still overridden by a tenant-level
+      // ElevenLabs voice inside synthesizeLinear16() if one is configured.
+      const pcmBytes = await synthesizeLinear16(text, { clientId: this.clientId, emotion: emotionLabel, persona, policy, callerText });
       const mulawAudio = pcmToMulaw(pcmBytes);
       const base64Audio = mulawAudio.toString("base64");
 
