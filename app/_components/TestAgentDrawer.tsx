@@ -401,14 +401,29 @@ export function TestAgentDrawer() {
 
   // Deep-link support: /demo?agentId=<id> (used by the "Test this agent"
   // button in /admin/agents) pre-selects that agent and opens the drawer
-  // automatically, once its info has loaded.
+  // automatically. TestAgentDrawer is mounted once in the root layout
+  // (app/layout.tsx) and never unmounts across client-side navigation, so
+  // reading the URL only on mount would silently go stale the moment any
+  // future entry point navigates to a new ?agentId= without a full page
+  // reload — today's one entry point (admin/agents's "Talk to Agent" link)
+  // happens to use target="_blank", which sidesteps that by always forcing
+  // a fresh mount, but that's incidental to how that link is styled, not a
+  // guarantee about how agent-selection deep links work. Re-reading on
+  // `popstate` too (back/forward navigation) means this keeps working if
+  // that ever changes, instead of silently locking onto whichever agent
+  // happened to be selected on this tab's very first load.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const agentId = params.get("agentId");
-    if (agentId) {
-      setSelectedAgentId(agentId);
-      setOpen(true);
-    }
+    const applyAgentIdFromUrl = () => {
+      const params = new URLSearchParams(window.location.search);
+      const agentId = params.get("agentId");
+      if (agentId) {
+        setSelectedAgentId(agentId);
+        setOpen(true);
+      }
+    };
+    applyAgentIdFromUrl();
+    window.addEventListener("popstate", applyAgentIdFromUrl);
+    return () => window.removeEventListener("popstate", applyAgentIdFromUrl);
   }, []);
 
   // Lets other pages (e.g. the /demo mode switcher's "Live Call" CTA) open
