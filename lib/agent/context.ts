@@ -5,19 +5,21 @@ import { getEmotionPersona, formatPersonaBlock } from "../emotion/persona";
 
 // Character-based budget approximation. Assumes ~4 chars/token.
 //
-// Cut sharply (was 24000 ≈ 6000 tokens) as part of the latency overhaul —
-// a real end-to-end measurement against this account's live Groq API
+// Cut from the original 24000 as part of the latency overhaul — a real
+// end-to-end measurement against this account's live Groq API
 // (scripts/e2e_latency_test.ts) surfaced prompts in the 3000-6000+ token
 // range routinely triggering 429 rate-limit responses (8000 TPM on the
-// on_demand/free tier), which is what was actually producing multi-second
-// turn latency on real calls, not raw model inference time — a single
-// oversized turn could burn most of an entire minute's token budget by
-// itself. Smaller prompts are also strictly faster to prefill regardless
-// of rate limits. This is a real quality/context tradeoff (less retrieved
-// history fits per turn) traded deliberately for latency — if the account
-// moves to a paid tier with a much higher TPM limit, this can be raised
-// again.
-const BUDGET_CHARS = 6000;
+// on_demand/free tier). An initial cut to 6000 went too far the other way
+// and caused a real production bug: a custom agent with a long
+// system_prompt (7696 chars observed live) already exceeded 6000 on the
+// system block ALONE, and since only the trimmable prefix below is ever
+// cut (never the current-turn suffix — see its comment), that agent was
+// left with essentially zero room for retrieved evidence, unable to
+// actually answer questions its knowledge base had perfectly good chunks
+// for. 16000 leaves real headroom above a verbose system prompt for
+// evidence/emotion/policy/history to still fit, while staying well under
+// the original 24000 for latency/rate-limit reasons.
+const BUDGET_CHARS = 16000;
 
 // Matches natural hand-off phrasing so we can tell the model "you already
 // offered this" instead of letting it repeat the offer verbatim every turn.
@@ -157,7 +159,20 @@ export function buildLLMContext(args: {
 
   const citations = retrieved.mtm.map((m) => m.id);
 
-  const user = [
+  // Split into a trimmable prefix (evidence/emotion/policy/history — useful
+  // context, but the turn is still answerable without all of it) and a
+  // protected suffix (what the caller actually just said). Budget cuts only
+  // ever come out of the prefix, never the suffix — a previous version cut
+  // the whole assembled `user` string from the end via a flat char budget,
+  // which silently truncated the CURRENT TURN section away first (it was
+  // last in the string) whenever an agent's system prompt alone was long
+  // enough to blow the budget on its own. Live-verified reproducible: a
+  // custom agent with a long system_prompt collapsed `user` down to a bare
+  // "..." — the model never saw the caller's question OR the evidence, just
+  // the system prompt telling it to act as a person on a call, which is
+  // exactly why it answered with content-free small talk no matter what was
+  // asked. The current turn must never be the thing that gets cut.
+  const trimmablePrefix = [
     timelineBlock ? "=== CHRONOLOGICAL EVENT TIMELINE ===" : "=== EVIDENCE ===",
     evidenceBlock || (timelineBlock ? "(no timeline events)" : "(no user-specific evidence)"),
     "",
@@ -169,17 +184,19 @@ export function buildLLMContext(args: {
     "",
     "=== STM (recent turns) ===",
     stmBlock,
+  ].join("\n");
+  const protectedSuffix = [
     "",
     "=== CURRENT TURN ===",
     `USER: ${userTurn.text}${userTurn.sttConfidence != null ? ` [stt_conf=${userTurn.sttConfidence.toFixed(2)}]` : ""}`,
   ].join("\n");
 
-  // Hard cap on total chars.
-  const totalChars = system.length + user.length;
-  if (totalChars > BUDGET_CHARS) {
-    const over = totalChars - BUDGET_CHARS;
-    return { system, user: truncate(user, user.length - over), citations };
-  }
+  // Hard cap on total chars — only ever trims trimmablePrefix, clamped at 0
+  // (never negative), so protectedSuffix always survives intact even if
+  // system alone already exceeds the whole budget.
+  const budgetForPrefix = Math.max(0, BUDGET_CHARS - system.length - protectedSuffix.length);
+  const user = truncate(trimmablePrefix, budgetForPrefix) + protectedSuffix;
+
   return { system, user, citations };
 }
 

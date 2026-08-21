@@ -65,3 +65,89 @@ describe("buildLLMContext — Agent Builder customInstructions injection", () =>
     expect(ctx.system).not.toContain("AGENT-SPECIFIC INSTRUCTIONS");
   });
 });
+
+describe("buildLLMContext — the budget cut never eats the current turn", () => {
+  // Regression test for a real production bug: a custom agent with a long
+  // system_prompt (7696 chars observed live) already exceeded the old
+  // 6000-char BUDGET_CHARS on the system block alone. The old truncation
+  // logic sliced the whole assembled `user` string from the end, and since
+  // "=== CURRENT TURN ===" was the LAST section in that string, it got cut
+  // away first — the caller's actual question and all retrieved evidence
+  // vanished, leaving the model nothing to respond to but the system
+  // prompt, which is why it answered every question with content-free
+  // small talk regardless of what was asked (verified live against the
+  // real failing agent/query).
+  it("keeps the caller's question intact even when the system prompt alone would blow the whole budget", () => {
+    const hugeCustomInstructions = "You are a detailed persona. ".repeat(400); // ~11,600 chars — bigger than BUDGET_CHARS by itself
+    const question = "Can you tell me about your experience at Tredence?";
+    const ctx = buildLLMContext({
+      userId: "u1",
+      clientId: "c1",
+      userTurn: makeTurn(question),
+      retrieved: makeRetrieved(),
+      emotion: makeEmotion(),
+      policy: makePolicy(),
+      customInstructions: hugeCustomInstructions,
+    });
+    expect(ctx.user).toContain("=== CURRENT TURN ===");
+    expect(ctx.user).toContain(question);
+  });
+
+  it("keeps the current turn intact even with both a huge system prompt AND a lot of retrieved evidence", () => {
+    const hugeCustomInstructions = "You are a detailed persona. ".repeat(400);
+    const question = "What are your technical skills?";
+    const bigRetrieved: RetrievedContext = {
+      stm: [],
+      mtm: Array.from({ length: 10 }, (_, i) => ({
+        id: `mem-${i}`,
+        tier: "MTM" as const,
+        userId: "u1",
+        clientId: "c1",
+        ts: Date.now(),
+        text: "Detailed resume content describing a project or role. ".repeat(20),
+        summary: "A resume chunk.",
+        entities: [],
+        topic: "resume",
+        emotion: "neutral" as const,
+        vad: { v: 0, a: 0, d: 0 },
+        intensity: 0,
+        importance: 0.8,
+        importance_score: 0.8,
+        retrieval_count: 0,
+        embedding: [],
+        sourceUtteranceIds: [],
+        recurrence: 0,
+        resolved: false,
+      })),
+      ltmUser: [],
+      ltmClient: [],
+      scores: [],
+    };
+    const ctx = buildLLMContext({
+      userId: "u1",
+      clientId: "c1",
+      userTurn: makeTurn(question),
+      retrieved: bigRetrieved,
+      emotion: makeEmotion(),
+      policy: makePolicy(),
+      customInstructions: hugeCustomInstructions,
+    });
+    expect(ctx.user).toContain("=== CURRENT TURN ===");
+    expect(ctx.user).toContain(question);
+  });
+
+  it("never produces a near-empty user message ('...') the way the original bug did", () => {
+    const hugeCustomInstructions = "You are a detailed persona. ".repeat(600); // even bigger than BUDGET_CHARS
+    const ctx = buildLLMContext({
+      userId: "u1",
+      clientId: "c1",
+      userTurn: makeTurn("Hello, how are you?"),
+      retrieved: makeRetrieved(),
+      emotion: makeEmotion(),
+      policy: makePolicy(),
+      customInstructions: hugeCustomInstructions,
+    });
+    expect(ctx.user.trim()).not.toBe("...");
+    expect(ctx.user.length).toBeGreaterThan(20);
+  });
+});
