@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import ws from "ws";
 
 /**
  * We use the SERVICE ROLE KEY because this code runs in a secure Node.js backend.
@@ -168,6 +169,9 @@ export const supabase = createClient(getSupabaseUrl(), getSupabaseKey(), {
   },
   global: {
     fetch: timeoutFetch,
+  },
+  realtime: {
+    transport: ws as any,
   },
 });
 
