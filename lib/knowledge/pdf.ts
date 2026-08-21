@@ -115,6 +115,7 @@ async function ocrPdf(content: Buffer | Uint8Array): Promise<string> {
   const worker = await createWorker("eng");
   try {
     const pageTexts: string[] = [];
+    const pageConfidences: number[] = [];
     for (let i = 1; i <= pageCount; i++) {
       const page = await doc.getPage(i);
       // 2.5x scale: verified live as a good accuracy/speed tradeoff for
@@ -131,11 +132,47 @@ async function ocrPdf(content: Buffer | Uint8Array): Promise<string> {
       const png = canvas.toBuffer("image/png");
       const { data: ocrResult } = await worker.recognize(png);
       pageTexts.push(ocrResult.text);
+      pageConfidences.push(ocrResult.confidence);
     }
-    return pageTexts.join("\n\n");
+
+    // Quality gate — see CONFIG.knowledge.minOcrConfidence's doc comment
+    // for the real incident this is fixing. Checks both Tesseract's own
+    // reported confidence AND an independent word-shape sanity ratio, since
+    // a scan that's mostly non-text noise (a decorative border, a photo)
+    // can sometimes still get a misleadingly moderate confidence score.
+    const avgConfidence = pageConfidences.reduce((a, b) => a + b, 0) / (pageConfidences.length || 1);
+    const fullText = pageTexts.join("\n\n");
+    if (avgConfidence < CONFIG.knowledge.minOcrConfidence || !hasPlausibleTextComposition(fullText)) {
+      throw new Error(
+        `OCR quality too low to trust (confidence=${avgConfidence.toFixed(1)}, threshold=${CONFIG.knowledge.minOcrConfidence}). ` +
+        `This usually means the source is a low-quality scan/photo or a decorative image the OCR engine can't read reliably — ` +
+        `try a clearer scan, or enter the content as plain text/markdown instead.`
+      );
+    }
+
+    return fullText;
   } finally {
     await worker.terminate();
   }
+}
+
+/** Backup signal alongside Tesseract's own confidence score: what fraction
+ * of whitespace-separated tokens look like a plausible word or number,
+ * rather than OCR noise from a misread graphic/decoration (isolated single
+ * letters, stray symbols, punctuation soup). A character-level check isn't
+ * enough here — live-tested against a real garbled OCR sample where nearly
+ * every character individually looked "plausible" (letters, digits, common
+ * punctuation) despite the text overall being unreadable noise; requiring
+ * each TOKEN to look word-or-number-shaped catches that a character-type
+ * check misses. Verified live: 0.46 on real OCR garbage vs 0.78 on the
+ * genuinely-readable portion of the same document. */
+export function hasPlausibleTextComposition(text: string): boolean {
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+  const wordLike = tokens.filter(
+    (t) => /^[a-zA-Z]{2,}[a-zA-Z0-9.,'$%-]*$/.test(t) || /^\$?\d+([.,]\d+)?$/.test(t)
+  );
+  return wordLike.length / tokens.length >= 0.55;
 }
 
 /**

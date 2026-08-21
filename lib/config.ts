@@ -167,6 +167,27 @@ export const CONFIG = {
      * far too long. */
     ocrMaxPages: 15,
     /**
+     * Minimum acceptable Tesseract OCR confidence (0-100, its own reported
+     * mean confidence across recognized text) before the extraction is
+     * trusted enough to ingest. Added after a real tenant upload (a
+     * decorative/stylized restaurant menu image) sailed through with no
+     * quality check at all — Tesseract happily returned text like "Black
+     * Paper ... $27" (garbled from what's presumably "Black Pepper") and,
+     * for a second page region, near-total noise ("ANS oN 'e S atl TA |
+     * ARS") — both got embedded and stored as trusted LTM_client evidence,
+     * so the live agent cited genuinely unreadable OCR noise as fact and
+     * gave a different, wrong reading of the same garbled text on every
+     * regeneration. Below this threshold, extractPdfText() throws instead
+     * of returning the text, which ingestDocument() already turns into a
+     * clear "failed" document status with an error message — the same
+     * treatment as "no extractable text" — rather than silently ingesting
+     * something no one should trust as fact. 55 is deliberately not very
+     * strict — real menus/flyers with an ordinary photo/scan still clear
+     * this comfortably; it's aimed at "this is mostly noise," not "this
+     * has a few OCR misreads."
+     */
+    minOcrConfidence: 55,
+    /**
      * Above this many chunks for one document, group them into
      * "stacks" of ~stackGroupSize chunks each and generate a one-line LLM
      * summary per stack (lib/knowledge/ingest.ts's writeStackSummaries()) — the summary itself
