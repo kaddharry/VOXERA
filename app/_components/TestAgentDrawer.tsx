@@ -214,7 +214,14 @@ function MemoryRetrievalDetail({ retrieved }: { retrieved: NonNullable<TurnMemor
   const groups: { key: string; label: string; ids: string[]; snippets?: MemorySnippet[] }[] = [
     { key: "mtm", label: "Recent (MTM)", ids: retrieved.mtmIds, snippets: retrieved.mtmSnippets },
     { key: "ltmUser", label: "Long-term (user)", ids: retrieved.ltmUserIds, snippets: retrieved.ltmUserSnippets },
-    { key: "ltmClient", label: "Client knowledge", ids: retrieved.ltmClientIds, snippets: retrieved.ltmClientSnippets },
+    // "Client knowledge" is a count of retrieved CHUNKS/passages for this
+    // one turn (topK, see CONFIG.retrieval.topK.ltmClient), not a count of
+    // uploaded documents — a real source of confusion when a tenant has
+    // exactly one document (its chunks all share the same [topic] tag, so
+    // several passages from the SAME file can look like several different
+    // "knowledge bases" at a glance). Labeled explicitly as passages below
+    // to make that unambiguous.
+    { key: "ltmClient", label: "Client knowledge — passages", ids: retrieved.ltmClientIds, snippets: retrieved.ltmClientSnippets },
   ];
   const total = groups.reduce((s, g) => s + g.ids.length, 0);
   if (total === 0) {
