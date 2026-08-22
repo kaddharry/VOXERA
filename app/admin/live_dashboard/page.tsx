@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Radio, PhoneCall, Sparkles, ShieldAlert, Zap, Database, HelpCircle, History, Circle, LayoutGrid, Maximize2 } from "lucide-react";
 import { EngineDiagnosticPanel, type DiagnosticEmotionResult } from "../../_components/EngineDashboard";
 
@@ -129,9 +130,24 @@ function applySsePayload(prev: LiveState, payload: { type: string; data: any }):
 }
 
 export default function LiveDashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <LiveDashboardInner />
+    </Suspense>
+  );
+}
+
+function LiveDashboardInner() {
+  // Deep-link support — e.g. "/admin/live_dashboard?session=<id>" from the
+  // Patients page's call-history list, so clicking a specific past call's
+  // "View full analysis" jumps straight to it instead of landing on
+  // whatever's currently live/most-recent.
+  const searchParams = useSearchParams();
+  const deepLinkedSessionId = searchParams.get("session");
+
   const [activeCalls, setActiveCalls] = useState<ActiveCall[]>([]);
   const [recentCalls, setRecentCalls] = useState<RecentCall[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(deepLinkedSessionId);
   // "focus" = one big detail view (the original design). "grid" = every
   // live call at once, side by side — what "can we see 2 callers live"
   // actually needs: watching more than one call's transcript/emotion feed
@@ -146,6 +162,12 @@ export default function LiveDashboardPage() {
   // Historical (ended) call currently focused, if any — fetched once via
   // replay, not updated afterward (a finished call's history doesn't change).
   const [replayState, setReplayState] = useState<LiveState | null>(null);
+  // The replay endpoint's own call metadata — used for the header instead
+  // of looking the session up in `recentCalls` (capped at the 20 most
+  // recent calls tenant-wide), so a deep-linked call from a specific
+  // patient's history still shows a correct header even if it's aged out
+  // of that short list.
+  const [replayCallMeta, setReplayCallMeta] = useState<RecentCall | null>(null);
   const orbRef = useRef<HTMLDivElement | null>(null);
   const transcriptContainerRef = useRef<HTMLDivElement | null>(null);
   const eventSourcesRef = useRef<Record<string, EventSource>>({});
@@ -255,13 +277,26 @@ export default function LiveDashboardPage() {
   useEffect(() => {
     if (!sessionId || isLive) {
       setReplayState(null);
+      setReplayCallMeta(null);
       return;
     }
     let cancelled = false;
     fetch(`/api/session/${sessionId}/replay`)
       .then((r) => r.json())
       .then((data) => {
-        if (!cancelled && data.liveState) setReplayState(data.liveState as LiveState);
+        if (cancelled) return;
+        if (data.liveState) setReplayState(data.liveState as LiveState);
+        if (data.call) {
+          setReplayCallMeta({
+            id: data.call.id,
+            sessionId,
+            callerNumber: data.call.callerNumber,
+            status: data.call.status,
+            startedAt: data.call.startedAt,
+            endedAt: data.call.endedAt,
+            durationMs: data.call.durationMs,
+          });
+        }
       })
       .catch(() => {});
     return () => {
@@ -296,7 +331,7 @@ export default function LiveDashboardPage() {
   }, [focusedLiveState?.transcript.length]);
 
   const activeCall = activeCalls.find((c) => (c.sessionId || c.id) === sessionId);
-  const recentCall = recentCalls.find((c) => (c.sessionId || c.id) === sessionId);
+  const recentCall = recentCalls.find((c) => (c.sessionId || c.id) === sessionId) ?? replayCallMeta;
   const hasMultipleCalls = activeCalls.length + recentCalls.length > 1;
 
   return (
