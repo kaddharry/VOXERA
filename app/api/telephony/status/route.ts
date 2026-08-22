@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/db/supabase";
+import { generateCallSummary } from "../../../../lib/agent/call-summary";
 
 export const dynamic = "force-dynamic";
 
@@ -44,14 +45,32 @@ export async function POST(req: NextRequest) {
       updates.durationMs = parseInt(callDuration, 10) * 1000;
     }
 
-    const { error } = await supabase
+    const { data: updatedCall, error } = await supabase
       .from("call_logs")
       .update(updates)
-      .eq("id", callSid);
+      .eq("id", callSid)
+      .select("sessionId, clientId, patientId")
+      .single();
 
     if (error) {
       console.error("[Telephony/Status] DB update failed:", error);
       return NextResponse.json({ error: "DB update failed" }, { status: 500 });
+    }
+
+    // Post-call LLM-judge summary for the doctor to review — only for calls
+    // that actually completed with a real transcript (not busy/no-answer/
+    // failed), and only ones placed against a roster patient. Fire-and-
+    // forget: this webhook's job is confirming Twilio's status update was
+    // recorded, not waiting on an LLM call — and the call has already
+    // ended by this point, so there's no live turn this could ever add
+    // latency to.
+    if (updates.status === "completed" && updatedCall?.sessionId && updatedCall?.patientId) {
+      generateCallSummary(updatedCall.sessionId, updatedCall.clientId)
+        .then((summary) => {
+          if (!summary) return;
+          return supabase.from("call_logs").update({ summary }).eq("id", callSid);
+        })
+        .catch((err) => console.error(`[Telephony/Status] Call summary failed for ${callSid}:`, err));
     }
 
     // If this call was placed by a campaign, roll its outcome up into

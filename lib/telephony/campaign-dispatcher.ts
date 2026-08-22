@@ -48,6 +48,18 @@ export async function dispatchCampaign(opts: {
       const row = jobs[cursor];
       cursor += 1;
 
+      // Checked before every dial (not just once at the top) — a "Kill
+      // Call" action (app/api/campaigns/[id]/kill/route.ts) sets this
+      // status from a separate HTTP request while this loop is running, so
+      // it must be re-read from the DB each iteration to actually stop
+      // further dialing rather than only ending calls already in flight.
+      const { data: current } = await supabase
+        .from("call_campaigns")
+        .select("status")
+        .eq("id", opts.campaignId)
+        .single();
+      if (current?.status === "cancelled") return;
+
       try {
         await supabase.from("campaign_calls").update({ status: "calling" }).eq("id", row.id);
 

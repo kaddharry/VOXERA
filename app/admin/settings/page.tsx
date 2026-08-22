@@ -18,10 +18,10 @@ interface AgentOption {
 }
 
 const VOICE_PERSONAS = [
-  { id: "female-friendly", label: "Female · Friendly", model: "aura-asteria-en" },
-  { id: "male-formal", label: "Male · Formal", model: "aura-orion-en" },
-  { id: "female-formal", label: "Female · Formal", model: "aura-athena-en" },
-  { id: "male-friendly", label: "Male · Friendly", model: "aura-arcas-en" },
+  { id: "female-friendly", label: "Female · Friendly", model: "aura-2-asteria-en" },
+  { id: "male-formal", label: "Male · Formal", model: "aura-2-orion-en" },
+  { id: "female-formal", label: "Female · Formal", model: "aura-2-athena-en" },
+  { id: "male-friendly", label: "Male · Friendly", model: "aura-2-arcas-en" },
 ];
 
 export default function SettingsPage() {

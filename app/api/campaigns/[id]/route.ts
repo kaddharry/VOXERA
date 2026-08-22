@@ -43,3 +43,23 @@ export async function GET(
 
   return NextResponse.json({ campaign, calls: calls ?? [] });
 }
+
+/**
+ * DELETE /api/campaigns/[id] — "Clear History". campaign_calls has
+ * ON DELETE CASCADE on campaignId (sql/migration_consolidated.sql), so
+ * deleting the campaign row removes its whole call-history table in one
+ * statement, not a separate cleanup step.
+ */
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { error } = await supabase.from("call_campaigns").delete().eq("id", id).eq("clientId", user.id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ success: true });
+}

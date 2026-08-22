@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { CONFIG } from "@/lib/config";
 import { DEMO, ensureSeeded } from "@/lib/bootstrap";
 import { ingestDocument } from "@/lib/knowledge/ingest";
+import { invalidateInlineKnowledgeBase } from "@/lib/knowledge/inline";
 import { createClient } from "@/lib/db/server";
 
 export const runtime = "nodejs";
@@ -86,6 +87,11 @@ export async function POST(request: NextRequest) {
       content: buffer,
       mimeType,
     });
+
+    // This client's LTM_client chunk set just changed — drop any cached
+    // inline-KB text (or cached "too large" verdict) so the next turn
+    // re-derives it instead of serving stale/missing content.
+    invalidateInlineKnowledgeBase(clientId);
 
     return Response.json(result);
   } catch (err) {

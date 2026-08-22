@@ -42,6 +42,12 @@ interface MemorySnippet {
   ts: number;
 }
 
+interface RetrievalExplanation {
+  memoryId: string;
+  reason: string;
+  metrics: { similarity: number; importance: number; recency: number; retrievalFrequency: number; rawScore: number };
+}
+
 interface TurnMemory {
   write?: { tier: string; recordId?: string; merged?: boolean };
   retrieved?: {
@@ -51,6 +57,11 @@ interface TurnMemory {
     mtmSnippets?: MemorySnippet[];
     ltmUserSnippets?: MemorySnippet[];
     ltmClientSnippets?: MemorySnippet[];
+    /** Already computed server-side on every turn (lib/memory/retrieval.ts's
+     * generateExplanation()) and already sent over the wire as part of
+     * trace.retrieved — this was simply never rendered before. Keyed by
+     * memory id, covers every tier (MTM/LTM_user/LTM_client) alike. */
+    explanations?: Record<string, RetrievalExplanation>;
   };
 }
 
@@ -231,15 +242,26 @@ function MemoryRetrievalDetail({ retrieved }: { retrieved: NonNullable<TurnMemor
               </div>
               {g.snippets && g.snippets.length > 0 ? (
                 <ul className="mt-0.5 flex flex-col gap-1">
-                  {g.snippets.slice(0, 3).map((s) => (
-                    <li
-                      key={s.id}
-                      className="text-[var(--console-text)] text-[10.5px] leading-snug rounded-lg bg-[var(--console-surface-raised)] border border-[var(--console-border)] px-2 py-1.5"
-                    >
-                      <span className="font-mono text-[9px] text-[var(--console-text-dim)] uppercase mr-1">[{s.topic}]</span>
-                      {s.summary}
-                    </li>
-                  ))}
+                  {g.snippets.slice(0, 3).map((s) => {
+                    const explanation = retrieved.explanations?.[s.id];
+                    return (
+                      <li
+                        key={s.id}
+                        className="text-[var(--console-text)] text-[10.5px] leading-snug rounded-lg bg-[var(--console-surface-raised)] border border-[var(--console-border)] px-2 py-1.5"
+                      >
+                        <span className="font-mono text-[9px] text-[var(--console-text-dim)] uppercase mr-1">[{s.topic}]</span>
+                        {s.summary}
+                        {explanation && (
+                          <div className="mt-1 pt-1 border-t border-[var(--console-border)] flex flex-col gap-0.5">
+                            <span className="text-[9.5px] text-[var(--console-cyan)] italic">why: {explanation.reason}</span>
+                            <span className="text-[8.5px] font-mono text-[var(--console-text-dim)]">
+                              sim {(explanation.metrics.similarity * 100).toFixed(0)}% · imp {(explanation.metrics.importance * 100).toFixed(0)}% · recency {(explanation.metrics.recency * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 <div className="text-[10px] text-[var(--console-text-dim)] italic">snippet text unavailable</div>
@@ -356,6 +378,11 @@ export function TestAgentDrawer() {
   // mid-call.
   const [micMuted, setMicMuted] = useState(false);
   const [speakerMuted, setSpeakerMuted] = useState(false);
+  // Visible proof that TTS audio is arriving incrementally rather than as
+  // one buffered blob — counts reply_audio_chunk messages for the
+  // in-progress turn, reset at turn_start. Purely a UI confirmation signal;
+  // doesn't affect playback.
+  const [streamChunkCount, setStreamChunkCount] = useState(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const micAudioContextRef = useRef<AudioContext | null>(null);
@@ -631,6 +658,7 @@ export function TestAgentDrawer() {
             case "turn_start":
               setStatus("thinking");
               turnStartAtRef.current = Date.now();
+              setStreamChunkCount(0);
               break;
             case "reply_text": {
               const emotion = msg.trace?.emotion?.current;
@@ -678,6 +706,7 @@ export function TestAgentDrawer() {
               }
 
               setStatus("speaking");
+              setStreamChunkCount((n) => n + 1);
               void ctx.resume().catch(() => {});
 
               // Decode base64 linear16 PCM -> Float32 samples in [-1, 1],
@@ -836,13 +865,22 @@ export function TestAgentDrawer() {
 
           <div className="min-w-0">
             <div className="text-[12px] font-bold text-[var(--console-text)] leading-tight">Live Test Call</div>
-            <div className="text-[10px] font-mono uppercase tracking-widest text-[var(--console-text-dim)]">
+            <div className="text-[10px] font-mono uppercase tracking-widest text-[var(--console-text-dim)] flex items-center gap-1.5">
               {status === "idle" && "Ready"}
               {status === "connecting" && "Connecting…"}
               {status === "listening" && "Listening"}
               {status === "thinking" && "Thinking…"}
               {status === "speaking" && "Speaking"}
               {status === "error" && "Error"}
+              {status === "speaking" && streamChunkCount > 0 && (
+                <span
+                  title="Confirms TTS audio is arriving as a live stream of small chunks, not one buffered blob"
+                  className="normal-case tracking-normal text-[var(--console-cyan)] flex items-center gap-1"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--console-cyan)] animate-pulse" />
+                  streaming · {streamChunkCount}
+                </span>
+              )}
             </div>
           </div>
 

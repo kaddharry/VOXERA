@@ -2,7 +2,7 @@ import { redis, redisSub } from "../redis/client";
 
 export interface SessionEventPayload {
   sessionId: string;
-  type: "emotion" | "transcript" | "cai" | "acoustic" | "policy" | "escalation";
+  type: "emotion" | "transcript" | "transcript_delta" | "cai" | "acoustic" | "policy" | "escalation" | "emotion_diagnostic" | "retrieval";
   data: Record<string, any>;
   timestamp: number;
 }

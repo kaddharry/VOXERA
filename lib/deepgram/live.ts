@@ -10,6 +10,12 @@ export interface DeepgramLiveOptions {
   sampleRate?: number;
   /** Maximum reconnection attempts before giving up. */
   maxReconnects?: number;
+  /** Fires on Deepgram's own VAD-driven `SpeechStarted` event (requires
+   * vad_events=true, already always on) — i.e. Deepgram itself detected the
+   * caller starting to talk, independent of any raw energy/RMS threshold a
+   * caller might layer on top. Useful as a barge-in trigger that's immune to
+   * the false-trigger/miss-trigger tradeoffs of a fixed RMS cutoff. */
+  onSpeechStarted?: () => void;
 }
 
 /**
@@ -50,6 +56,7 @@ export class DeepgramLiveWrapper {
    * already used for the LLM tool-loop fallback in lib/agent/llm.ts. */
   private static readonly UTTERANCE_END_FALLBACK_MS = 2500;
   private utteranceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  private onSpeechStarted: (() => void) | null = null;
 
   constructor(onTranscript?: TranscriptCallback, opts?: DeepgramLiveOptions) {
     if (onTranscript) {
@@ -57,6 +64,7 @@ export class DeepgramLiveWrapper {
     }
     this.sampleRate = opts?.sampleRate ?? 16000;
     this.maxReconnects = opts?.maxReconnects ?? 3;
+    this.onSpeechStarted = opts?.onSpeechStarted ?? null;
   }
 
   public getState(): ConnectionState {
@@ -218,6 +226,13 @@ export class DeepgramLiveWrapper {
     // talking" signal — this is the only place a full turn should fire from.
     if (data && data.type === "UtteranceEnd") {
       this.finalizeUtterance();
+      return;
+    }
+
+    // Deepgram's own VAD onset signal (vad_events=true) — fires as soon as
+    // it detects the caller starting to talk, ahead of any transcript.
+    if (data && data.type === "SpeechStarted") {
+      this.onSpeechStarted?.();
       return;
     }
 

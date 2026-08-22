@@ -99,6 +99,9 @@ describe("Adaptive voice tone wiring (BUG-V1)", () => {
       policy: escalatedPolicy,
     });
     const requestArg = generateMock.mock.calls[0][0];
-    expect(requestArg.text).toContain("...");
+    // Deepgram Aura-2 has no SSML/pause markup — "long" pacing uses an em
+    // dash between sentences (Deepgram's own documented pause mechanism is
+    // commas/hyphens, not ellipses; see lib/emotion/tts-params.ts).
+    expect(requestArg.text).toContain("—");
   });
 });

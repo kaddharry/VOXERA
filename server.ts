@@ -7,7 +7,7 @@ import { DeepgramSpeakStream } from "./lib/deepgram/tts-stream";
 import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "./lib/emotion/tts-params";
 import { getAgentWithTenant } from "./lib/db/agents";
 import { supabase } from "./lib/db/supabase";
-import { extractAcousticFeatures } from "./lib/audio/acoustic";
+import { extractAcousticFeatures, computeRmsEnergy } from "./lib/audio/acoustic";
 import { int16ToFloat32Pcm } from "./lib/emotion/local-audio-detect";
 import { DEMO, ensureSeeded } from "./lib/bootstrap";
 import { CONFIG } from "./lib/config";
@@ -70,6 +70,12 @@ wss.on("connection", async (ws: WebSocket, request) => {
 
   const sessionId = `browser-${nanoid(12)}`;
   let isBusy = false; // prevent overlapping turns while a reply is being generated
+  // Tracks whether TTS audio is currently being sent — used by the
+  // server-side RMS barge-in fallback below. Previously this path had no
+  // server-side barge-in detection at all, relying entirely on the browser's
+  // client-side VAD sending a "barge_in" message; this is a safety net for
+  // when that's slow, missing, or the client-side VAD fails.
+  let isSpeaking = false;
 
   // Bumped on every user-initiated barge-in. A reply that started synthesizing
   // before the bump is stale by the time it resolves — drop it instead of
@@ -133,6 +139,21 @@ wss.on("connection", async (ws: WebSocket, request) => {
       console.warn(`[Server] Voice setup failed for ${sessionId}, using defaults:`, err);
     }
   })();
+
+  // Shared barge-in trigger — invoked either by the client's own VAD
+  // sending {type:"barge_in"}, or by the server-side RMS fallback below.
+  // Mirrors lib/telephony/stream-handler.ts's triggerBargeIn().
+  function triggerBargeIn(reason: string) {
+    generation++;
+    isBusy = false;
+    isSpeaking = false;
+    turnAudioChunks = [];
+    currentAbortController?.abort();
+    // clear() only, not close() — the connection stays open for the next
+    // turn (see ensureSpeakStream()).
+    currentSpeakStream?.clear();
+    console.log(`[Server] Barge-in (${reason}) — generation now ${generation}.`);
+  }
 
   // Initialize Deepgram Live stream wrapper (16kHz — browser mic default)
   const dg = new DeepgramLiveWrapper((text, isFinal) => {
@@ -226,6 +247,7 @@ wss.on("connection", async (ws: WebSocket, request) => {
         });
         const ttsMs = Date.now() - ttsStart;
         if (myGeneration !== generation) return;
+        isSpeaking = true;
         ws.send(JSON.stringify({ type: "reply_audio", turnId: replyTurnId, ttsMs, audio: Buffer.from(audio).toString("base64"), mime: "audio/mpeg" }));
         return;
       }
@@ -233,6 +255,7 @@ wss.on("connection", async (ws: WebSocket, request) => {
       const { stream: speakStream, ready: speakStreamReady } = ensureSpeakStream();
       speakStream.setAudioHandler((audioChunk) => {
         if (myGeneration !== generation) return; // stale — dropped by barge-in
+        isSpeaking = true;
         ws.send(
           JSON.stringify({
             type: "reply_audio_chunk",
@@ -293,6 +316,7 @@ wss.on("connection", async (ws: WebSocket, request) => {
         );
       }
     } finally {
+      isSpeaking = false;
       isBusy = false;
       currentAbortController = null;
       ws.send(JSON.stringify({ type: "turn_end" }));
@@ -336,6 +360,22 @@ wss.on("connection", async (ws: WebSocket, request) => {
       } else if (audioChunkCount % 50 === 0) {
         console.log(`[Server] ${audioChunkCount} audio chunks received (${audioByteCount} bytes total, dg state=${dg.getState()}).`);
       }
+      // Server-side RMS barge-in fallback — this path otherwise depends
+      // entirely on the browser's client-side VAD sending {type:"barge_in"};
+      // this is a safety net for when that's slow, missing, or fails. Reuses
+      // lib/telephony/stream-handler.ts's threshold as a starting point —
+      // that value was calibrated against 8kHz mulaw telephony audio, and
+      // browser mic PCM at 16kHz may have different gain/noise-floor
+      // characteristics, so this may need its own tuning if it proves too
+      // trigger-happy or too insensitive in practice; it's strictly a
+      // fallback behind the (usually faster) client-side VAD either way.
+      if (isSpeaking) {
+        const rms = computeRmsEnergy(message);
+        if (rms > CONFIG.telephony.bargeInEnergyThreshold) {
+          triggerBargeIn(`rms=${rms.toFixed(0)}`);
+        }
+      }
+
       // It's raw binary audio -> pump to Deepgram, and accumulate for
       // turn-level acoustic feature extraction.
       try {
@@ -351,16 +391,8 @@ wss.on("connection", async (ws: WebSocket, request) => {
         if (payload.type === "ping") {
           ws.send(JSON.stringify({ type: "pong" }));
         } else if (payload.type === "barge_in") {
-          // Client-side VAD detected the user talking over the agent's
-          // reply — invalidate whatever's in flight and start a fresh turn.
-          generation++;
-          isBusy = false;
-          turnAudioChunks = [];
-          currentAbortController?.abort();
-          // clear() only, not close() — the connection stays open for the
-          // next turn (see ensureSpeakStream()).
-          currentSpeakStream?.clear();
-          console.log(`[Server] Barge-in — generation now ${generation}.`);
+          // Client-side VAD detected the user talking over the agent's reply.
+          triggerBargeIn("client-vad");
         } else if (payload.type === "set_sensitivity_bias") {
           const value = Number(payload.value);
           if (Number.isFinite(value)) {

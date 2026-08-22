@@ -3,7 +3,7 @@ import WebSocket from "ws";
 import { DeepgramLiveWrapper } from "../deepgram/live";
 import { synthesizeLinear16, resolveVoiceModel, getClientVoiceSettings } from "../deepgram/tts";
 import { DeepgramSpeakStream } from "../deepgram/tts-stream";
-import { handleTurn } from "../agent/orchestrator";
+import { handleTurn, recordInterruptedReply } from "../agent/orchestrator";
 import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "../emotion/tts-params";
 import type { EmotionLabel, PolicyDirectives } from "../types";
 import { supabase } from "../db/supabase";
@@ -12,7 +12,7 @@ import { callQueue } from "../queue/manager";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
 import { CONFIG } from "../config";
-import { computeRmsEnergy, extractAcousticFeatures } from "../audio/acoustic";
+import { computeRmsEnergy, computeFrameZeroCrossingRate, extractAcousticFeatures } from "../audio/acoustic";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
@@ -85,6 +85,10 @@ export interface StreamHandlerOptions {
    * from phone_numbers.agentId by the incoming webhook. Undefined falls back
    * to the tenant's default prompt (handleTurn's existing behavior). */
   agentId?: string;
+  /** Roster patient (lib/db/patients.ts) being called — only ever set on an
+   * outbound call placed from the Patients page. Undefined for every
+   * genuine inbound call. */
+  patientId?: string;
 }
 
 /**
@@ -119,6 +123,7 @@ export class TelephonyStreamHandler {
   private clientId: string;
   private callerNumber: string;
   private agentId?: string;
+  private patientId?: string;
   private sessionId: string;
   private userId: string;
   private deepgram: DeepgramLiveWrapper;
@@ -133,6 +138,18 @@ export class TelephonyStreamHandler {
   private turnAudioChunks: Buffer[] = [];
   // Issue #14: Barge-in interruption counter (per turn, reset on each transcript)
   private turnInterruptionCount = 0;
+  // Consecutive Twilio media frames (20ms each) whose RMS has exceeded
+  // CONFIG.telephony.bargeInEnergyThreshold. A single loud frame — a click,
+  // a cough, a burst of line static — used to be enough to trigger a full
+  // barge-in (cutting the agent off and cancelling its reply) on its own;
+  // requiring BARGE_IN_SUSTAIN_FRAMES consecutive high-energy frames means
+  // only genuinely sustained sound (real speech starting) fires it, while
+  // still reacting within BARGE_IN_SUSTAIN_FRAMES * 20ms — imperceptibly
+  // fast for a real interruption. Deepgram's own VAD signal (constructor's
+  // onSpeechStarted) is unaffected by this and still fires independently as
+  // the primary, model-based trigger — this only tightens the raw-energy
+  // fallback that catches what VAD might miss.
+  private consecutiveHighEnergyFrames = 0;
 
   // Bumped on every barge-in — a turn whose captured generation no longer
   // matches this is stale and must not speak or be spoken over. Same
@@ -160,11 +177,21 @@ export class TelephonyStreamHandler {
     this.clientId = opts.clientId;
     this.callerNumber = opts.callerNumber;
     this.agentId = opts.agentId;
+    this.patientId = opts.patientId;
     this.sessionId = `tel-${nanoid(12)}`;
     this.userId = `caller-${opts.callerNumber.replace(/\D/g, "")}`;
     this.startedAt = Date.now();
 
-    this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), { sampleRate: 8000 });
+    this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), {
+      sampleRate: 8000,
+      // Deepgram's own VAD onset signal, fired independently of the raw RMS
+      // check below — a raw energy threshold alone can false-trigger on
+      // background noise or miss quiet speech; this fires the same barge-in
+      // path but off Deepgram's own speech-detection instead.
+      onSpeechStarted: () => {
+        if (this.isSpeaking) this.triggerBargeIn("deepgram-vad");
+      },
+    });
 
     // Register every ws event handler in this same synchronous tick, before
     // awaiting anything in init() below — Node's EventEmitter drops events
@@ -309,6 +336,7 @@ export class TelephonyStreamHandler {
         const customParams = startData?.customParameters as Record<string, string> | undefined;
         if (customParams?.clientId) this.clientId = customParams.clientId;
         if (customParams?.agentId) this.agentId = customParams.agentId;
+        if (customParams?.patientId) this.patientId = customParams.patientId;
         if (customParams?.caller) this.callerNumber = customParams.caller;
 
         console.log(`[TelephonyStream] Stream started: callSid=${this.callSid} clientId=${this.clientId}${this.agentId ? ` agentId=${this.agentId}` : ""} streamSid=${this.streamSid}`);
@@ -341,36 +369,31 @@ export class TelephonyStreamHandler {
           // Issue #14: Accumulate PCM for turn-level acoustic analysis
           this.turnAudioChunks.push(pcmBuf);
 
-          // Issue #14: Energy-based barge-in detection.
-          // Only trigger TTS interruption if caller audio RMS exceeds threshold.
-          // This prevents false barge-ins from background noise.
+          // Issue #14: Energy-based barge-in detection, now paired with
+          // Deepgram's own VAD SpeechStarted signal (see constructor) —
+          // whichever fires first wins. RMS alone is a blunt instrument:
+          // background noise can false-trigger it, quiet speech can miss it.
           if (this.isSpeaking) {
             const rms = computeRmsEnergy(pcmBuf);
-            if (rms > CONFIG.telephony.bargeInEnergyThreshold) {
-              this.isSpeaking = false;
-              this.turnInterruptionCount++;
-              this.sendClearMessage();
-
-              // Invalidate the in-flight turn: cancel LLM generation, stop
-              // generating audio nobody will hear, and let the caller's
-              // actual interruption (still being transcribed by Deepgram in
-              // the background — never gated) be processed as a fresh turn
-              // instead of being silently dropped by isBusy below.
-              this.generation++;
-              this.currentAbortController?.abort();
-              // clear() only — NOT close(). The Speak connection is kept
-              // alive for the whole call (see ensureSpeakStream()) so the
-              // next turn doesn't pay another ~50-150ms WS handshake;
-              // clear() just discards whatever audio was queued/in-flight
-              // for the turn that just got interrupted.
-              this.currentSpeakStream?.clear();
-              this.isBusy = false;
-
-              console.log(
-                `[TelephonyStream] Barge-in triggered (RMS=${rms.toFixed(0)}, ` +
-                `threshold=${CONFIG.telephony.bargeInEnergyThreshold}) for ${this.callSid}`
-              );
+            // Loud AND speech-shaped, not loud alone — a steady background
+            // hum or a burst of line static can be just as loud as real
+            // speech but sits at a ZCR extreme (near-0 for a hum, near-1 for
+            // broadband hiss); genuine speech's ZCR lands in between. This
+            // is what makes the raw-energy fallback "sensitive to the
+            // caller's voice, not background noise" instead of triggering
+            // on any sufficiently loud sound.
+            const zcr = rms > CONFIG.telephony.bargeInEnergyThreshold ? computeFrameZeroCrossingRate(pcmBuf) : 0;
+            const isSpeechShaped = zcr >= CONFIG.telephony.bargeInMinZcr && zcr <= CONFIG.telephony.bargeInMaxZcr;
+            if (rms > CONFIG.telephony.bargeInEnergyThreshold && isSpeechShaped) {
+              this.consecutiveHighEnergyFrames++;
+              if (this.consecutiveHighEnergyFrames >= CONFIG.telephony.bargeInSustainFrames) {
+                this.triggerBargeIn(`rms=${rms.toFixed(0)} zcr=${zcr.toFixed(2)} sustained=${this.consecutiveHighEnergyFrames}`);
+              }
+            } else {
+              this.consecutiveHighEnergyFrames = 0;
             }
+          } else {
+            this.consecutiveHighEnergyFrames = 0;
           }
 
           this.deepgram.sendAudio(pcmBuf);
@@ -394,6 +417,17 @@ export class TelephonyStreamHandler {
 
     const abortController = new AbortController();
     this.currentAbortController = abortController;
+    // Ground truth for "what did the caller actually hear before a
+    // barge-in cut this turn off" — only clauses that passed the
+    // generation check (i.e. genuinely got forwarded to Twilio) are
+    // pushed here. Deliberately NOT the same as orchestrator's own
+    // internal `spokenSoFar` bookkeeping, which has no concept of
+    // "generation" and would also include a same-turn recovery-apology
+    // clause (llm.ts's "Sorry, I lost my train of thought...") that a
+    // true barge-in already silently drops before it ever reaches the
+    // phone line — recording that text as if it were heard would corrupt
+    // memory with something that was never actually spoken.
+    const trulySpokenClauses: string[] = [];
 
     try {
       // Issue #14: Extract acoustic features from accumulated PCM
@@ -410,17 +444,25 @@ export class TelephonyStreamHandler {
         userId: this.userId,
         clientId: this.clientId,
         agentId: this.agentId,
+        patientId: this.patientId,
         transcript: text,
         sttConfidence: 0.9,
         audioEmotion: null,
         acousticFeatures,
         bargeInCount: this.turnInterruptionCount,
+        // Powers the Live Dashboard's per-engine breakdown for real calls —
+        // safe to enable here specifically because deferDiagnostics (below)
+        // means it can never delay this function returning, so it can never
+        // gate this.isBusy / when the system accepts the caller's next
+        // sentence, no matter how long the (capped, ~500ms-1.5s) diagnostics
+        // computation takes.
+        diagnostics: true,
       };
 
       if (this.useBufferedTts) {
         // Tenant has a custom ElevenLabs voice — no streaming Speak WS
         // support for that path yet, use the original buffered flow.
-        const output = await handleTurn(turnInput);
+        const output = await handleTurn(turnInput, { deferDiagnostics: true });
         if (myGeneration === this.generation) {
           console.log(`[TelephonyStream] Reply (${this.callSid}): "${output.reply}"`);
           await this.speakBuffered(
@@ -455,11 +497,13 @@ export class TelephonyStreamHandler {
 
       const output = await handleTurn(turnInput, {
         abortSignal: abortController.signal,
+        deferDiagnostics: true,
         onEmotionResolved: (emotion, policy) => {
           prosodyParams = getEmotionTTSParams(emotion, policy, text);
         },
         onReplyChunk: (clause) => {
           if (myGeneration !== this.generation) return; // stale — dropped by barge-in
+          trulySpokenClauses.push(clause);
           this.isSpeaking = true;
           const shaped = prosodyParams ? applyEmotionProsody(clause, prosodyParams) : clause;
           void speakStreamReady.then(() => {
@@ -485,6 +529,16 @@ export class TelephonyStreamHandler {
     } catch (err) {
       if (myGeneration !== this.generation) {
         console.log(`[TelephonyStream] Turn cancelled by barge-in for ${this.callSid}.`);
+        const partial = trulySpokenClauses.join(" ");
+        if (partial) {
+          console.log(`[TelephonyStream] Recording interrupted partial reply for ${this.callSid}: "${partial}"`);
+          void recordInterruptedReply({
+            sessionId: this.sessionId,
+            userId: this.userId,
+            clientId: this.clientId,
+            partialText: partial,
+          });
+        }
       } else {
         console.error(`[TelephonyStream] handleTurn error:`, err);
       }
@@ -555,6 +609,34 @@ export class TelephonyStreamHandler {
       console.error(`[TelephonyStream] TTS error:`, err);
       this.isSpeaking = false;
     }
+  }
+
+  /**
+   * Shared barge-in trigger, invoked by whichever signal fires first — the
+   * RMS energy threshold or Deepgram's own VAD SpeechStarted event. Caller
+   * is responsible for checking `this.isSpeaking` first (both call sites do).
+   */
+  private triggerBargeIn(reason: string) {
+    this.isSpeaking = false;
+    this.consecutiveHighEnergyFrames = 0;
+    this.turnInterruptionCount++;
+    this.sendClearMessage();
+
+    // Invalidate the in-flight turn: cancel LLM generation, stop generating
+    // audio nobody will hear, and let the caller's actual interruption
+    // (still being transcribed by Deepgram in the background — never gated)
+    // be processed as a fresh turn instead of being silently dropped by
+    // isBusy below.
+    this.generation++;
+    this.currentAbortController?.abort();
+    // clear() only — NOT close(). The Speak connection is kept alive for the
+    // whole call (see ensureSpeakStream()) so the next turn doesn't pay
+    // another ~50-150ms WS handshake; clear() just discards whatever audio
+    // was queued/in-flight for the turn that just got interrupted.
+    this.currentSpeakStream?.clear();
+    this.isBusy = false;
+
+    console.log(`[TelephonyStream] Barge-in triggered (${reason}) for ${this.callSid}`);
   }
 
   /**

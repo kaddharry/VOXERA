@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "../../lib/db/server";
 import Link from "next/link";
-import { LayoutDashboard, MessageSquare, Database, Settings, LogOut, Sparkles, Users, PhoneCall, Bot, Megaphone } from "lucide-react";
+import { LayoutDashboard, MessageSquare, Database, Settings, LogOut, Sparkles, Users, Radio, PhoneCall, Bot, Megaphone, UserCheck } from "lucide-react";
 import { AdminMobileNav } from "../../components/admin/AdminMobileNav";
 import { AmbientBackground } from "../_components/GlassCard";
 import { CursorGlow } from "../_components/CursorGlow";
@@ -33,9 +33,11 @@ export default async function AdminLayout({
 
           <nav className="flex-1 px-4 space-y-1.5">
             <NavItem href="/admin" icon={LayoutDashboard} label="Dashboard" />
+            <NavItem href="/admin/live_dashboard" icon={Radio} label="Live Dashboard" />
             <NavItem href="/admin/agents" icon={Bot} label="Agent Builder" />
             <NavItem href="/admin/try-call" icon={PhoneCall} label="Try a Call" />
             <NavItem href="/admin/campaigns" icon={Megaphone} label="Bulk Calls" />
+            <NavItem href="/admin/patients" icon={UserCheck} label="Patients" />
             <NavItem href="/admin/tenants" icon={Users} label="Tenants" />
             <NavItem href="/admin/sessions" icon={MessageSquare} label="Sessions" />
             <NavItem href="/admin/knowledge" icon={Database} label="Knowledge Base" />

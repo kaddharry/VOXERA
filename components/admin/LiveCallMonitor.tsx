@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Activity, Radio, Volume2, ShieldAlert, Zap, MessageSquare } from "lucide-react";
 import { EmotionSparkline, type EmotionPoint } from "./EmotionSparkline";
 import { GlassCard } from "@/app/_components/GlassCard";
+import { EngineDiagnosticPanel, type DiagnosticEmotionResult } from "@/app/_components/EngineDashboard";
 
 const MAX_HISTORY_POINTS = 60;
 
@@ -16,23 +17,39 @@ interface LiveSessionState {
   caiCategory: string;
   flags: Record<string, boolean>;
   transcript: Array<{ role: "user" | "agent"; text: string }>;
+  /** Per-engine (Lexicon/Local ONNX/Acoustic/Wav2Vec2) breakdown + fusion
+   * reasoning — published live via the "emotion_diagnostic" SSE event
+   * (lib/agent/orchestrator.ts) alongside the existing thin fused-emotion
+   * event. Previously only ever logged to the DB, never streamed live. */
+  diagnostics: DiagnosticEmotionResult | null;
 }
 
 export function LiveCallMonitor({
   onLiveUpdate,
+  forcedSessionId,
 }: {
   /** Reports real, live signal (not a decorative loop) whenever it changes
    * — e.g. for VoiceOrb elsewhere on the page to react to an actual
    * in-progress call instead of sitting idle. */
   onLiveUpdate?: (info: { active: boolean; intensity: number; caiScore: number; emotionLabel: string }) => void;
+  /** When set (the patient detail page's use case — watching one specific
+   * patient's call, not "whichever's active"), skips the /api/session/active
+   * poll and the multi-call picker entirely and subscribes directly to this
+   * session. Undefined preserves the original admin-Dashboard behavior. */
+  forcedSessionId?: string | null;
 }) {
   const [activeCalls, setActiveCalls] = useState<Array<{ id: string; sessionId?: string; callerNumber: string; startedAt: number }>>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(forcedSessionId ?? null);
   const [liveState, setLiveState] = useState<LiveSessionState | null>(null);
   const [emotionHistory, setEmotionHistory] = useState<EmotionPoint[]>([]);
 
-  // Fetch active call logs
   useEffect(() => {
+    if (forcedSessionId !== undefined) setSelectedSessionId(forcedSessionId);
+  }, [forcedSessionId]);
+
+  // Fetch active call logs — skipped entirely when forcedSessionId is set.
+  useEffect(() => {
+    if (forcedSessionId !== undefined) return;
     async function fetchCalls() {
       try {
         const res = await fetch("/api/session/active");
@@ -74,6 +91,7 @@ export function LiveCallMonitor({
       caiCategory: "Moderate Engagement",
       flags: {},
       transcript: [],
+      diagnostics: null,
     });
     setEmotionHistory([]);
 
@@ -103,6 +121,8 @@ export function LiveCallMonitor({
                 label: payload.data.label || "neutral",
               },
             ]);
+          } else if (payload.type === "emotion_diagnostic") {
+            updated.diagnostics = payload.data as DiagnosticEmotionResult;
           } else if (payload.type === "cai") {
             updated.caiScore = payload.data.score || 50;
             updated.caiCategory = payload.data.category || "Moderate Engagement";
@@ -146,6 +166,11 @@ export function LiveCallMonitor({
     }
   };
 
+  const isForcedMode = forcedSessionId !== undefined;
+  const showNoForcedCallMessage = forcedSessionId === null;
+  const showNoActiveCallsMessage = !isForcedMode && activeCalls.length === 0;
+  const showCallGrid = !showNoForcedCallMessage && !showNoActiveCallsMessage;
+
   return (
     <GlassCard className="p-6">
       <div className="flex items-center justify-between mb-6 pb-4 border-b border-[var(--color-border-subtle)]">
@@ -163,7 +188,15 @@ export function LiveCallMonitor({
         </span>
       </div>
 
-      {activeCalls.length === 0 ? (
+      {showNoForcedCallMessage && (
+        <div className="text-center py-8 text-[var(--color-text-muted)]">
+          <Volume2 className="w-8 h-8 mx-auto mb-2 opacity-40" />
+          <p className="text-[13.5px]">No call in progress for this patient right now.</p>
+          <p className="text-[11.5px] mt-1">Click "Call Now" above to start one — this panel updates live once it connects.</p>
+        </div>
+      )}
+
+      {showNoActiveCallsMessage && (
         <div className="text-center py-8 text-[var(--color-text-muted)]">
           <Volume2 className="w-8 h-8 mx-auto mb-2 opacity-40" />
           <p className="text-[13.5px]">No active calls streaming at the moment.</p>
@@ -171,38 +204,42 @@ export function LiveCallMonitor({
             <a href="/admin/try-call" className="text-[var(--color-accent-violet)] hover:underline">Try a call</a> or receive a phone call to monitor the live stream.
           </p>
         </div>
-      ) : (
+      )}
+
+      {showCallGrid && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Active Call Selector */}
-          <div className="space-y-3 lg:border-r lg:border-[var(--color-border-subtle)] lg:pr-6">
-            <h3 className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2">Active Calls</h3>
-            {activeCalls.map((call) => {
-              const callSessionId = call.sessionId || call.id;
-              return (
-              <button
-                key={call.id}
-                onClick={() => setSelectedSessionId(callSessionId)}
-                className={`w-full text-left p-3 rounded-lg border transition-colors ${
-                  selectedSessionId === callSessionId
-                    ? "bg-[var(--color-accent-violet)]/10 border-[var(--color-accent-violet)]/40 text-[var(--color-text-primary)]"
-                    : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-muted)] hover:border-[var(--color-accent-violet)]/30"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-[13px] font-medium">{call.callerNumber || call.id}</span>
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                </div>
-                <div className="text-[10.5px] text-[var(--color-text-muted)] mt-1">
-                  ID: {call.id.slice(0, 10)}...
-                </div>
-              </button>
-              );
-            })}
-          </div>
+          {/* Active Call Selector — hidden entirely when watching one forced session */}
+          {!isForcedMode && (
+            <div className="space-y-3 lg:border-r lg:border-[var(--color-border-subtle)] lg:pr-6">
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2">Active Calls</h3>
+              {activeCalls.map((call) => {
+                const callSessionId = call.sessionId || call.id;
+                return (
+                  <button
+                    key={call.id}
+                    onClick={() => setSelectedSessionId(callSessionId)}
+                    className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                      selectedSessionId === callSessionId
+                        ? "bg-[var(--color-accent-violet)]/10 border-[var(--color-accent-violet)]/40 text-[var(--color-text-primary)]"
+                        : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-muted)] hover:border-[var(--color-accent-violet)]/30"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono text-[13px] font-medium">{call.callerNumber || call.id}</span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                    </div>
+                    <div className="text-[10.5px] text-[var(--color-text-muted)] mt-1">
+                      ID: {call.id.slice(0, 10)}...
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Live Emotion & CAI Display */}
           {liveState && (
-            <div className="space-y-6 lg:col-span-2">
+            <div className={`space-y-6 ${isForcedMode ? "lg:col-span-3" : "lg:col-span-2"}`}>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Emotion Ring / Badge */}
                 <div className={`p-4 rounded-xl border ${getEmotionColor(liveState.emotionLabel)}`}>
@@ -232,6 +269,19 @@ export function LiveCallMonitor({
               </div>
 
               <EmotionSparkline history={emotionHistory} />
+
+              {/* Dual-engine breakdown (Text: Lexicon/Local ONNX, Acoustic:
+                  Heuristic/Wav2Vec2) + fusion reasoning — the "why" behind
+                  the fused emotion above, not just the final label. Dark
+                  telemetry-console styling is deliberate contrast against
+                  the lighter admin theme, same treatment as the /demo
+                  drawer this panel is shared with. */}
+              {liveState.diagnostics && (
+                <div className="voxera-console rounded-xl p-4">
+                  <div className="voxera-console-label text-[10px] font-bold mb-3">Live Engine Breakdown</div>
+                  <EngineDiagnosticPanel diagnostics={liveState.diagnostics} />
+                </div>
+              )}
 
               {/* Active Emotion Pattern Flags */}
               {Object.values(liveState.flags).some(Boolean) && (
