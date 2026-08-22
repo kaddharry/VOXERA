@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UserCheck, Plus, Phone, Loader2, X, Upload, FileText } from "lucide-react";
+import Link from "next/link";
+import { UserCheck, Plus, Phone, Loader2, X, Upload, FileText, ChevronDown, ChevronUp, ShieldAlert, ExternalLink, History } from "lucide-react";
 import { GlassCard } from "../../_components/GlassCard";
 import { PhoneInput } from "../../_components/PhoneInput";
 
@@ -17,6 +18,22 @@ interface Patient {
 interface Agent {
   id: string;
   name: string;
+}
+
+interface CallSummary {
+  sentimentTrajectory: string;
+  flaggedConcerns: string[];
+  recommendedAction: string;
+}
+
+interface PatientCall {
+  id: string;
+  sessionId: string | null;
+  status: string;
+  startedAt: number;
+  endedAt: number | null;
+  durationMs: number | null;
+  summary: CallSummary | null;
 }
 
 export default function PatientsPage() {
@@ -38,6 +55,29 @@ export default function PatientsPage() {
   const [callAgentId, setCallAgentId] = useState("");
   const [calling, setCalling] = useState(false);
   const [callMessage, setCallMessage] = useState<string | null>(null);
+
+  // Post-call analysis history — collapsed by default per patient, fetched
+  // lazily the first time it's expanded rather than for every patient on
+  // page load.
+  const [expandedPatientId, setExpandedPatientId] = useState<string | null>(null);
+  const [callsByPatient, setCallsByPatient] = useState<Record<string, PatientCall[] | "loading">>({});
+
+  function toggleHistory(patientId: string) {
+    if (expandedPatientId === patientId) {
+      setExpandedPatientId(null);
+      return;
+    }
+    setExpandedPatientId(patientId);
+    if (!callsByPatient[patientId]) {
+      setCallsByPatient((prev) => ({ ...prev, [patientId]: "loading" }));
+      fetch(`/api/admin/patients/${patientId}/calls`)
+        .then((r) => r.json())
+        .then((data: { calls?: PatientCall[] }) => {
+          setCallsByPatient((prev) => ({ ...prev, [patientId]: data.calls ?? [] }));
+        })
+        .catch(() => setCallsByPatient((prev) => ({ ...prev, [patientId]: [] })));
+    }
+  }
 
   const loadPatients = () => {
     fetch("/api/admin/patients")
@@ -220,28 +260,115 @@ export default function PatientsPage() {
         </GlassCard>
       ) : (
         <div className="flex flex-col gap-3">
-          {patients.map((p) => (
-            <GlassCard key={p.id} className="p-5 flex items-center gap-4">
-              <div className="w-10 h-10 rounded-full bg-[var(--color-accent-violet)]/15 text-[var(--color-accent-violet)] flex items-center justify-center font-semibold text-[14px] flex-none">
-                {p.name.charAt(0).toUpperCase()}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-[14px] font-semibold text-[var(--color-text-primary)]">{p.name}</div>
-                <div className="text-[11.5px] text-[var(--color-text-muted)] font-mono">{p.phone}</div>
-                {p.notes && (
-                  <div className="text-[11px] text-[var(--color-text-muted)] truncate max-w-md mt-0.5 flex items-center gap-1">
-                    <FileText className="w-3 h-3 flex-none" /> {p.notes.slice(0, 80)}
+          {patients.map((p) => {
+            const calls = callsByPatient[p.id];
+            const expanded = expandedPatientId === p.id;
+            return (
+              <GlassCard key={p.id} className="p-5">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-full bg-[var(--color-accent-violet)]/15 text-[var(--color-accent-violet)] flex items-center justify-center font-semibold text-[14px] flex-none">
+                    {p.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[14px] font-semibold text-[var(--color-text-primary)]">{p.name}</div>
+                    <div className="text-[11.5px] text-[var(--color-text-muted)] font-mono">{p.phone}</div>
+                    {p.notes && (
+                      <div className="text-[11px] text-[var(--color-text-muted)] truncate max-w-md mt-0.5 flex items-center gap-1">
+                        <FileText className="w-3 h-3 flex-none" /> {p.notes.slice(0, 80)}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => toggleHistory(p.id)}
+                    className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-[12.5px] font-semibold transition-all flex-none ${
+                      expanded
+                        ? "bg-[var(--color-accent-violet)]/15 border-[var(--color-accent-violet)]/40 text-[var(--color-accent-violet)]"
+                        : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                    }`}
+                  >
+                    <History className="w-3.5 h-3.5" /> History
+                    {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
+                  <button
+                    onClick={() => openCallModal(p)}
+                    className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[12.5px] font-semibold hover:bg-emerald-500/25 transition-all flex-none"
+                  >
+                    <Phone className="w-3.5 h-3.5" /> Call
+                  </button>
+                </div>
+
+                {expanded && (
+                  <div className="mt-4 pt-4 border-t border-[var(--color-border-subtle)] flex flex-col gap-3">
+                    {calls === "loading" || calls === undefined ? (
+                      <div className="flex justify-center py-6">
+                        <Loader2 className="w-4 h-4 animate-spin text-[var(--color-text-muted)]" />
+                      </div>
+                    ) : calls.length === 0 ? (
+                      <p className="text-[12px] text-[var(--color-text-muted)] italic py-2">
+                        No calls yet for {p.name}.
+                      </p>
+                    ) : (
+                      calls.map((c) => (
+                        <div
+                          key={c.id}
+                          className="rounded-xl bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] p-3.5"
+                        >
+                          <div className="flex items-center justify-between gap-3 mb-2">
+                            <div className="text-[12px] text-[var(--color-text-secondary)]">
+                              {new Date(c.startedAt).toLocaleString()}
+                              {c.durationMs != null && (
+                                <span className="text-[var(--color-text-muted)]"> · {Math.round(c.durationMs / 1000)}s</span>
+                              )}
+                              <span
+                                className={`ml-2 text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                                  c.status === "completed"
+                                    ? "bg-emerald-500/15 text-emerald-400"
+                                    : c.status === "failed"
+                                      ? "bg-red-500/15 text-red-400"
+                                      : "bg-white/10 text-[var(--color-text-muted)]"
+                                }`}
+                              >
+                                {c.status}
+                              </span>
+                            </div>
+                            {c.sessionId && (
+                              <Link
+                                href={`/admin/live_dashboard?session=${c.sessionId}`}
+                                className="flex items-center gap-1 text-[11px] font-semibold text-[var(--color-accent-violet)] hover:underline flex-none"
+                              >
+                                Full analysis <ExternalLink className="w-3 h-3" />
+                              </Link>
+                            )}
+                          </div>
+
+                          {c.summary ? (
+                            <div className="flex flex-col gap-1.5">
+                              <p className="text-[12.5px] text-[var(--color-text-primary)] leading-snug">
+                                {c.summary.sentimentTrajectory}
+                              </p>
+                              {c.summary.flaggedConcerns.length > 0 && (
+                                <div className="flex items-start gap-1.5 text-[12px] text-amber-400">
+                                  <ShieldAlert className="w-3.5 h-3.5 flex-none mt-0.5" />
+                                  <span>{c.summary.flaggedConcerns.join("; ")}</span>
+                                </div>
+                              )}
+                              <p className="text-[11.5px] text-[var(--color-text-muted)] italic">
+                                → {c.summary.recommendedAction}
+                              </p>
+                            </div>
+                          ) : (
+                            <p className="text-[11.5px] text-[var(--color-text-muted)] italic">
+                              {c.status === "completed" ? "Summary still generating…" : "No summary — call did not complete."}
+                            </p>
+                          )}
+                        </div>
+                      ))
+                    )}
                   </div>
                 )}
-              </div>
-              <button
-                onClick={() => openCallModal(p)}
-                className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[12.5px] font-semibold hover:bg-emerald-500/25 transition-all flex-none"
-              >
-                <Phone className="w-3.5 h-3.5" /> Call
-              </button>
-            </GlassCard>
-          ))}
+              </GlassCard>
+            );
+          })}
         </div>
       )}
 
