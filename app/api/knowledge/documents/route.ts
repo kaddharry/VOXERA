@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { createClient } from "@/lib/db/server";
+import { invalidateInlineKnowledgeBase } from "@/lib/knowledge/inline";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -114,6 +115,8 @@ export async function DELETE(request: NextRequest) {
       .eq("id", docId);
 
     if (deleteError) throw deleteError;
+
+    invalidateInlineKnowledgeBase(clientId);
 
     return Response.json({ success: true, message: "Document deleted successfully" });
   } catch (err: any) {

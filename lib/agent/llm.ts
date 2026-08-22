@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { CONFIG } from "../config";
-import { KeyRotator } from "../util/keys";
+import { getKeyRotator } from "../util/keys";
 import { TOOLS, dispatchToolCall } from "./tools";
 import { ClauseChunker } from "./clause-chunker";
 
@@ -84,6 +84,16 @@ export async function generateReply(args: {
    * unaffected either way — it still resolves with the full concatenated
    * reply text once everything is done, for logging/trace purposes. */
   onClause?: (clause: string) => void;
+  /** Fires with the raw, un-guarded, running accumulated reply text on
+   * every content delta the model streams back — genuinely token-by-token,
+   * unlike onClause (which only fires once per complete sentence, on
+   * roughly a multi-second cadence for a short reply). Purely for live
+   * observability (the dashboard's "typing" effect) — TTS still speaks
+   * clause-by-clause via onClause, since flushing audio synthesis per raw
+   * token would sound choppy, not smoother. Never used for anything
+   * safety-relevant: the text here is pre-guard/pre-citation-check, so it
+   * must never be spoken or treated as final. */
+  onRawDelta?: (textSoFar: string) => void;
   /** Cancels the in-flight completion (used for barge-in). Only meaningful
    * together with onClause — the non-streaming path has no long-running
    * request worth aborting mid-flight. */
@@ -91,23 +101,76 @@ export async function generateReply(args: {
 }): Promise<LLMReply> {
   const streaming = !!args.onClause;
   const clauseChunker = streaming ? new ClauseChunker() : null;
+  // Accumulated raw text for onRawDelta — safe to keep scoped to the whole
+  // call (not per-attempt): once anyClauseEmitted is true, the guard added
+  // above prevents this function from ever reaching a second attempt at
+  // streamChatCompletion, so this never silently resets mid-reply.
+  let rawAccumulated = "";
+  // A live caller is on the line waiting — the default retry budget
+  // (3 attempts, 15s timeout each, up to 4s backoff between them) can burn
+  // ~48 seconds retrying ONE degraded provider before ever falling over to
+  // the next, which is exactly the "10-30s to answer, sometimes no answer
+  // at all" failure mode reported on real calls. A voice turn's whole
+  // round trip should be a couple seconds; a single attempt taking anywhere
+  // near 15s already means this provider isn't going to give a usable
+  // real-time reply, so fail fast and let the next provider in the list
+  // (see CONFIG.llm.providers) take over instead of sitting on a request
+  // that's already blown the caller's patience. Non-streaming callers
+  // (onboarding's prompt generator, etc.) keep the original generous
+  // defaults — they're not gating a live human's turn-taking.
+  const retryBudget: [maxRetries: number, timeoutMs: number, backoffBaseMs: number] = streaming
+    ? [2, 5_000, 300]
+    : [3, 15_000, 1000];
   // If any clause has already been spoken from a provider's partial stream,
   // we can never fall back to a different provider for this turn — doing so
   // would speak two unrelated completions back to back. Tracked across the
   // whole function (not per-attempt) so a failure after streaming started
   // propagates instead of silently trying the next provider.
   let anyClauseEmitted = false;
+  // Guards against a live-observed failure mode where a provider (seen on
+  // ZenMux) streams its own full reply twice back-to-back in one
+  // completion — every clause emitted verbatim a second time right after
+  // the first. Scoped to the whole call (not per-provider) since a repeat
+  // should never be spoken regardless of which attempt produced it.
+  const seenClauses = new Set<string>();
+  const emitClauseOnce = (raw: string) => {
+    const cleaned = sanitizeReply(raw);
+    const key = cleaned.toLowerCase();
+    if (!cleaned || seenClauses.has(key)) return;
+    seenClauses.add(key);
+    anyClauseEmitted = true;
+    args.onClause!(cleaned);
+  };
 
   for (const provider of CONFIG.llm.providers) {
-    const rotator = new KeyRotator(provider.envKey);
+    // Shared instance, not a fresh one per turn — see getKeyRotator's doc.
+    // This is what lets the rotator remember which key already proved
+    // exhausted (and for roughly how long) instead of re-probing every key
+    // from index 0 again on every single turn.
+    const rotator = getKeyRotator(provider.envKey);
     if (!rotator.getKey()) continue;
 
     try {
       const result = await rotator.executeWithRotation(async (apiKey) => {
+        // A live-observed bug: KeyRotator retries the SAME provider on a
+        // transient failure (timeout, empty-stream glitch) by calling this
+        // operation again from scratch — but if part of THIS turn's reply
+        // was already streamed to the caller's ears via onClause before
+        // the failure, a retry starts a brand new completion and speaks a
+        // second, unrelated partial reply on top of the first, garbled
+        // together. That's the "Your voice was voice was cut off" /
+        // overlapping-fragments pattern seen on a real call. Once anything
+        // has been spoken this turn, fail fast instead of regenerating —
+        // the outer catch below already turns this into a clean spoken
+        // recovery line ("could you say that again?") rather than
+        // silently talking over what was already said.
+        if (anyClauseEmitted) {
+          throw new Error(`Provider "${provider.name}" cannot retry mid-turn — part of this reply was already spoken`);
+        }
         const openai = new OpenAI({
           apiKey,
           baseURL: provider.baseURL,
-          timeout: 15_000,
+          timeout: retryBudget[1],
           maxRetries: 1,
         });
 
@@ -139,11 +202,10 @@ export async function generateReply(args: {
             const streamed = await streamChatCompletion(openai, baseParams, {
               signal: args.abortSignal,
               onContentDelta: (delta) => {
+                rawAccumulated += delta;
+                args.onRawDelta?.(rawAccumulated);
                 const clauses = clauseChunker!.push(delta);
-                for (const raw of clauses) {
-                  anyClauseEmitted = true;
-                  args.onClause!(sanitizeReply(raw));
-                }
+                for (const raw of clauses) emitClauseOnce(raw);
               },
             });
             if (!streamed.content && !streamed.tool_calls) {
@@ -231,10 +293,7 @@ export async function generateReply(args: {
           // complexity), so its text never went through the clause chunker
           // above. Push it through now so onClause() still sees it.
           if (streaming) {
-            for (const clause of clauseChunker!.push(finalResponseText)) {
-              anyClauseEmitted = true;
-              args.onClause!(sanitizeReply(clause));
-            }
+            for (const clause of clauseChunker!.push(finalResponseText)) emitClauseOnce(clause);
           }
         }
 
@@ -243,14 +302,11 @@ export async function generateReply(args: {
           // clause that never hit sentence-ending punctuation — needs to
           // reach the caller too, not just get silently dropped.
           const remainder = clauseChunker!.flush();
-          if (remainder) {
-            anyClauseEmitted = true;
-            args.onClause!(sanitizeReply(remainder));
-          }
+          if (remainder) emitClauseOnce(remainder);
         }
 
         return { text: sanitizeReply(finalResponseText), model: provider.model, usedLive: true, provider: provider.name };
-      });
+      }, ...retryBudget);
 
       console.log(`[LLM] Success via provider: ${provider.name}`);
       return result;
@@ -258,9 +314,16 @@ export async function generateReply(args: {
       console.warn(`[LLM] Provider "${provider.name}" failed:`, err instanceof Error ? err.message : err);
       if (streaming && anyClauseEmitted) {
         // Part of this provider's reply has already been spoken via
-        // onClause — falling back to a different provider now would speak
-        // a second, unrelated completion on top of it. Propagate instead
-        // of silently retrying with the next provider.
+        // onClause, then it died mid-stream — falling back to a different
+        // provider now would speak a second, unrelated completion on top of
+        // it, so we can't just retry. But silently propagating this error
+        // used to leave the caller in dead air for the rest of the turn
+        // (live-observed: "the agent response stopped in between and took
+        // over 30 seconds" — that 30s was the caller waiting for a reply
+        // that was never coming). Speak a short, honest recovery line so
+        // the call keeps moving instead of going silent, then still
+        // propagate the error for logging/trace purposes.
+        emitClauseOnce("Sorry, I lost my train of thought there — could you say that again?");
         throw err;
       }
       continue;
@@ -268,7 +331,16 @@ export async function generateReply(args: {
   }
 
   console.warn("[LLM] All providers exhausted. Using offline fallback.");
-  return { text: offlineFallback(args.user), model: "offline-fallback", usedLive: false, provider: "offline" };
+  const fallbackText = offlineFallback(args.user);
+  // Every provider failed before speaking a single clause (anyClauseEmitted
+  // is false here — if it were true we'd have thrown above instead of
+  // reaching this line). On the streaming/telephony path the caller only
+  // ever plays audio for text that comes through onClause, so without this
+  // the fallback text was silently returned but never actually spoken —
+  // live-observed as "the agent went completely silent" while the
+  // transcript still showed a reply. Speak it now as a single clause.
+  if (streaming) args.onClause!(fallbackText);
+  return { text: fallbackText, model: "offline-fallback", usedLive: false, provider: "offline" };
 }
 
 /**

@@ -19,6 +19,7 @@ vi.mock("../../lib/agent/tools", async (importOriginal) => {
 });
 
 import { generateReply } from "../../lib/agent/llm";
+import { __resetKeyRotatorRegistryForTests } from "../../lib/util/keys";
 
 /** Builds an async-iterable of ChatCompletionChunk-shaped objects, matching
  * what the OpenAI SDK yields when `stream: true` is passed. */
@@ -49,6 +50,12 @@ describe("generateReply — streaming mode (onClause)", () => {
     process.env.GROQ_API_KEYS = "gsk_test_key";
     delete process.env.ZENMUX_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    // KeyRotator instances are now shared/cached across calls (see
+    // getKeyRotator's doc) so a real session remembers which key already
+    // failed instead of re-probing every turn — but that same persistence
+    // would leak currentIndex/cooldown state between these tests if not
+    // reset, since they all reuse the "GROQ_API_KEYS" env var name.
+    __resetKeyRotatorRegistryForTests();
   });
 
   afterEach(() => {
@@ -72,6 +79,30 @@ describe("generateReply — streaming mode (onClause)", () => {
     expect(clauses).toEqual(["First sentence.", "Second sentence!"]);
     expect(result.text).toBe("First sentence. Second sentence!");
     expect(result.provider).toBe("groq");
+  });
+
+  it("onRawDelta fires with the running accumulated raw text on every content delta — genuine word-by-word streaming for live observability (e.g. the dashboard), independent of onClause's per-sentence cadence", async () => {
+    mockCreate.mockImplementation(() => Promise.resolve(chunkStream(contentDeltas("First sentence. Second sentence!", 3))));
+
+    const rawSnapshots: string[] = [];
+    const clauses: string[] = [];
+    await generateReply({
+      system: "sys",
+      user: "hello",
+      clientId: "c1",
+      onClause: (c) => clauses.push(c),
+      onRawDelta: (textSoFar) => rawSnapshots.push(textSoFar),
+    });
+
+    // Fires far more often than onClause (once per raw delta, not once per
+    // finished sentence) and each snapshot is the cumulative text so far.
+    expect(rawSnapshots.length).toBeGreaterThan(clauses.length);
+    expect(rawSnapshots[0]).toBe("Fir");
+    expect(rawSnapshots[rawSnapshots.length - 1]).toBe("First sentence. Second sentence!");
+    // Strictly growing — every snapshot is a superset (as a prefix) of the last.
+    for (let i = 1; i < rawSnapshots.length; i++) {
+      expect(rawSnapshots[i].startsWith(rawSnapshots[i - 1])).toBe(true);
+    }
   });
 
   it("flushes a trailing clause with no terminal punctuation once the stream ends", async () => {
@@ -146,8 +177,50 @@ describe("generateReply — streaming mode (onClause)", () => {
       generateReply({ system: "sys", user: "hello", clientId: "c1", onClause: (c) => clauses.push(c) })
     ).rejects.toThrow("connection dropped mid-stream");
 
-    expect(clauses).toEqual(["Partial reply."]);
+    // A short spoken recovery line is appended so the caller isn't left in
+    // dead air after a mid-stream failure — see llm.ts's comment on why
+    // silently propagating the error used to mean the agent just stopped
+    // talking for the rest of the turn.
+    expect(clauses).toEqual(["Partial reply.", "Sorry, I lost my train of thought there — could you say that again?"]);
     expect(groqCalls).toBe(1);
+  });
+
+  it("does not let KeyRotator's own internal retry regenerate and speak a second, overlapping partial reply on top of the first", async () => {
+    // A single key means KeyRotator retries the SAME provider (no
+    // rotation) on a retryable failure — a TimeoutError is the live-
+    // observed case: the stream starts, speaks a clause, then genuinely
+    // stalls past the retry budget's timeout. Before the fix, KeyRotator's
+    // retry called this provider's completion a SECOND time from scratch,
+    // and its (different) content got spoken right on top of the first
+    // partial reply — the "Your voice was voice was cut off" garbled
+    // overlap seen on a real call. Now, once anything has been spoken,
+    // llm.ts fails fast instead of letting KeyRotator regenerate.
+    let groqCalls = 0;
+    mockCreate.mockImplementation((baseURL: string) => {
+      if (baseURL.includes("groq")) {
+        groqCalls++;
+        return Promise.resolve({
+          async *[Symbol.asyncIterator]() {
+            yield { choices: [{ delta: { content: "Here is the first part of my answer. " } }] };
+            throw Object.assign(new Error("stream stalled"), { name: "TimeoutError" });
+          },
+        });
+      }
+      throw new Error("should never reach a different provider — a clause was already spoken from Groq");
+    });
+
+    const clauses: string[] = [];
+    await expect(
+      generateReply({ system: "sys", user: "hello", clientId: "c1", onClause: (c) => clauses.push(c) })
+    ).rejects.toThrow(/already spoken/i);
+
+    // The actual completion call only ever happened ONCE — KeyRotator's
+    // retry attempt was blocked before it could call the provider again.
+    expect(groqCalls).toBe(1);
+    expect(clauses).toEqual([
+      "Here is the first part of my answer.",
+      "Sorry, I lost my train of thought there — could you say that again?",
+    ]);
   });
 
   it("non-streaming callers (no onClause) are completely unaffected — plain, non-streamed request", async () => {

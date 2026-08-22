@@ -64,6 +64,29 @@ export function computeRmsEnergy(pcm: Buffer): number {
 }
 
 /**
+ * Zero-crossing rate (0-1) of a single small PCM buffer — e.g. one 20ms
+ * Twilio media frame — for real-time barge-in gating. Cheap enough to run
+ * per-frame (no sub-framing/averaging, unlike extractAcousticFeatures'
+ * turn-level version): human speech has a moderate, textured ZCR, while
+ * steady background noise tends to sit at an extreme — a near-DC hum stays
+ * close to 0, broadband static/hiss stays close to 1. Used alongside RMS so
+ * a barge-in only fires for sound that's both loud AND speech-shaped,
+ * instead of loud alone (which line noise/static can also be).
+ */
+export function computeFrameZeroCrossingRate(pcm: Buffer): number {
+  const sampleCount = Math.floor(pcm.length / 2);
+  if (sampleCount < 2) return 0;
+  let crossings = 0;
+  let prev = pcm.readInt16LE(0);
+  for (let i = 1; i < sampleCount; i++) {
+    const sample = pcm.readInt16LE(i * 2);
+    if ((sample >= 0 && prev < 0) || (sample < 0 && prev >= 0)) crossings++;
+    prev = sample;
+  }
+  return crossings / (sampleCount - 1);
+}
+
+/**
  * Extract full acoustic features from a completed speech turn's PCM buffer.
  *
  * @param pcm - Concatenated linear16 PCM buffer for the entire turn

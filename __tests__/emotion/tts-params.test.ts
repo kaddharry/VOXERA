@@ -17,7 +17,9 @@ describe("Emotion TTS Prosody Mapping", () => {
     expect(params.pauseStrategy).toBe("long");
 
     const shaped = applyEmotionProsody("I can help you. Please stay calm.", params);
-    expect(shaped).toContain("...");
+    // Deepgram Aura-2 has no SSML/pause markup — the documented mechanism is
+    // commas/hyphens, not ellipses, so "long" pacing uses an em dash.
+    expect(shaped).toContain("—");
   });
 
   it("maps excitement to the pleasing tone with no extra pauses", () => {

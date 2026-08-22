@@ -8,6 +8,11 @@ export interface PlaceOutboundCallOptions {
    * — passed through as a query param on the webhook URL so /incoming can
    * resolve it without a phone_numbers lookup (see that route for why). */
   agentId?: string;
+  /** Roster patient (lib/db/patients.ts) being called — threaded the same
+   * way as agentId, so the orchestrator can inject this patient's `notes`
+   * into the call's context (see lib/agent/context.ts's PATIENT CONTEXT
+   * block). Also recorded on call_logs for the patient's call history. */
+  patientId?: string;
   baseUrl: string;
   /** Set when dispatched from a campaign, so the Twilio status callback can
    * update this specific campaign_calls row once the call finishes — see
@@ -26,6 +31,7 @@ export interface PlaceOutboundCallOptions {
 export async function placeOutboundCall(opts: PlaceOutboundCallOptions): Promise<{ callSid: string; status: string }> {
   const params = new URLSearchParams({ clientId: opts.clientId });
   if (opts.agentId) params.set("agentId", opts.agentId);
+  if (opts.patientId) params.set("patientId", opts.patientId);
   const webhookUrl = `${opts.baseUrl}/api/telephony/incoming?${params.toString()}`;
 
   const statusParams = new URLSearchParams();
@@ -40,6 +46,7 @@ export async function placeOutboundCall(opts: PlaceOutboundCallOptions): Promise
     callerNumber: opts.to,
     status: "outbound_initiated",
     startedAt: Date.now(),
+    patientId: opts.patientId ?? null,
   }]);
 
   return { callSid, status };

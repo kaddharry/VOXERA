@@ -228,6 +228,97 @@ body:has(.voxera-demo-dark, .voxera-admin-dark) {
   .voxera-orb.is-idle { animation: none; }
 }
 
+/* ── /admin/live_dashboard — glossy "liquid glass" orb, reference:
+   dribbble.com/shots/23655866-AI-Voice-Assistant-for-ChatGPT. A full
+   sphere (no separate inner "core" dot like the drawer's orb — this is
+   meant to read as one glassy object, not an icon-in-a-ring), still driven
+   by the same real --level/--hue custom properties (here fed by the live
+   call's detected emotion intensity/label, not mic amplitude — there's no
+   local microphone on this page, it's watching a real phone call over
+   SSE), plus a slow ambient rotation that runs independent of any data so
+   it never looks static waiting for the next event. ────────────────── */
+.voxera-orb-live {
+  --level: 0;
+  --hue: var(--console-violet);
+  --hue2: var(--console-cyan);
+  position: relative;
+  border-radius: 9999px;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.85), transparent 32%),
+    conic-gradient(from var(--orb-spin, 0deg), var(--hue), var(--hue2), var(--hue));
+  box-shadow:
+    inset 0 0 40px rgba(255,255,255,0.15),
+    inset 0 -24px 50px color-mix(in srgb, var(--hue2) 45%, transparent),
+    inset 0 20px 40px color-mix(in srgb, var(--hue) 35%, transparent),
+    0 0 calc(30px + var(--level) * 90px) color-mix(in srgb, var(--hue) 60%, transparent);
+  border: 1px solid rgba(255,255,255,0.22);
+  animation: voxera-orb-live-spin 14s linear infinite;
+  transform: scale(calc(1 + var(--level) * 0.06));
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.voxera-orb-live::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: radial-gradient(circle at 60% 68%, transparent 55%, rgba(10,12,20,0.35) 100%);
+}
+
+@property --orb-spin {
+  syntax: '<angle>';
+  inherits: true;
+  initial-value: 0deg;
+}
+
+@keyframes voxera-orb-live-spin {
+  from { --orb-spin: 0deg; }
+  to { --orb-spin: 360deg; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voxera-orb-live { animation: none; }
+}
+
+/* Vertical dashed connector run down the left edge of the engine panel
+   stack (Text Engine → Acoustic Engine → Final Result are already stacked
+   vertically by EngineDiagnosticPanel — this draws alongside them without
+   needing to modify that component). Re-keyed per turn ID by the caller so
+   the flow "pulses" fresh on every new reply's diagnostics. */
+.voxera-flow-container {
+  padding-left: 14px;
+}
+
+.voxera-flow-line {
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--console-cyan) 70%, transparent) 0,
+    color-mix(in srgb, var(--console-cyan) 70%, transparent) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+  background-size: 2px 12px;
+  animation: voxera-flow-dash 1.1s linear infinite, voxera-flow-fade-in 0.4s ease-out;
+}
+
+@keyframes voxera-flow-dash {
+  to { background-position: 0 -24px; }
+}
+
+@keyframes voxera-flow-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voxera-flow-line { animation: none; }
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    /demo PAGE — dark console theme
    Every component under this scope reads color through the semantic

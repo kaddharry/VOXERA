@@ -11,12 +11,14 @@ import { logSessionEvent, makeEvent } from "../logging/session-logger";
 import { emitSessionEvent } from "../realtime/emitter";
 import { supabase as supabaseService } from "../db/supabase";
 import { getAgentWithTenant } from "../db/agents";
+import { getPatientById } from "../db/patients";
 import { retrieve, topScore } from "../memory/retrieval";
 import { stm } from "../memory/stm";
 import { vectorStore } from "../memory/store";
 import { writeMemory } from "../memory/writer";
 import type { Utterance, EmotionSignal, EmotionLabel, AcousticFeatures, PolicyDirectives } from "../types";
 import { embed } from "../util/embed";
+import { getInlineKnowledgeBase } from "../knowledge/inline";
 import { buildLLMContext } from "./context";
 import { guardOutput, guardBeforeLLM, guardOpeningClause, cleanClause, guardTrailingClause, type GuardResult } from "./guard";
 import { guardInput, type InputGuardResult } from "./input-guard";
@@ -54,6 +56,12 @@ export interface TurnInput {
    * retrieval/knowledge scoping follows the agent, not a separately-passed
    * value), and its system_prompt is layered into the LLM system prompt. */
   agentId?: string;
+  /** Roster patient (lib/db/patients.ts) being called — only ever set on an
+   * outbound call placed from the Patients page. When present, that
+   * patient's `notes` are layered into the LLM system prompt as a "PATIENT
+   * CONTEXT" block (lib/agent/context.ts), additive alongside the agent's
+   * own system_prompt, never overriding CORE RULES/grounding. */
+  patientId?: string;
 }
 
 /** Lightweight, judge-readable view of a MemoryRecord — enough to show WHY a
@@ -145,6 +153,23 @@ export interface HandleTurnOpts {
    * clause as it streams in, instead of only finding out the emotion/
    * policy once the whole turn (and all its audio) is already done. */
   onEmotionResolved?: (emotion: EmotionLabel, policy: PolicyDirectives) => void;
+  /** When true, this call never awaits the diagnostics engine breakdown
+   * before returning — handleTurn() resolves the instant the reply/guard
+   * work is done, full stop, regardless of how long the (capped but still
+   * real) diagnostics computation takes. The returned trace.emotionDiagnostics
+   * is always undefined in this mode; the live dashboard still gets the
+   * data (usually within ~1-2 turns, never gating the caller's own turn-
+   * taking) via the "emotion_diagnostic" SSE emit already fired
+   * independently as soon as the background computation finishes — that
+   * emit does not depend on this return path at all. For real phone calls
+   * specifically: diagnostics must never be able to delay when the system
+   * marks itself ready for the caller's next sentence, which awaiting it
+   * here would risk on a slow (up to ~1.5s worst-case) run. The browser
+   * demo path (server.ts) deliberately does NOT set this — its own test
+   * drawer UI reads emotionDiagnostics synchronously off this same return
+   * value and isn't talking to a real caller under real turn-taking
+   * pressure. */
+  deferDiagnostics?: boolean;
 }
 
 export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promise<TurnOutput> {
@@ -167,6 +192,16 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   const agentInfoPromise = input.agentId
     ? getAgentWithTenant(supabaseService, input.agentId).catch((err) => {
         console.warn("[Orchestrator] Failed to resolve agentId, using default clientId:", err);
+        return null;
+      })
+    : Promise.resolve(null);
+  // Patient lookup doesn't depend on (or get depended on by) the clientId
+  // resolution above — patientId is looked up directly, unscoped (same
+  // "trusted infrastructure caller" reasoning as getAgentWithTenant's own
+  // unscoped read) — safe to resolve in the same Promise.all below.
+  const patientInfoPromise = input.patientId
+    ? getPatientById(supabaseService, input.patientId).catch((err) => {
+        console.warn("[Orchestrator] Failed to resolve patientId:", err);
         return null;
       })
     : Promise.resolve(null);
@@ -240,13 +275,29 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // still-in-flight agentInfoPromise instead of waiting behind it. This is
   // the join point: whichever of the three is slowest determines how long
   // this section takes, instead of the sum of all three.
-  const [agentInfo, textEmoResult, queryEmbedding] = await Promise.all([
+  const [agentInfo, textEmoResult, queryEmbedding, patientInfo] = await Promise.all([
     agentInfoPromise,
     detectTextEmotion(input.transcript),
     embed(input.transcript, { isQuery: true }),
+    patientInfoPromise,
   ]);
   applyAgentInfo(agentInfo);
+  const patientContext = patientInfo?.notes || undefined;
   const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
+
+  // MUST run after applyAgentInfo() above — input.clientId only becomes the
+  // resolved tenant's clientId once that call has mutated it. A prior
+  // version of this call sat inside the Promise.all before applyAgentInfo(),
+  // capturing input.clientId's PRE-resolution value (the caller-supplied/
+  // default clientId, e.g. the demo tenant's "acme-telecom" when the
+  // frontend passes only agentId in the WS URL and no explicit clientId).
+  // That meant a small, unrelated tenant's own KB (if one existed and was
+  // small enough to inline) got spliced into CLIENT instead of the actual
+  // resolved agent's — live-reproduced: the demo tenant's 6-chunk generic
+  // escalation/brand-voice KB overrode a real agent's real knowledge base,
+  // and the model, with no real facts to work from, fabricated a plausible-
+  // sounding but entirely made-up answer instead of using the caller's data.
+  const inlineKb = await getInlineKnowledgeBase(input.clientId);
 
   const textEmo = textEmoResult.primary;
   const audioEmo = input.acousticFeatures
@@ -275,7 +326,13 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   const [mtmCandidates, ltmUserCandidates, ltmClientCandidates] = await Promise.all([
     vectorStore.search({ tier: "MTM", userId: input.userId, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
     vectorStore.search({ tier: "LTM_user", userId: input.userId, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
-    vectorStore.search({ tier: "LTM_client", userId: null, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
+    // Skipped entirely when the whole KB is already being inlined into the
+    // system prompt below (see inlineKb) — no point spending an embedding
+    // call's worth of pgvector search re-deriving a top-K slice of content
+    // the model already has in full.
+    inlineKb
+      ? Promise.resolve([])
+      : vectorStore.search({ tier: "LTM_client", userId: null, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
   ]);
   const ltmUserAll = ltmUserCandidates.map((r) => r.rec);
   const mtmExisting = mtmCandidates.map((r) => r.rec);
@@ -310,6 +367,14 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       }, { textEmoResult, audioSignal: audioEmo, localOnnxResult: textEmoResult.localOnnx }, input.rawAudioPcm16k)
         .then((result) => {
           void logSessionEvent(makeEvent(evBase, "emotion_diagnostic", result as unknown as Record<string, unknown>));
+          // Live admin monitoring (components/admin/LiveCallMonitor.tsx) —
+          // this was previously only logged to the DB, never published to
+          // the session's live SSE channel, so the dashboard could only
+          // ever show the thin fused emotion, never the per-engine
+          // breakdown. Fire-and-forget, same as every other emitSessionEvent
+          // call in this file — `result` is already fully computed here, so
+          // this adds no blocking work to the turn.
+          void emitSessionEvent(input.sessionId, "emotion_diagnostic", result as unknown as Record<string, unknown>);
           return result;
         })
         .catch((err) => {
@@ -465,6 +530,8 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     policy,
     customInstructions,
     personaLock,
+    inlineKnowledgeBase: inlineKb ?? undefined,
+    patientContext,
   });
 
   const llmStart = Date.now();
@@ -498,6 +565,33 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
         sessionId: input.sessionId,
         userId: input.userId,
         abortSignal: opts.abortSignal,
+        // Reservation tools (check/create/modify/cancel_booking) are a
+        // single global TOOLS array with no per-agent scoping — every
+        // custom Agent Builder agent (a resume bot, an FAQ agent, anything)
+        // got the exact same restaurant-booking tools as the hardcoded demo
+        // agent, regardless of what that business actually does. Live-
+        // reproduced: a resume agent, given a question it had no real
+        // grounding to answer, called create_booking with entirely
+        // fabricated customer data and attempted to send a confirmation
+        // email. Custom agents have no booking system built for their
+        // tenants at all right now, so this was pure risk with no matching
+        // feature — restrict tools to the hardcoded demo path
+        // (resolvedAgent is only set once an Agent Builder agent resolves).
+        useTools: !resolvedAgent,
+        // Live-observed dashboard gap: the "transcript" SSE event for the
+        // agent's turn only ever fired once, with the FULL final text,
+        // after the whole reply (and every clause of real audio) had
+        // already been spoken — so anyone watching the Live Dashboard saw
+        // a complete sentence pop in well after the fact, not anything
+        // resembling streaming. This fires on every raw token delta
+        // instead, giving the dashboard a genuine word-by-word "typing"
+        // view synced with what's actually happening. Pre-guard text only
+        // — never spoken, never treated as final (see onRawDelta's doc in
+        // llm.ts); the guarded "transcript" event below still carries the
+        // authoritative final text.
+        onRawDelta: (textSoFar) => {
+          void emitSessionEvent(input.sessionId, "transcript_delta", { role: "agent", text: textSoFar });
+        },
         onClause: (rawClause) => {
           const { cleaned, reasons: cleanReasons } = cleanClause(rawClause, llmContext.citations);
           reasons.push(...cleanReasons);
@@ -535,6 +629,9 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       clientId: input.clientId,
       sessionId: input.sessionId,
       userId: input.userId,
+      // See the streaming branch above for why this is scoped to the
+      // hardcoded demo path only.
+      useTools: !resolvedAgent,
     });
     guarded = guardOutput({
       reply: llmReply.text,
@@ -565,6 +662,34 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     reasons: guarded.reasons,
   }));
 
+  // Live explainability for the dashboard — which knowledge source (and
+  // why) the reply actually drew from this turn, or that none cleared the
+  // grounding bar and the predefined fallback/hedge language was used
+  // instead (guard.ts's "retrieval below threshold — hedging factual
+  // claim" reason is the exact signal for that). Fire-and-forget, built
+  // entirely from data already computed above — adds no new work.
+  {
+    const topEntry = [...retrieved.scores].sort((a, b) => b.score - a.score)[0];
+    const usedFallback = guarded.reasons.some((r) => r.includes("hedging factual claim"));
+    const topExplanation = topEntry ? retrieved.explanations?.[topEntry.id] : undefined;
+    const topTier = topEntry
+      ? retrieved.mtm.some((m) => m.id === topEntry.id)
+        ? "EVIDENCE (recent memory)"
+        : retrieved.ltmUser.some((m) => m.id === topEntry.id)
+          ? "USER_PROFILE"
+          : retrieved.ltmClient.some((m) => m.id === topEntry.id)
+            ? "CLIENT (knowledge base)"
+            : "unknown"
+      : null;
+    void emitSessionEvent(input.sessionId, "retrieval", {
+      usedFallback,
+      fallbackText: usedFallback ? guarded.cleaned : undefined,
+      topSource: topTier,
+      reason: topExplanation?.reason,
+      similarity: topExplanation?.metrics.similarity,
+    });
+  }
+
   void logSessionEvent(makeEvent(evBase, "llm_reply", {
     model: llmReply.model,
     usedLive: llmReply.usedLive,
@@ -588,8 +713,11 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // in practice this await resolves immediately. It only actually waits
   // when diagnostics is unusually slow, and even then it's capped by
   // CONFIG.emotion.localAudioMlLatencyBudgetMs/localOnnxLatencyBudgetMs
-  // rather than the old unbounded wav2vec2 cold-load risk.
-  const emotionDiagnostics = await diagnosticsPromise;
+  // rather than the old unbounded wav2vec2 cold-load risk. Skipped
+  // entirely under deferDiagnostics — see that option's doc for why real
+  // phone calls can never let this gate their own turn-taking, however
+  // small the worst case.
+  const emotionDiagnostics = opts?.deferDiagnostics ? undefined : await diagnosticsPromise;
 
   return {
     reply: guarded.cleaned,
@@ -627,4 +755,56 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       personaLock,
     },
   };
+}
+
+/**
+ * Persists whatever the agent had genuinely spoken before a barge-in cut
+ * the turn short — a live-reported gap: on interruption, handleTurn()'s
+ * promise simply rejects (see stream-handler.ts's onTranscript catch
+ * block), and the partial reply that was ALREADY audibly spoken before the
+ * caller interrupted was never written to STM or session_logs at all. That
+ * meant the model had no memory of its own half-finished sentence on the
+ * very next turn — it could repeat itself, contradict what it just started
+ * saying, or simply act as if that thought never came up.
+ *
+ * Called from stream-handler.ts (the only place that actually knows which
+ * clauses made it to the phone line before the barge-in's generation bump
+ * silently dropped the rest — orchestrator itself has no concept of
+ * "generation" and can't tell truly-spoken text from a clause that was
+ * computed but never played). The trailing "…" is deliberate: it's the
+ * clearest possible signal to the model, reading its own STM history next
+ * turn, that this thought was left unfinished — letting it naturally
+ * decide whether to pick the thread back up or move on, the same way a
+ * person would read "I was saying, we should—" and understand it got cut
+ * off, rather than treating it as a complete, final sentence.
+ */
+export async function recordInterruptedReply(opts: {
+  sessionId: string;
+  userId: string;
+  clientId: string;
+  partialText: string;
+}): Promise<void> {
+  const trimmed = opts.partialText.trim();
+  if (!trimmed) return;
+
+  const agentTurn: Utterance = {
+    id: nanoid(8),
+    role: "agent",
+    text: `${trimmed}…`,
+    ts: Date.now(),
+  };
+  await stm.push(opts.sessionId, agentTurn, opts.clientId);
+
+  const evBase = { sessionId: opts.sessionId, userId: opts.userId, clientId: opts.clientId };
+  void logSessionEvent(makeEvent(evBase, "utterance", {
+    utteranceId: agentTurn.id,
+    role: agentTurn.role,
+    text: agentTurn.text,
+    interrupted: true,
+  }));
+  void emitSessionEvent(opts.sessionId, "transcript", {
+    role: "agent",
+    text: agentTurn.text,
+    interrupted: true,
+  });
 }

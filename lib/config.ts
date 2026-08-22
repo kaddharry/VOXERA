@@ -54,19 +54,34 @@ export const CONFIG = {
     // aggressive a cut reintroduces the "ordinary mid-sentence thinking
     // pause gets split into two turns" bug documented in live.ts.
     endpointingMs: 400,
-    utteranceEndMs: 1000,
+    // Raised from Deepgram's own hard floor (1000ms) to 1300ms — live
+    // feedback compared this agent unfavorably against a competitor's that
+    // "wouldn't start until I complete my sentence," even with an ordinary
+    // mid-sentence pause. 1000ms was cutting in too early on a caller who
+    // just paused to think for a beat. This trades ~300ms of extra silence
+    // before the agent responds (small next to the multi-second LLM/TTS
+    // pipeline it's already waiting on) for turn-taking that actually
+    // waits for the caller to finish, which matters more for how natural a
+    // call feels than shaving another 300ms off response time would.
+    utteranceEndMs: 1300,
   },
   deepgram: {
     sttModel: "nova-2-general",
     sttTier: "enhanced",
-    ttsModel: "aura-asteria-en", // Default: female, friendly
+    // Aura-2 (verified live against Deepgram's REST /v1/speak — all four
+    // aura-2-*-en names below return HTTP 200) — faster and more natural
+    // than Aura-1, same voice names carried over. TTS was never the
+    // bottleneck (already ~280-375ms to first audio byte on Aura-1), so this
+    // is a strict quality/speed upgrade rather than a fix for a measured
+    // problem.
+    ttsModel: "aura-2-asteria-en", // Default: female, friendly
     language: "en",
     // FR-25: Available voice personas for businesses to choose from
     voicePersonas: {
-      "female-friendly": { model: "aura-asteria-en", label: "Female · Friendly" },
-      "male-formal": { model: "aura-orion-en", label: "Male · Formal" },
-      "female-formal": { model: "aura-athena-en", label: "Female · Formal" },
-      "male-friendly": { model: "aura-arcas-en", label: "Male · Friendly" },
+      "female-friendly": { model: "aura-2-asteria-en", label: "Female · Friendly" },
+      "male-formal": { model: "aura-2-orion-en", label: "Male · Formal" },
+      "female-formal": { model: "aura-2-athena-en", label: "Female · Formal" },
+      "male-friendly": { model: "aura-2-arcas-en", label: "Male · Friendly" },
     } as Record<string, { model: string; label: string }>,
   },
   llm: {
@@ -107,6 +122,26 @@ export const CONFIG = {
         // non-starter since every live turn needs tools.
         model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
         envKey: "GROQ_API_KEYS",
+        reasoningEffort: "none" as const,
+      },
+      // Second Groq ORGANIZATION (not just another key) — set
+      // GROQ_API_KEYS_2 (comma-separated, same format as GROQ_API_KEYS) to
+      // enable. Groq's daily token quota (TPD) is scoped per-organization,
+      // not per-key (see lib/util/keys.ts's isOrgWideRateOrQuotaLimit
+      // comment) — the 3 keys already in GROQ_API_KEYS all share ONE 200k
+      // tokens/day pool, verified live: when it's exhausted, all 3 fail
+      // identically at once. A key from a genuinely separate Groq account
+      // has its own independent quota, so this is real redundancy where
+      // GROQ_API_KEYS is not. Ordered right after the primary Groq entry —
+      // same speed profile — so a caller only falls through to the much
+      // slower ZenMux (3-5x higher TTFT, measured live) after BOTH Groq
+      // orgs are unavailable. A no-op (skipped entirely, same as any
+      // provider with no key configured) until GROQ_API_KEYS_2 is set.
+      {
+        name: "groq-2",
+        baseURL: "https://api.groq.com/openai/v1",
+        model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
+        envKey: "GROQ_API_KEYS_2",
         reasoningEffort: "none" as const,
       },
       {
@@ -223,6 +258,27 @@ export const CONFIG = {
     // interrupt (typical speech RMS is 1000-6000+, see the energyNorm
     // normalization in lib/emotion/audio-emotion.ts).
     bargeInEnergyThreshold: 800,
+    // Zero-crossing-rate band a loud frame's ZCR must fall inside to be
+    // treated as speech-shaped rather than background noise (see
+    // computeFrameZeroCrossingRate's doc in lib/audio/acoustic.ts). A
+    // near-DC hum (AC/electrical noise) sits near 0; broadband static/hiss
+    // sits near 1; real speech (voiced + unvoiced sounds mixed) lands
+    // comfortably in between. Deliberately wide — the failure mode of
+    // missing a real interruption is worse than occasionally letting a
+    // noise burst through, so this only needs to catch the obvious extremes.
+    bargeInMinZcr: 0.02,
+    bargeInMaxZcr: 0.45,
+    // How many CONSECUTIVE 20ms Twilio media frames must exceed
+    // bargeInEnergyThreshold before the raw-RMS fallback fires a barge-in.
+    // A single frame (20ms) is enough for a click/cough/static burst to
+    // false-trigger and cut the agent off mid-sentence over nothing; 2
+    // frames (40ms) is still imperceptibly fast for a real interruption
+    // but requires the sound to actually sustain, which background noise
+    // rarely does. Deepgram's own model-based VAD signal (see
+    // stream-handler.ts's onSpeechStarted) is unaffected by this and stays
+    // the primary, more reliable trigger — this only tightens the raw
+    // energy fallback.
+    bargeInSustainFrames: 2,
     // Issue #14: Silence threshold for pause detection in acoustic analysis
     // (lib/audio/acoustic.ts's detectPauses()). Was 200 and, until now, only
     // duplicated by a hardcoded local constant in acoustic.ts rather than

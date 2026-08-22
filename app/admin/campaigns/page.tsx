@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Megaphone, Plus, ArrowLeft, PhoneCall, CheckCircle2, XCircle, Clock, Loader2 } from "lucide-react";
+import { Megaphone, Plus, ArrowLeft, PhoneCall, CheckCircle2, XCircle, Clock, Loader2, PhoneOff, Trash2, RotateCcw, X } from "lucide-react";
 import { GlassCard } from "@/app/_components/GlassCard";
+import { PhoneInput } from "@/app/_components/PhoneInput";
 
 interface Campaign {
   id: string;
@@ -62,8 +63,17 @@ export default function CampaignsPage() {
   const [name, setName] = useState("");
   const [agentId, setAgentId] = useState("");
   const [recipientsText, setRecipientsText] = useState("");
+  const [recipientDraft, setRecipientDraft] = useState("");
+  const [recipientList, setRecipientList] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const [killing, setKilling] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [showRecall, setShowRecall] = useState(false);
+  const [recallAgentId, setRecallAgentId] = useState("");
+  const [recalling, setRecalling] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -112,10 +122,20 @@ export default function CampaignsPage() {
     }
   }, [detail?.campaign.status]);
 
-  const recipients = useMemo(
-    () => recipientsText.split(/[\n,]/).map((s) => s.trim()).filter(Boolean),
-    [recipientsText]
-  );
+  const recipients = useMemo(() => {
+    const fromText = recipientsText.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+    return Array.from(new Set([...recipientList, ...fromText]));
+  }, [recipientsText, recipientList]);
+
+  function addRecipient() {
+    if (!recipientDraft) return;
+    setRecipientList((list) => (list.includes(recipientDraft) ? list : [...list, recipientDraft]));
+    setRecipientDraft("");
+  }
+
+  function removeRecipient(num: string) {
+    setRecipientList((list) => list.filter((n) => n !== num));
+  }
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -132,6 +152,7 @@ export default function CampaignsPage() {
       setName("");
       setAgentId("");
       setRecipientsText("");
+      setRecipientList([]);
       setView("list");
       loadCampaigns();
       setSelectedId(data.campaign.id);
@@ -139,6 +160,64 @@ export default function CampaignsPage() {
       setFormError(err.message || "Failed to create campaign");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleKill = async () => {
+    if (!selectedId) return;
+    setKilling(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/campaigns/${selectedId}/kill`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to kill campaign");
+      loadDetail(selectedId);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to kill campaign");
+    } finally {
+      setKilling(false);
+    }
+  };
+
+  const handleClear = async () => {
+    if (!selectedId) return;
+    setClearing(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/campaigns/${selectedId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to clear history");
+      setSelectedId(null);
+      setDetail(null);
+      loadCampaigns();
+    } catch (err: any) {
+      setActionError(err.message || "Failed to clear history");
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const handleRecall = async () => {
+    if (!selectedId || !recallAgentId) return;
+    setRecalling(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/campaigns/${selectedId}/recall`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: recallAgentId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to re-call campaign");
+      setShowRecall(false);
+      setRecallAgentId("");
+      loadDetail(selectedId);
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(() => loadDetail(selectedId), 3000);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to re-call campaign");
+    } finally {
+      setRecalling(false);
     }
   };
 
@@ -154,15 +233,87 @@ export default function CampaignsPage() {
           <ArrowLeft className="w-3.5 h-3.5" /> Back to campaigns
         </button>
 
-        <header className="mb-8 flex items-start justify-between gap-4 flex-wrap">
+        <header className="mb-4 flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h1 className="font-display text-2xl font-extrabold tracking-tight text-[var(--color-text-primary)]">{c.name}</h1>
             <p className="text-[13px] text-[var(--color-text-muted)] mt-1">
               Started {new Date(c.createdAt).toLocaleString()}
             </p>
           </div>
-          <StatusBadge status={c.status} />
+          <div className="flex items-center gap-2 flex-wrap">
+            <StatusBadge status={c.status} />
+            {(c.status === "pending" || c.status === "running") && (
+              <button
+                onClick={handleKill}
+                disabled={killing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-[12px] font-semibold hover:bg-red-500/20 disabled:opacity-40 transition-colors"
+              >
+                {killing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PhoneOff className="w-3.5 h-3.5" />}
+                Kill Call
+              </button>
+            )}
+            <button
+              onClick={() => setShowRecall(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.05] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] text-[12px] font-semibold hover:text-[var(--color-text-primary)] hover:bg-white/[0.08] transition-colors"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Re-call
+            </button>
+            <button
+              onClick={handleClear}
+              disabled={clearing}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.05] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] text-[12px] font-semibold hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+            >
+              {clearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              Clear History
+            </button>
+          </div>
         </header>
+
+        {actionError && <p className="text-[13px] text-red-400 mb-4">{actionError}</p>}
+
+        {showRecall && (
+          <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6">
+            <GlassCard className="p-6 w-full max-w-sm">
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-[15px] font-semibold text-[var(--color-text-primary)]">Re-call this campaign</h3>
+                <button onClick={() => setShowRecall(false)} className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-[12px] text-[var(--color-text-muted)] mb-4">
+                Dials the same {c.totalRecipients} recipient{c.totalRecipients === 1 ? "" : "s"} again, fresh history.
+              </p>
+              <label className="text-[11px] font-mono uppercase tracking-widest text-[var(--color-text-muted)] mb-1.5 block">Agent</label>
+              <select
+                value={recallAgentId}
+                onChange={(e) => setRecallAgentId(e.target.value)}
+                className="w-full bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-cyan)]/50 mb-4"
+              >
+                <option value="">Select an agent…</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowRecall(false)}
+                  className="flex-1 px-4 py-2 rounded-lg bg-white/[0.05] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleRecall}
+                  disabled={!recallAgentId || recalling}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-[var(--color-accent-cyan)] text-[#0A0C14] text-[13px] font-semibold hover:brightness-110 disabled:opacity-40 transition-all"
+                >
+                  {recalling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                  Start
+                </button>
+              </div>
+            </GlassCard>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
           <GlassCard className="p-4">
@@ -253,18 +404,46 @@ export default function CampaignsPage() {
             </div>
 
             <div>
-              <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">
-                Recipients <span className="text-[var(--color-text-muted)] font-normal normal-case">— one per line or comma-separated, E.164 format</span>
-              </label>
-              <textarea
-                value={recipientsText}
-                onChange={(e) => setRecipientsText(e.target.value)}
-                rows={8}
-                required
-                className="w-full px-4 py-3 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[13px] font-mono text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)] resize-none"
-                placeholder={"+15551234567\n+15559876543"}
-              />
-              <span className="text-[11px] text-[var(--color-text-muted)] mt-1 block">{recipients.length} recipient{recipients.length === 1 ? "" : "s"}</span>
+              <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">Recipients</label>
+              <div className="flex items-center gap-2 mb-3">
+                <PhoneInput value={recipientDraft} onChange={setRecipientDraft} className="flex-1" />
+                <button
+                  type="button"
+                  onClick={addRecipient}
+                  disabled={!recipientDraft}
+                  className="px-3.5 py-2 rounded-lg bg-white/[0.06] border border-[var(--color-border-subtle)] text-[13px] font-semibold text-[var(--color-text-primary)] hover:bg-white/[0.1] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-none"
+                >
+                  Add
+                </button>
+              </div>
+              {recipientList.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {recipientList.map((num) => (
+                    <span
+                      key={num}
+                      className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-md bg-white/[0.05] border border-[var(--color-border-subtle)] text-[12px] font-mono text-[var(--color-text-primary)]"
+                    >
+                      {num}
+                      <button type="button" onClick={() => removeRecipient(num)} className="text-[var(--color-text-muted)] hover:text-red-400 transition-colors">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <details className="text-[12px]">
+                <summary className="text-[var(--color-text-muted)] cursor-pointer hover:text-[var(--color-text-secondary)] transition-colors">
+                  Or paste a list (one per line or comma-separated, E.164 format)
+                </summary>
+                <textarea
+                  value={recipientsText}
+                  onChange={(e) => setRecipientsText(e.target.value)}
+                  rows={5}
+                  className="w-full mt-2 px-4 py-3 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[13px] font-mono text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)] resize-none"
+                  placeholder={"+15551234567\n+15559876543"}
+                />
+              </details>
+              <span className="text-[11px] text-[var(--color-text-muted)] mt-2 block">{recipients.length} recipient{recipients.length === 1 ? "" : "s"}</span>
             </div>
 
             {formError && <p className="text-[13px] text-red-400">{formError}</p>}
@@ -272,7 +451,7 @@ export default function CampaignsPage() {
             <div className="flex items-center gap-3">
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || recipients.length === 0}
                 className="flex items-center gap-2 px-5 py-2.5 text-[14px] font-semibold text-white btn-gradient rounded-xl transition-all hover:scale-[1.02] disabled:opacity-50 disabled:hover:scale-100"
               >
                 <PhoneCall className="w-4 h-4" />

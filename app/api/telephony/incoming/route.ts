@@ -51,6 +51,10 @@ export async function POST(req: NextRequest) {
     // below only applies to genuine inbound calls, which never carry these.
     const queryClientId = req.nextUrl.searchParams.get("clientId");
     const queryAgentId = req.nextUrl.searchParams.get("agentId");
+    // Roster patient (lib/db/patients.ts) being called, if this call came
+    // from the Patients page's "Call Now" — threaded the same way as
+    // agentId, only ever set on outbound calls.
+    const patientId = req.nextUrl.searchParams.get("patientId") ?? undefined;
 
     let clientId: string;
     let agentId: string | undefined;
@@ -119,12 +123,12 @@ export async function POST(req: NextRequest) {
     // non-Twilio WS testing) — Twilio does not reliably forward them on the
     // Media Stream connection URL. The real source of truth is the
     // <Parameter> elements below, delivered via the "start" event.
-    const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}${agentId ? `&agentId=${agentId}` : ""}`;
+    const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}${agentId ? `&agentId=${agentId}` : ""}${patientId ? `&patientId=${patientId}` : ""}`;
 
     console.log(`[Telephony] Connecting ${callSid} to stream: ${wsUrl}`);
 
     return new NextResponse(
-      buildConnectTwiml(wsUrl, { callSid, clientId, caller: callerNumber, ...(agentId && { agentId }) }),
+      buildConnectTwiml(wsUrl, { callSid, clientId, caller: callerNumber, ...(agentId && { agentId }), ...(patientId && { patientId }) }),
       { headers: { "Content-Type": "text/xml" } }
     );
   } catch (err) {

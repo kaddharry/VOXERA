@@ -19,6 +19,7 @@ vi.mock("openai", () => ({
 
 import { CONFIG } from "../../lib/config";
 import { generateReply } from "../../lib/agent/llm";
+import { __resetKeyRotatorRegistryForTests } from "../../lib/util/keys";
 
 function chatResponse(text: string) {
   return { choices: [{ message: { role: "assistant", content: text, tool_calls: undefined } }] };
@@ -27,8 +28,14 @@ function chatResponse(text: string) {
 const ORIGINAL_ENV = { ...process.env };
 
 describe("CONFIG.llm.providers — explicit priority order", () => {
-  it("tries Groq first (fastest/smallest-model provider), then ZenMux, then OpenAI", () => {
-    expect(CONFIG.llm.providers.map((p) => p.name)).toEqual(["groq", "zenmux", "openai"]);
+  it("tries Groq first (fastest/smallest-model provider), then a second Groq org, then ZenMux, then OpenAI", () => {
+    expect(CONFIG.llm.providers.map((p) => p.name)).toEqual(["groq", "groq-2", "zenmux", "openai"]);
+  });
+
+  it("the second Groq org reads its key from a separate env var (independent TPD quota)", () => {
+    const groq2 = CONFIG.llm.providers.find((p) => p.name === "groq-2")!;
+    expect(groq2.envKey).toBe("GROQ_API_KEYS_2");
+    expect(groq2.envKey).not.toBe(CONFIG.llm.providers.find((p) => p.name === "groq")!.envKey);
   });
 
   it("ZenMux reads its key from ZENMUX_API_KEY, unrelated to Groq's env var", () => {
@@ -51,6 +58,12 @@ describe("generateReply — Groq primary with automatic ZenMux fallback", () => 
     process.env.ZENMUX_API_KEY = "zm_test_key";
     process.env.GROQ_API_KEYS = "gsk_test_key";
     delete process.env.OPENAI_API_KEY;
+    // KeyRotator instances are now cached per env-var-name across calls
+    // (see getKeyRotator's doc) so a real session remembers a key it
+    // already proved exhausted — but that same caching would otherwise
+    // leak a stale/empty instance between tests that dynamically change
+    // these env vars.
+    __resetKeyRotatorRegistryForTests();
   });
 
   afterEach(() => {

@@ -115,13 +115,24 @@ export function getEmotionTTSParams(
   return { toneMode, ...TONE_PROFILES[toneMode] };
 }
 
+/**
+ * Deepgram's own Aura-2 formatting guidance (developers.deepgram.com/docs/
+ * improving-aura-2-formatting, checked live) is explicit: there's no SSML or
+ * break-tag support at all — pacing comes from ordinary punctuation, with
+ * commas for natural pauses and hyphens for a slightly longer mid-sentence
+ * break. The previous version of this function inserted a literal "..."
+ * after sentence-ending punctuation for "long" pauses — not a mechanism
+ * Deepgram documents anywhere, and likely read as an awkward trailing-off
+ * or just ignored rather than producing a real pause. Replaced with the
+ * actual documented levers: an em dash for a "long" pause (a stronger,
+ * still-natural break within or after a clause) and nothing extra for
+ * "subtle" (ordinary comma-driven pacing from the text itself is already
+ * enough — adding punctuation on top of what the LLM already wrote risks
+ * doubling up and reading worse, not better).
+ */
 export function applyEmotionProsody(text: string, params: TTSProsodyParams): string {
   if (params.pauseStrategy === "long") {
-    // Insert double spacing / pause breaks after punctuation for slow, comforting pacing
-    return text.replace(/([\.!?])\s+/g, "$1  ... ");
-  }
-  if (params.pauseStrategy === "subtle") {
-    return text.replace(/([\.!?])\s+/g, "$1  ");
+    return text.replace(/([\.!?])\s+/g, "$1 — ");
   }
   return text;
 }

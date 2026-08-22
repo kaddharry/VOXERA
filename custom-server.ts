@@ -79,8 +79,9 @@ app.prepare().then(() => {
         const clientId = String(query.clientId || "demo");
         const callerNumber = String(query.caller || "unknown");
         const agentId = query.agentId ? String(query.agentId) : undefined;
+        const patientId = query.patientId ? String(query.patientId) : undefined;
         console.log(`[TelephonyStream] New connection: callSid=${callSid}${agentId ? ` agentId=${agentId}` : ""}`);
-        new TelephonyStreamHandler({ ws, callSid, clientId, callerNumber, agentId });
+        new TelephonyStreamHandler({ ws, callSid, clientId, callerNumber, agentId, patientId });
       });
     } else {
       nextUpgradeHandler(req, socket, head);
