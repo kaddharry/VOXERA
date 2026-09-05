@@ -13,6 +13,8 @@ Once you have read `instruction.md` and started the workflow, you may ignore thi
   <p><b>Premium Agentic AI Voice Platform</b></p>
   <p>Real-time voice agent routing <b>Deepgram STT + TTS</b> through a hierarchical, emotion-conditioned memory system powered by <b>Supabase `pgvector`</b> and an emotion-aware LLM policy layer.</p>
 
+  <b>LINK(https://vo-2882c61ad83f44399c60d35c29921a12.ecs.ap-south-1.on.aws)</b>
+
   [![Next.js](https://img.shields.io/badge/Next.js-16-black?style=flat-square&logo=next.js)](https://nextjs.org/)
   [![Tailwind CSS v4](https://img.shields.io/badge/Tailwind_v4-06B6D4?style=flat-square&logo=tailwind-css)](https://tailwindcss.com/)
   [![Framer Motion](https://img.shields.io/badge/Framer_Motion-E11D48?style=flat-square&logo=framer)](https://www.framer.com/motion/)
