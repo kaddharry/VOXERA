@@ -18,6 +18,8 @@ import {
   Bot,
   Zap,
   Radio,
+  ShieldAlert,
+  Loader2,
 } from "lucide-react";
 import Link from "next/link";
 import { LiveCallMonitor } from "@/components/admin/LiveCallMonitor";
@@ -63,6 +65,15 @@ interface AnalyticsData {
     lastTs: number;
     dominantEmotion: string;
   }>;
+  followUpPerformance?: {
+    totalCalls: number;
+    pickupRate: number;
+    firstAttemptPickupRate: number;
+    laterAttemptPickupRate: number;
+    avgAttemptsUntilReached: number;
+    patientsReached: number;
+    patientsNeverReached: number;
+  };
 }
 
 /** Flat, solid per-metric accent colors — no gradients on data itself; the
@@ -91,6 +102,24 @@ export default function AnalyticsDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [liveLevel, setLiveLevel] = useState(0);
   const [liveActive, setLiveActive] = useState(false);
+  const [alertCount, setAlertCount] = useState<number | null>(null);
+  const [topAlertReason, setTopAlertReason] = useState<string | null>(null);
+  const [setupStatus, setSetupStatus] = useState<{
+    hasBusinessProfile: boolean;
+    hasAgent: boolean;
+    hasPhoneNumber: boolean;
+    hasKnowledge: boolean;
+    hasPatient: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/admin/setup-status")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.error) setSetupStatus(d);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetch("/api/analytics")
@@ -103,6 +132,20 @@ export default function AnalyticsDashboard() {
         }
       })
       .catch((e) => setError(e.message));
+  }, []);
+
+  // Needs Attention (spec §8.1.D) — visible from Overview, not buried among
+  // chart cards. Open alerts come from lib/scheduler/dispatcher.ts (follow-
+  // ups that couldn't resolve automatically) and from live-call escalations
+  // (lib/agent/orchestrator.ts).
+  useEffect(() => {
+    fetch("/api/alerts")
+      .then((r) => r.json())
+      .then((d: { alerts?: Array<{ reason: string }> }) => {
+        setAlertCount(d.alerts?.length ?? 0);
+        setTopAlertReason(d.alerts?.[0]?.reason ?? null);
+      })
+      .catch(() => setAlertCount(0));
   }, []);
 
   const handleLiveUpdate = useCallback((info: { active: boolean; intensity: number; caiScore: number }) => {
@@ -140,6 +183,15 @@ export default function AnalyticsDashboard() {
     avgSessionDurationMs: 0,
     missedBookings: 0
   };
+
+  const allSetupStepsDone =
+    !!setupStatus &&
+    setupStatus.hasBusinessProfile &&
+    setupStatus.hasAgent &&
+    setupStatus.hasPhoneNumber &&
+    setupStatus.hasKnowledge &&
+    setupStatus.hasPatient &&
+    m.totalCalls > 0;
 
   const emotions = data.emotions ?? {};
   const recentEvents = data.recentEvents ?? [];
@@ -194,7 +246,7 @@ export default function AnalyticsDashboard() {
           </div>
           <div className="flex items-center gap-3">
             <OutboundCallModal />
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/[0.06] backdrop-blur-md border border-[var(--color-border-subtle)] text-[11px] font-mono text-[var(--color-text-secondary)] shrink-0 w-fit">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#4F46E5]/[0.06] backdrop-blur-md border border-[var(--color-border-subtle)] text-[11px] font-mono text-[var(--color-text-secondary)] shrink-0 w-fit">
               <span className={`w-2 h-2 rounded-full ${liveActive ? "bg-emerald-500 animate-pulse" : "bg-[var(--color-text-muted)]"}`} />
               {liveActive ? "LIVE CALL IN PROGRESS" : "SYSTEM LIVE"}
             </div>
@@ -203,6 +255,28 @@ export default function AnalyticsDashboard() {
             </VoiceOrb>
           </div>
         </header>
+
+        {/* Needs Attention — spec §8.1.D: visible from Overview, with a
+            reason and a next action, not just a count. */}
+        {!!alertCount && alertCount > 0 && (
+          <Link
+            href="/admin/alerts"
+            className="mb-8 flex items-center justify-between gap-4 p-4 rounded-2xl bg-red-500/10 border border-red-500/25 hover:bg-red-500/15 transition-colors"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <ShieldAlert className="w-5 h-5 text-red-400 flex-none" />
+              <div className="min-w-0">
+                <p className="text-[13.5px] font-semibold text-red-400">
+                  {alertCount} item{alertCount === 1 ? "" : "s"} need{alertCount === 1 ? "s" : ""} attention
+                </p>
+                {topAlertReason && <p className="text-[12px] text-red-400/80 truncate">{topAlertReason}</p>}
+              </div>
+            </div>
+            <span className="text-[12px] font-semibold text-red-400 flex items-center gap-1 flex-none">
+              Review <ArrowRight className="w-3.5 h-3.5" />
+            </span>
+          </Link>
+        )}
 
         {/* Hero — business-impact headline card + at-a-glance live metrics,
             the first thing an owner should see when they open this page. */}
@@ -224,16 +298,24 @@ export default function AnalyticsDashboard() {
           <LiveCallMonitor onLiveUpdate={handleLiveUpdate} />
         </div>
 
-        {/* Setup Checklist (For new users) */}
-        {m.totalCalls === 0 && (
-          <div className="bg-white/[0.05] backdrop-blur-xl rounded-2xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.35)] p-6 md:p-8 mb-8 relative overflow-hidden">
+        {/* Setup Checklist — readiness status is real (see /api/admin/
+            setup-status), not the hardcoded done={true}/false this used to
+            show regardless of actual state. Hidden once every step is
+            actually complete, shown again if setup is genuinely incomplete
+            even for a tenant with existing calls (e.g. new agent added
+            without a phone number yet). */}
+        {setupStatus && !allSetupStepsDone && (
+          <div className="bg-[#4F46E5]/[0.05] backdrop-blur-xl rounded-2xl border border-[#4F46E5]/10 shadow-[0_8px_32px_rgba(0,0,0,0.35)] p-6 md:p-8 mb-8 relative overflow-hidden">
             <div className="absolute top-0 left-0 w-1 h-full bg-[var(--color-accent-violet)]" />
             <h2 className="text-xl font-bold text-[var(--color-text-primary)] mb-2">Welcome to your workspace</h2>
             <p className="text-[14px] text-[var(--color-text-secondary)] mb-8">Complete these steps to deploy your AI agent.</p>
             <div className="grid sm:grid-cols-3 gap-6">
-              <ChecklistItem title="Create Business Profile" desc="Completed during onboarding" done={true} />
-              <ChecklistItem title="Upload Knowledge" desc="Add FAQs and policies" done={false} href="/admin/knowledge" />
-              <ChecklistItem title="Configure Phone Routing" desc="Connect Twilio number" done={false} href="/admin/settings" />
+              <ChecklistItem title="Create Business Profile" desc="Hospital/business identity" done={setupStatus.hasBusinessProfile} href="/admin/settings" />
+              <ChecklistItem title="Create an Agent" desc="Configure your AI agent" done={setupStatus.hasAgent} href="/admin/agents" />
+              <ChecklistItem title="Upload Knowledge" desc="Add FAQs and policies" done={setupStatus.hasKnowledge} href="/admin/knowledge" />
+              <ChecklistItem title="Configure Phone Routing" desc="Connect Twilio number" done={setupStatus.hasPhoneNumber} href="/admin/settings" />
+              <ChecklistItem title="Add a Patient" desc="Start your follow-up roster" done={setupStatus.hasPatient} href="/admin/patients" />
+              <ChecklistItem title="Test Your Agent" desc="Browser test call" done={m.totalCalls > 0} href="/admin/try-call" />
             </div>
           </div>
         )}
@@ -246,6 +328,15 @@ export default function AnalyticsDashboard() {
           <KpiCard label="Active Bookings" value={m.activeBookings} accent="emerald" />
           <KpiCard label="Cancelled" value={m.cancelledBookings} accent="red" />
           <KpiCard label="Avg CAI (All Time)" value={m.avgCai} accent="neutral" suffix="/100" />
+        </div>
+
+        {/* Follow-up performance + patient lookup — absorbs what the old
+            Follow-up Schedule and Calls & Insights pages were for: "is the
+            agent actually reaching people" at a glance, and a fast way into
+            any one patient's own history. */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+          <FollowUpPerformanceCard perf={data.followUpPerformance} />
+          <PatientSearchCard />
         </div>
 
         {/* Telephony KPI Cards & Advanced Metrics Grid */}
@@ -278,11 +369,11 @@ export default function AnalyticsDashboard() {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <div className="bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-xl p-4">
+              <div className="bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] rounded-xl p-4">
                 <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider block mb-1.5">Avg Session</span>
                 <span className="font-mono text-[16px] font-extrabold text-[var(--color-text-primary)] tabular-nums">{formatDuration(m.avgSessionDurationMs)}</span>
               </div>
-              <div className="bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-xl p-4">
+              <div className="bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] rounded-xl p-4">
                 <span className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider block mb-1.5">Missed Bookings</span>
                 <div className="flex items-center gap-1.5">
                   <span className={`font-mono text-[16px] font-extrabold tabular-nums ${m.missedBookings > 0 ? "text-amber-400" : "text-emerald-400"}`}>{m.missedBookings}</span>
@@ -412,15 +503,15 @@ export default function AnalyticsDashboard() {
 
               {/* Labels grid */}
               <div className="grid grid-cols-3 gap-2 text-center">
-                <div className="p-2.5 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-lg">
+                <div className="p-2.5 bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] rounded-lg">
                   <span className="block text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-1">High</span>
                   <span className="font-mono font-extrabold text-emerald-400 tabular-nums">{confDist.high}%</span>
                 </div>
-                <div className="p-2.5 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-lg">
+                <div className="p-2.5 bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] rounded-lg">
                   <span className="block text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-1">Medium</span>
                   <span className="font-mono font-extrabold text-amber-400 tabular-nums">{confDist.medium}%</span>
                 </div>
-                <div className="p-2.5 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-lg">
+                <div className="p-2.5 bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] rounded-lg">
                   <span className="block text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-1">Low</span>
                   <span className="font-mono font-extrabold text-red-400 tabular-nums">{confDist.low}%</span>
                 </div>
@@ -448,7 +539,7 @@ export default function AnalyticsDashboard() {
                           <span className="capitalize text-[var(--color-text-primary)]">{emotion}</span>
                           <span className="font-mono text-[var(--color-text-secondary)] tabular-nums">{String(count)} ({pct}%)</span>
                         </div>
-                        <div className="w-full bg-white/[0.08] rounded-full h-2 overflow-hidden">
+                        <div className="w-full bg-[#4F46E5]/[0.08] rounded-full h-2 overflow-hidden">
                           <div className="bg-[var(--color-accent-violet)] h-full rounded-full transition-all" style={{ width: `${pct}%` }} />
                         </div>
                       </div>
@@ -466,14 +557,14 @@ export default function AnalyticsDashboard() {
             <div className="space-y-2.5">
               {recentSessions.length > 0 ? (
                 recentSessions.map((s) => (
-                  <Link href="/admin/sessions" key={s.sessionId} className="block p-3.5 bg-white/[0.04] rounded-xl border border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)] transition-colors">
+                  <Link href="/admin/sessions" key={s.sessionId} className="block p-3.5 bg-[#4F46E5]/[0.04] rounded-xl border border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)] transition-colors">
                     <div className="flex justify-between items-center mb-2">
                       <span className="font-mono text-[11.5px] text-[var(--color-text-primary)] truncate max-w-[140px]">{s.sessionId}</span>
                       <span className="text-[10.5px] text-[var(--color-text-muted)]">{new Date(s.lastTs).toLocaleString()}</span>
                     </div>
                     <div className="flex gap-2 text-[10px] font-bold uppercase tracking-wide">
-                      <span className="px-2 py-1 bg-white/[0.06] border border-[var(--color-border-subtle)] text-[var(--color-accent-cyan)] rounded-md">{s.eventCount} events</span>
-                      <span className="px-2 py-1 bg-white/[0.06] border border-[var(--color-border-subtle)] text-[var(--color-accent-violet)] rounded-md capitalize">{s.dominantEmotion}</span>
+                      <span className="px-2 py-1 bg-[#4F46E5]/[0.06] border border-[var(--color-border-subtle)] text-[var(--color-accent-cyan)] rounded-md">{s.eventCount} events</span>
+                      <span className="px-2 py-1 bg-[#4F46E5]/[0.06] border border-[var(--color-border-subtle)] text-[var(--color-accent-violet)] rounded-md capitalize">{s.dominantEmotion}</span>
                     </div>
                   </Link>
                 ))
@@ -556,7 +647,7 @@ function HeroPanel({
         </h2>
         <Link
           href="/admin/sessions"
-          className="inline-flex items-center gap-2 mt-6 px-5 py-2.5 rounded-full bg-white text-[var(--console-bg)] text-[13.5px] font-semibold hover:bg-white/90 transition-colors"
+          className="inline-flex items-center gap-2 mt-6 px-5 py-2.5 rounded-full bg-white text-[var(--console-bg)] text-[13.5px] font-semibold hover:bg-[#4F46E5]/90 transition-colors"
         >
           View Sessions <ArrowRight className="w-3.5 h-3.5" />
         </Link>
@@ -632,8 +723,106 @@ function CaiSummaryCard({ avgCai, activeCalls }: { avgCai: number; activeCalls: 
           {avgCai}<span className="text-[13px] font-medium text-[var(--color-text-muted)]"> / 100</span>
         </p>
       </div>
-      <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-[var(--console-violet)]/25 to-[var(--console-cyan)]/25 border border-white/10 flex items-center justify-center flex-none">
+      <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-[var(--console-violet)]/25 to-[var(--console-cyan)]/25 border border-[#4F46E5]/10 flex items-center justify-center flex-none">
         <Zap className="w-7 h-7 text-[var(--console-cyan)]" />
+      </div>
+    </GlassCard>
+  );
+}
+
+/** Cross-patient "is the agent actually reaching people" summary — the
+ * question Follow-up Schedule and Calls & Insights never answered directly
+ * (they listed individual tasks/sessions, not the aggregate story). Driven
+ * by /api/analytics's followUpPerformance block. */
+function FollowUpPerformanceCard({ perf }: { perf: AnalyticsData["followUpPerformance"] }) {
+  if (!perf || perf.totalCalls === 0) {
+    return (
+      <GlassCard className="lg:col-span-2 p-6 flex items-center justify-center text-center">
+        <p className="text-[14.5px] text-[var(--color-text-muted)]">No follow-up calls yet — performance stats appear once the scheduler starts dialing.</p>
+      </GlassCard>
+    );
+  }
+  const betterOnRetry = perf.laterAttemptPickupRate - perf.firstAttemptPickupRate;
+  return (
+    <GlassCard className="lg:col-span-2 p-6">
+      <div className="flex items-center gap-2.5 mb-6">
+        <PhoneCall className="w-4 h-4 text-[var(--color-accent-violet)]" />
+        <h2 className="text-[13px] font-bold text-[var(--color-text-secondary)] uppercase tracking-widest">Follow-up Performance</h2>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
+        <KpiCardMinimal label="Pickup Rate" value={perf.pickupRate} accent="emerald" suffix="%" />
+        <KpiCardMinimal label="Reached" value={perf.patientsReached} accent="cyan" />
+        <KpiCardMinimal label="Never Reached" value={perf.patientsNeverReached} accent="red" />
+        <KpiCardMinimal label="Avg Attempts to Reach" value={perf.avgAttemptsUntilReached} accent="violet" />
+      </div>
+      <div className="p-4 rounded-xl bg-[#4F46E5]/[0.05] border border-[var(--color-border-subtle)]">
+        <p className="text-[14.5px] text-[var(--color-text-primary)]">
+          1st try: <strong>{perf.firstAttemptPickupRate}%</strong> pick up · 2nd+ try: <strong>{perf.laterAttemptPickupRate}%</strong> pick up
+        </p>
+        <p className="text-[13.5px] text-[var(--color-text-muted)] mt-1">
+          {perf.laterAttemptPickupRate === 0 || perf.firstAttemptPickupRate === 0
+            ? "Not enough repeat attempts yet to compare."
+            : betterOnRetry > 5
+              ? `Patients are ${betterOnRetry}pp more likely to pick up on a retry than the first call.`
+              : betterOnRetry < -5
+                ? `Retries are converting worse than first attempts — may be worth reviewing call times.`
+                : "Retries convert about as well as first attempts."}
+        </p>
+      </div>
+    </GlassCard>
+  );
+}
+
+/** Searchable patient roster, embedded on Overview so "find a patient and
+ * see their analytics" doesn't require a nav hop first. */
+function PatientSearchCard() {
+  const [patients, setPatients] = useState<Array<{ id: string; name: string; phone: string }> | null>(null);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    fetch("/api/admin/patients")
+      .then((r) => r.json())
+      .then((d: { patients?: Array<{ id: string; name: string; phone: string }> }) => setPatients(d.patients ?? []))
+      .catch(() => setPatients([]));
+  }, []);
+
+  const filtered = (patients ?? []).filter((p) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return p.name.toLowerCase().includes(q) || p.phone.includes(q);
+  });
+
+  return (
+    <GlassCard className="p-6 flex flex-col min-h-0">
+      <div className="flex items-center justify-between gap-2 mb-4">
+        <h2 className="text-[13px] font-bold text-[var(--color-text-secondary)] uppercase tracking-widest">Patients</h2>
+        <Link href="/admin/patients" className="text-[13px] font-semibold text-[var(--color-accent-violet)] hover:underline flex-none">
+          Manage
+        </Link>
+      </div>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search by name or phone…"
+        className="w-full mb-3 px-3 py-2.5 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[14px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+      />
+      <div className="flex-1 overflow-y-auto max-h-[220px] flex flex-col gap-1.5 -mx-1 px-1">
+        {patients === null ? (
+          <Loader2 className="w-4 h-4 animate-spin text-[var(--color-text-muted)] mx-auto my-4" />
+        ) : filtered.length === 0 ? (
+          <p className="text-[13.5px] text-[var(--color-text-muted)] italic py-2">No patients match &ldquo;{query}&rdquo;.</p>
+        ) : (
+          filtered.slice(0, 30).map((p) => (
+            <Link
+              key={p.id}
+              href={`/admin/patients/${p.id}`}
+              className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg hover:bg-[#4F46E5]/[0.06] transition-colors"
+            >
+              <span className="text-[14.5px] font-medium text-[var(--color-text-primary)] truncate">{p.name}</span>
+              <span className="text-[13px] font-mono text-[var(--color-text-muted)] flex-none">{p.phone}</span>
+            </Link>
+          ))
+        )}
       </div>
     </GlassCard>
   );
@@ -653,7 +842,7 @@ function KpiCard({ label, value, accent, suffix }: { label: string; value: numbe
 
 function KpiCardMinimal({ label, value, accent, suffix, live }: { label: string; value: number; accent: Accent; suffix?: string; live?: boolean }) {
   return (
-    <div className="bg-white/[0.04] rounded-xl border border-[var(--color-border-subtle)] p-4 relative overflow-hidden">
+    <div className="bg-[#4F46E5]/[0.04] rounded-xl border border-[var(--color-border-subtle)] p-4 relative overflow-hidden">
       {live && (
         <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
       )}
@@ -668,7 +857,7 @@ function KpiCardMinimal({ label, value, accent, suffix, live }: { label: string;
 
 function EmptyChartState({ label }: { label: string }) {
   return (
-    <div className="h-24 flex items-center justify-center rounded-xl bg-white/[0.03] border border-dashed border-[var(--color-border-subtle)]">
+    <div className="h-24 flex items-center justify-center rounded-xl bg-[#4F46E5]/[0.03] border border-dashed border-[var(--color-border-subtle)]">
       <p className="text-[12.5px] text-[var(--color-text-muted)] text-center px-6">{label}</p>
     </div>
   );
@@ -676,7 +865,7 @@ function EmptyChartState({ label }: { label: string }) {
 
 function ChecklistItem({ title, desc, done, href }: { title: string, desc: string, done: boolean, href?: string }) {
   return (
-    <div className={`p-5 rounded-xl border ${done ? "bg-white/[0.03] border-[var(--color-border-subtle)]" : "bg-white/[0.06] border-[var(--color-accent-violet)]/40"}`}>
+    <div className={`p-5 rounded-xl border ${done ? "bg-[#4F46E5]/[0.03] border-[var(--color-border-subtle)]" : "bg-[#4F46E5]/[0.06] border-[var(--color-accent-violet)]/40"}`}>
       <div className="flex items-start gap-3">
         {done ? <CheckCircle2 className="w-5 h-5 text-emerald-500 mt-0.5" /> : <Circle className="w-5 h-5 text-[var(--color-accent-cyan)] mt-0.5" />}
         <div>
@@ -702,14 +891,14 @@ const EVENT_META: Record<string, { badgeBg: string; badgeText: string; label: st
   escalation: { badgeBg: "bg-red-500/10", badgeText: "text-red-600", label: "Escalation", short: "ES" },
   cai: { badgeBg: "bg-[var(--color-accent-cyan)]/10", badgeText: "text-[var(--color-accent-cyan)]", label: "CAI Score", short: "CI" },
   tool_invocation: { badgeBg: "bg-teal-500/10", badgeText: "text-teal-600", label: "Tool Call", short: "TC" },
-  guard: { badgeBg: "bg-white/[0.04]", badgeText: "text-[var(--color-text-secondary)]", label: "Guard", short: "GD" },
+  guard: { badgeBg: "bg-[#4F46E5]/[0.04]", badgeText: "text-[var(--color-text-secondary)]", label: "Guard", short: "GD" },
   llm_reply: { badgeBg: "bg-[var(--color-accent-violet)]/10", badgeText: "text-[var(--color-accent-violet)]", label: "LLM Reply", short: "LR" },
   calendar_sync: { badgeBg: "bg-emerald-500/10", badgeText: "text-emerald-400", label: "Calendar Sync", short: "CS" },
   email_dispatch: { badgeBg: "bg-blue-500/10", badgeText: "text-blue-600", label: "Email Sent", short: "EM" },
 };
 
 function eventMeta(type: string) {
-  return EVENT_META[type] ?? { badgeBg: "bg-white/[0.04]", badgeText: "text-[var(--color-text-secondary)]", label: type.replace(/_/g, " "), short: type.slice(0, 2).toUpperCase() };
+  return EVENT_META[type] ?? { badgeBg: "bg-[#4F46E5]/[0.04]", badgeText: "text-[var(--color-text-secondary)]", label: type.replace(/_/g, " "), short: type.slice(0, 2).toUpperCase() };
 }
 
 /** Human-readable one-line summary for the most common event types — raw
@@ -744,7 +933,7 @@ function eventSummary(ev: { type: string; payload: Record<string, unknown> }): s
 function EventRow({ event }: { event: { type: string; ts: number; payload: Record<string, unknown> } }) {
   const meta = eventMeta(event.type);
   return (
-    <div className="flex gap-3 p-3.5 rounded-xl bg-white/[0.04] border border-[var(--color-border-subtle)]">
+    <div className="flex gap-3 p-3.5 rounded-xl bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)]">
       <div className="flex-none">
         <span className={`inline-flex items-center justify-center h-8 w-8 rounded-full text-[10px] font-bold ${meta.badgeBg} ${meta.badgeText}`}>
           {meta.short}

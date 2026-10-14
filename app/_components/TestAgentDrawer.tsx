@@ -602,7 +602,14 @@ export function TestAgentDrawer() {
     setSelectedTurnId(null);
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Explicit (not just relying on browser defaults) — echoCancellation
+      // is what keeps the agent's own TTS playback, bleeding back in
+      // through the mic off the speakers, from being picked up as if the
+      // caller were talking. See useVoiceActivityDetection.ts's threshold
+      // comment for the other half of this same fix.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
       streamRef.current = stream;
       // Respect a mute toggled before the call started — disabling the
       // track makes it output silence to every consumer (worklet, level

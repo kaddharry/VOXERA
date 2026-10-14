@@ -5,6 +5,23 @@ export interface CallSummary {
   sentimentTrajectory: string;
   flaggedConcerns: string[];
   recommendedAction: string;
+  /** Only meaningful for a scheduled follow-up call (lib/scheduler
+   * /dispatcher.ts's handleFollowUpCallOutcome reads this) — whether THIS
+   * call actually accomplished the follow-up, independent of whether it
+   * connected/ended cleanly. "resolved" means the patient's status was
+   * confirmed and no further attempt is needed; "needs_retry" means the
+   * conversation was cut short or inconclusive and should be attempted
+   * again; "needs_review" is the conservative default when the transcript
+   * doesn't clearly support either — spec §8.2 explicitly warns against
+   * treating "the call connected" as equivalent to "follow-up completed". */
+  followUpOutcome: "resolved" | "needs_retry" | "needs_review";
+  /** spec §17.4 — true only when the PATIENT explicitly asked to stop being
+   * called/contacted (e.g. "please don't call me anymore", "take me off
+   * your list"), not merely a request to reschedule or call back later.
+   * app/api/telephony/status/route.ts sets patients.doNotContact and
+   * cancels remaining follow-ups when this is true — grounded strictly in
+   * what was actually said, same discipline as flaggedConcerns. */
+  requestedDoNotContact: boolean;
 }
 
 const SUMMARY_SYSTEM_PROMPT =
@@ -15,7 +32,14 @@ const SUMMARY_SYSTEM_PROMPT =
   "flat, warmed up once reassured about recovery timeline'\", \"flaggedConcerns\": [\"<any red-flag symptom " +
   "or concerning statement actually mentioned, verbatim-grounded — empty array if none>\"], " +
   '"recommendedAction": "<one plain-language recommendation, e.g. \'routine follow-up at next scheduled ' +
-  "visit' or 'clinician should call back today — reported symptom matches a documented red flag'\"}";
+  "visit' or 'clinician should call back today — reported symptom matches a documented red flag'\", " +
+  '"followUpOutcome": "<one of exactly these three strings: \'resolved\' if the patient\'s status was ' +
+  "clearly confirmed and nothing further is needed; 'needs_retry' if the call was cut short, the patient " +
+  "asked to be called back, or the conversation was otherwise inconclusive; 'needs_review' if you cannot " +
+  'confidently tell which of those two it is from the transcript alone>", ' +
+  '"requestedDoNotContact": <true ONLY if the patient explicitly asked to stop being called/contacted ' +
+  "altogether (e.g. 'stop calling me', 'take me off your list', 'don't contact me again') — NOT true for an " +
+  'ordinary "call me back later" or a single hang-up, false otherwise>}';
 
 function parseSummary(raw: string): CallSummary | null {
   try {
@@ -29,10 +53,13 @@ function parseSummary(raw: string): CallSummary | null {
       Array.isArray(parsed.flaggedConcerns) &&
       typeof parsed.recommendedAction === "string"
     ) {
+      const outcome = parsed.followUpOutcome;
       return {
         sentimentTrajectory: parsed.sentimentTrajectory,
         flaggedConcerns: parsed.flaggedConcerns.filter((c: unknown) => typeof c === "string"),
         recommendedAction: parsed.recommendedAction,
+        followUpOutcome: outcome === "resolved" || outcome === "needs_retry" ? outcome : "needs_review",
+        requestedDoNotContact: parsed.requestedDoNotContact === true,
       };
     }
     return null;

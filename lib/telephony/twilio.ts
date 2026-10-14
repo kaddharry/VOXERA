@@ -105,6 +105,18 @@ export function buildEnqueueTwiml(queueName: string): string {
   return response.toString();
 }
 
+// Twilio rings for 60s by default (its own documented default) before
+// declaring "no-answer" — never configured here before, so every unanswered
+// follow-up attempt silently ate a full minute of ring time on top of
+// whatever retryDelayMinutes the hospital configured. A 3-attempts/1-minute-
+// gap schedule was then actually ~2.5 minutes *per attempt* (60s ring + up
+// to 30s until the next dispatcher poll + the 60s configured delay), which
+// is exactly the "sometimes it calls after 5 minutes" behavior reported —
+// the retry delay was real, it just never accounted for ring time at all.
+// 20s is enough for a landline/mobile to actually be answered without
+// padding every missed call with 40 unnecessary seconds of ringing.
+const OUTBOUND_RING_TIMEOUT_SECONDS = 20;
+
 export async function initiateOutboundCall(opts: {
   to: string;
   from?: string;
@@ -115,6 +127,9 @@ export async function initiateOutboundCall(opts: {
    * stay stuck at "outbound_initiated" forever, since nothing else ever
    * learns whether the call was actually answered. */
   statusCallback?: string;
+  /** Seconds to ring before Twilio gives up and reports "no-answer" —
+   * defaults to OUTBOUND_RING_TIMEOUT_SECONDS, not Twilio's own 60s default. */
+  ringTimeoutSeconds?: number;
 }): Promise<{ callSid: string; status: string }> {
   const client = getTwilioClient();
   const fromNumber = opts.from || process.env.TWILIO_PHONE_NUMBER;
@@ -127,6 +142,7 @@ export async function initiateOutboundCall(opts: {
     to: opts.to,
     from: fromNumber,
     url: opts.webhookUrl,
+    timeout: opts.ringTimeoutSeconds ?? OUTBOUND_RING_TIMEOUT_SECONDS,
     ...(opts.statusCallback && {
       statusCallback: opts.statusCallback,
       statusCallbackEvent: ["completed"],

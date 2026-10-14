@@ -182,11 +182,11 @@ export default function KnowledgeBasePage() {
         <div>
           <h1 className="font-display text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)] flex items-center gap-3">
             <Database className="w-8 h-8 text-[var(--color-accent-cyan)]" />
-            Knowledge Base
+            Hospital Information & Policies
           </h1>
           <p className="text-[15px] text-[var(--color-text-secondary)] mt-2 max-w-xl">
-            Upload PDF, TXT, Markdown, CSV, JSON, or DOCX documents to feed business facts, rules, and
-            guidelines directly to the AI receptionist.
+            Upload PDF, TXT, Markdown, CSV, JSON, or DOCX documents to feed hospital facts, policies, and
+            guidelines directly to your AI agent.
           </p>
         </div>
         <button

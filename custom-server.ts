@@ -5,6 +5,7 @@ import next from "next";
 import { WebSocketServer } from "ws";
 import { TelephonyStreamHandler } from "./lib/telephony/stream-handler";
 import { warmupModels } from "./lib/warmup";
+import { startSchedulerPolling } from "./lib/scheduler/dispatcher";
 
 // Kicked off as early as possible in process lifetime — see warmup.ts's doc
 // comment. Not awaited: server startup shouldn't block on it, but starting
@@ -90,5 +91,9 @@ app.prepare().then(() => {
 
   server.listen(port, () => {
     console.log(`> VOXERA ready on http://${hostname}:${port} (${dev ? "development" : "production"})`);
+    // Follow-up scheduler (migration_v18.sql) — this is the only long-lived
+    // Node process the app has, so this is where any durable polling loop
+    // belongs, same reasoning as the WebSocket upgrade handler above.
+    startSchedulerPolling();
   });
 });

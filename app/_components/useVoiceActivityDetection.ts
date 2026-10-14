@@ -45,6 +45,17 @@ export function useVoiceActivityDetection() {
       model: "v5",
       baseAssetPath: "/vad/",
       onnxWASMBasePath: "/vad/",
+      // Raised from the library's defaults (0.3/0.25) — with no acoustic
+      // echo cancellation guarantee on the mic input (laptop speaker bleed
+      // into a nearby mic isn't always fully cancelled by the browser's
+      // built-in AEC), the agent's own TTS playback was crossing the
+      // default thresholds and firing onSpeechStart while the user hadn't
+      // said anything, cutting the agent off mid-reply. Genuine close-mic
+      // speech reliably scores well above these higher thresholds; echo
+      // bleed-through (quieter, filtered by speaker+mic+room) mostly does
+      // not, while real interruptions still work.
+      positiveSpeechThreshold: 0.6,
+      negativeSpeechThreshold: 0.45,
       // Reuse the caller's already-open mic MediaStream and AudioContext.
       // Two independent AudioContexts each calling createMediaStreamSource()
       // on the same MediaStream is not reliable across browsers — one path

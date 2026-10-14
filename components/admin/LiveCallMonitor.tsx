@@ -8,6 +8,35 @@ import { EngineDiagnosticPanel, type DiagnosticEmotionResult } from "@/app/_comp
 
 const MAX_HISTORY_POINTS = 60;
 
+function StreamStatusBadge({ status }: { status: "idle" | "connecting" | "open" | "error" }) {
+  switch (status) {
+    case "open":
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+          <Activity className="w-3.5 h-3.5 mr-1 animate-pulse" /> Stream Active
+        </span>
+      );
+    case "connecting":
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/25">
+          <Activity className="w-3.5 h-3.5 mr-1 animate-spin" /> Connecting…
+        </span>
+      );
+    case "error":
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-red-500/10 text-red-400 border border-red-500/25">
+          <ShieldAlert className="w-3.5 h-3.5 mr-1" /> Stream Disconnected
+        </span>
+      );
+    default:
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] border border-[var(--color-border-subtle)]">
+          No Stream
+        </span>
+      );
+  }
+}
+
 interface LiveSessionState {
   sessionId: string;
   emotionLabel: string;
@@ -42,6 +71,12 @@ export function LiveCallMonitor({
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(forcedSessionId ?? null);
   const [liveState, setLiveState] = useState<LiveSessionState | null>(null);
   const [emotionHistory, setEmotionHistory] = useState<EmotionPoint[]>([]);
+  // Previously the "Stream Active" badge below was hardcoded to always show
+  // — it never reflected whether the EventSource was actually open, so a
+  // dropped connection (network blip, Redis hiccup, server restart) kept
+  // showing "Stream Active" with no indication to the operator that the
+  // feed had gone stale. This tracks the real EventSource readyState.
+  const [streamStatus, setStreamStatus] = useState<"idle" | "connecting" | "open" | "error">("idle");
 
   useEffect(() => {
     if (forcedSessionId !== undefined) setSelectedSessionId(forcedSessionId);
@@ -79,7 +114,12 @@ export function LiveCallMonitor({
 
   // Subscribe to SSE stream for selected session
   useEffect(() => {
-    if (!selectedSessionId) return;
+    if (!selectedSessionId) {
+      setStreamStatus("idle");
+      return;
+    }
+
+    setStreamStatus("connecting");
 
     // Reset state for new session
     setLiveState({
@@ -96,6 +136,9 @@ export function LiveCallMonitor({
     setEmotionHistory([]);
 
     const es = new EventSource(`/api/session/${selectedSessionId}/stream`);
+
+    es.onopen = () => setStreamStatus("open");
+    es.onerror = () => setStreamStatus("error");
 
     es.onmessage = (event) => {
       try {
@@ -143,6 +186,7 @@ export function LiveCallMonitor({
 
     return () => {
       es.close();
+      setStreamStatus("idle");
     };
   }, [selectedSessionId, onLiveUpdate]);
 
@@ -183,9 +227,7 @@ export function LiveCallMonitor({
             <p className="text-[11.5px] text-[var(--color-text-muted)]">Real-time SSE emotion stream &amp; prosody monitoring</p>
           </div>
         </div>
-        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
-          <Activity className="w-3.5 h-3.5 mr-1 animate-spin" /> Stream Active
-        </span>
+        <StreamStatusBadge status={streamStatus} />
       </div>
 
       {showNoForcedCallMessage && (

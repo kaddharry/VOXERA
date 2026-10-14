@@ -17,6 +17,14 @@ export interface PatientRecord {
   assignedAgentId: string | null;
   nextCheckInAt: number | null;
   createdAt: number;
+  /** spec §17.4 — once true, no call path may dial this patient again
+   * until a staff member explicitly clears it. Set either manually (see
+   * setDoNotContact below) or automatically when a call's post-call
+   * summary detects the patient asked to stop (lib/agent/call-summary.ts's
+   * requestedStop field, applied in app/api/telephony/status/route.ts). */
+  doNotContact: boolean;
+  doNotContactAt: number | null;
+  doNotContactReason: string | null;
 }
 
 export interface PatientFields {
@@ -27,7 +35,8 @@ export interface PatientFields {
   nextCheckInAt?: number | null;
 }
 
-const PATIENT_COLUMNS = 'id, "clientId", name, phone, notes, "assignedAgentId", "nextCheckInAt", "createdAt"';
+const PATIENT_COLUMNS =
+  'id, "clientId", name, phone, notes, "assignedAgentId", "nextCheckInAt", "createdAt", "doNotContact", "doNotContactAt", "doNotContactReason"';
 
 export async function listPatients(db: SupabaseClient, clientId: string): Promise<PatientRecord[]> {
   const { data, error } = await db
@@ -109,4 +118,30 @@ export async function deletePatient(db: SupabaseClient, patientId: string, clien
     return false;
   }
   return true;
+}
+
+/** Sets or clears a patient's do-not-contact flag (spec §17.4). Unscoped by
+ * clientId variant intentionally NOT provided — every caller of this must
+ * know the owning tenant, so there's no accidental cross-tenant path here
+ * the way getPatientById's unscoped read has for trusted server callers. */
+export async function setDoNotContact(
+  db: SupabaseClient,
+  patientId: string,
+  clientId: string,
+  value: boolean,
+  reason?: string,
+): Promise<PatientRecord | null> {
+  const { data, error } = await db
+    .from("patients")
+    .update({
+      doNotContact: value,
+      doNotContactAt: value ? Date.now() : null,
+      doNotContactReason: value ? (reason ?? null) : null,
+    })
+    .eq("id", patientId)
+    .eq("clientId", clientId)
+    .select(PATIENT_COLUMNS)
+    .single();
+  if (error || !data) return null;
+  return data as unknown as PatientRecord;
 }

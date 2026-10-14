@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { MessageSquare, LayoutList, Activity, Terminal, Zap, User, Bot } from "lucide-react";
 import { GlassCard } from "@/app/_components/GlassCard";
+import { ValenceTimeline, type ValencePoint } from "@/components/admin/ValenceTimeline";
 
 interface SessionSummary {
   sessionId: string;
@@ -30,7 +32,7 @@ const EMOTION_COLORS: Record<string, string> = {
   confusion:   "bg-amber-500/15 text-amber-400 border border-amber-500/30",
   joy:         "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
   gratitude:   "bg-teal-500/15 text-teal-400 border border-teal-500/30",
-  neutral:     "bg-white/10 text-[var(--color-text-secondary)] border border-white/10",
+  neutral:     "bg-[#4F46E5]/10 text-[var(--color-text-secondary)] border border-[#4F46E5]/10",
 };
 
 const EMOTION_DOT: Record<string, string> = {
@@ -41,14 +43,8 @@ const EMOTION_DOT: Record<string, string> = {
 
 const POSITIVE_EMOTIONS = new Set(["joy", "gratitude", "excitement", "calm"]);
 
-function trajectoryArrow(slope: number): string {
-  if (slope > 0.05) return "↑";
-  if (slope < -0.05) return "↓";
-  return "→";
-}
-
 function emotionBadge(label: string) {
-  return EMOTION_COLORS[label] ?? "bg-white/10 text-[var(--color-text-secondary)] border border-white/10";
+  return EMOTION_COLORS[label] ?? "bg-[#4F46E5]/10 text-[var(--color-text-secondary)] border border-[#4F46E5]/10";
 }
 
 type TabId = "overview" | "transcript" | "emotion" | "diagnostics";
@@ -61,12 +57,19 @@ const TABS: Array<{ id: TabId; label: string; icon: React.ComponentType<{ classN
 ];
 
 export default function SessionsPage() {
+  const searchParams = useSearchParams();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [tab, setTab] = useState<TabId>("overview");
+  // Shared between the valence chart and its linked transcript list in the
+  // "Emotion Timeline" tab — spec §11.3: clicking a chart point highlights
+  // the matching transcript turn, and vice versa. Stored as the UTTERANCE's
+  // own ts (not the emotion event's), since that's the stable anchor both
+  // directions resolve to — see nearestUtteranceTs/nearestValenceTs below.
+  const [selectedAnchorTs, setSelectedAnchorTs] = useState<number | null>(null);
 
   useEffect(() => {
     fetch("/api/analytics")
@@ -78,9 +81,20 @@ export default function SessionsPage() {
       .catch(() => setLoading(false));
   }, []);
 
+  // Deep-link support: a patient/alert row elsewhere links here with
+  // ?session=ID (e.g. "View call" on an alert, "Full analysis" on a
+  // patient's call history) — load that session directly rather than
+  // requiring the viewer to find it in the list, which may not even include
+  // it if it falls outside /api/analytics's default date range.
+  useEffect(() => {
+    const requested = searchParams.get("session");
+    if (requested) loadSession(requested);
+  }, [searchParams]);
+
   const loadSession = async (sessionId: string) => {
     setSelectedSession(sessionId);
     setTab("overview");
+    setSelectedAnchorTs(null);
     setEventsLoading(true);
     try {
       const res = await fetch(`/api/session/${sessionId}`);
@@ -110,6 +124,55 @@ export default function SessionsPage() {
     [events]
   );
   const escalationTs = useMemo(() => new Set(escalationEvents.map((e) => e.ts)), [escalationEvents]);
+
+  const valencePoints: ValencePoint[] = useMemo(
+    () =>
+      emotionEvents.map((e) => {
+        const p = e.payload as Record<string, unknown>;
+        const vad = p.vad as { v?: number } | undefined;
+        return {
+          ts: e.ts,
+          v: vad?.v ?? 0,
+          label: (p.label as string) ?? "neutral",
+          confidence: (p.confidence as number) ?? 0,
+          escalation: Array.from(escalationTs).some((ts) => Math.abs(ts - e.ts) < 2000),
+        };
+      }),
+    [emotionEvents, escalationTs],
+  );
+
+  // Emotion events and transcript turns aren't logged at identical
+  // timestamps, so linking them is a nearest-in-time match rather than an
+  // exact one — correct for this app's event cadence (a turn and its
+  // derived emotion read land within the same few hundred ms of each
+  // other), not a general-purpose alignment algorithm.
+  function nearestUtteranceTs(ts: number): number | null {
+    if (utteranceEvents.length === 0) return null;
+    let best = utteranceEvents[0];
+    let bestDiff = Math.abs(best.ts - ts);
+    for (const u of utteranceEvents) {
+      const diff = Math.abs(u.ts - ts);
+      if (diff < bestDiff) {
+        best = u;
+        bestDiff = diff;
+      }
+    }
+    return best.ts;
+  }
+
+  function nearestValenceTs(ts: number): number | null {
+    if (valencePoints.length === 0) return null;
+    let best = valencePoints[0];
+    let bestDiff = Math.abs(best.ts - ts);
+    for (const v of valencePoints) {
+      const diff = Math.abs(v.ts - ts);
+      if (diff < bestDiff) {
+        best = v;
+        bestDiff = diff;
+      }
+    }
+    return best.ts;
+  }
 
   // ── Overview metrics — derived entirely from the real event log, nothing fabricated ──
   const overview = useMemo(() => {
@@ -151,10 +214,10 @@ export default function SessionsPage() {
       <header className="mb-8">
         <h1 className="font-display text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)] flex items-center gap-3">
           <MessageSquare className="w-8 h-8 text-[var(--color-accent-cyan)]" />
-          Session History
+          Calls & Insights
         </h1>
         <p className="text-[15px] text-[var(--color-text-secondary)] mt-2 max-w-xl">
-          Browse past conversations, transcripts, and emotion timelines.
+          Browse past calls, transcripts, and emotional-cue timelines.
         </p>
       </header>
 
@@ -177,13 +240,13 @@ export default function SessionsPage() {
                     onClick={() => loadSession(s.sessionId)}
                     className={`w-full text-left p-4 rounded-xl border transition-all ${
                       selectedSession === s.sessionId
-                        ? "border-[var(--color-border-active)] bg-white/[0.06]"
-                        : "border-[var(--color-border-subtle)] bg-white/[0.03] hover:border-[var(--color-border-active)]"
+                        ? "border-[var(--color-border-active)] bg-[#4F46E5]/[0.06]"
+                        : "border-[var(--color-border-subtle)] bg-[#4F46E5]/[0.03] hover:border-[var(--color-border-active)]"
                     }`}
                   >
                     <div className="font-mono text-[12px] font-medium text-[var(--color-text-primary)] truncate mb-2">{s.sessionId}</div>
                     <div className="flex items-center gap-2 text-[10px] font-mono font-bold uppercase tracking-widest">
-                      <span className="px-2 py-1 bg-white/[0.04] border border-[var(--color-border-subtle)] text-[var(--color-accent-cyan)] rounded-md">{s.eventCount} events</span>
+                      <span className="px-2 py-1 bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] text-[var(--color-accent-cyan)] rounded-md">{s.eventCount} events</span>
                       <span className={`flex items-center gap-1 px-2 py-1 rounded-md capitalize ${badgeColor}`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
                         {s.dominantEmotion}
@@ -287,7 +350,7 @@ export default function SessionsPage() {
                             <div className={`flex-none w-7 h-7 rounded-full flex items-center justify-center ${isAgent ? "bg-[var(--color-accent-violet)]/15 text-[var(--color-accent-violet)]" : "bg-[var(--color-accent-cyan)]/15 text-[var(--color-accent-cyan)]"}`}>
                               {isAgent ? <Bot className="w-3.5 h-3.5" /> : <User className="w-3.5 h-3.5" />}
                             </div>
-                            <div className={`max-w-[75%] p-3 rounded-xl text-[13px] leading-relaxed ${isAgent ? "bg-white/[0.05] text-[var(--color-text-primary)]" : "bg-[var(--color-accent-cyan)]/10 text-[var(--color-text-primary)] border border-[var(--color-accent-cyan)]/20"}`}>
+                            <div className={`max-w-[75%] p-3 rounded-xl text-[13px] leading-relaxed ${isAgent ? "bg-[#4F46E5]/[0.05] text-[var(--color-text-primary)]" : "bg-[var(--color-accent-cyan)]/10 text-[var(--color-text-primary)] border border-[var(--color-accent-cyan)]/20"}`}>
                               <p>{(e.payload.text as string) || "—"}</p>
                               <span className="block text-[10px] font-mono text-[var(--color-text-muted)] mt-1.5">
                                 {new Date(e.ts).toLocaleTimeString()}
@@ -302,58 +365,62 @@ export default function SessionsPage() {
               )}
 
               {tab === "emotion" && (
-                <GlassCard className="p-6">
-                  {emotionEvents.length === 0 ? (
-                    <p className="text-[var(--color-text-muted)] text-[13px]">No emotion data recorded for this session.</p>
-                  ) : (
-                    <>
-                      <div className="overflow-x-auto pb-2">
-                        <div className="flex items-end gap-4 min-w-max">
-                          {emotionEvents.map((ev, i) => {
-                            const p = ev.payload as Record<string, unknown>;
-                            const label = (p.label as string) ?? "neutral";
-                            const intensity = (p.intensity as number) ?? 0;
-                            const traj = p.trajectory as Record<string, number> | undefined;
-                            const slopeA = traj?.slope_a ?? 0;
-                            const dotColor = EMOTION_DOT[label] ?? "bg-zinc-400";
-                            const badgeColor = emotionBadge(label);
-                            const arrow = trajectoryArrow(slopeA);
-                            const nearEscalation = Array.from(escalationTs).some((ts) => Math.abs(ts - ev.ts) < 2000);
+                <div className="space-y-5">
+                  <GlassCard className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-[13px] font-bold text-[var(--color-text-primary)]">Valence Over the Call</h3>
+                      <div className="flex items-center gap-3 text-[10px] font-mono text-[var(--color-text-muted)]">
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> positive</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-400 inline-block" /> neutral</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> confused/fearful</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 inline-block" /> negative</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-zinc-500 inline-block opacity-60" /> low confidence</span>
+                      </div>
+                    </div>
+                    <ValenceTimeline
+                      points={valencePoints}
+                      selectedTs={selectedAnchorTs != null ? nearestValenceTs(selectedAnchorTs) : null}
+                      onSelect={(ts) => setSelectedAnchorTs(nearestUtteranceTs(ts) ?? ts)}
+                    />
+                    <p className="text-[11px] text-[var(--color-text-muted)] mt-3">
+                      This is an AI-estimated conversational cue, not a clinical or diagnostic measure. Click a point to jump to that moment in the transcript below.
+                    </p>
+                  </GlassCard>
 
-                            return (
-                              <div key={i} className="flex flex-col items-center gap-1 relative" style={{ minWidth: 60 }}>
-                                {nearEscalation && (
-                                  <span className="absolute -top-6 text-red-400 text-[14px]" title="Escalation triggered">⚡</span>
-                                )}
-                                <span className="text-[9px] font-mono text-[var(--color-text-muted)]">T{i + 1}</span>
-                                <div className="w-7 bg-white/[0.05] rounded-t-sm flex items-end" style={{ height: 48 }}>
-                                  <div className={`w-full rounded-t-sm ${dotColor} opacity-70`} style={{ height: `${Math.round(intensity * 100)}%` }} />
-                                </div>
-                                <div className={`w-3 h-3 rounded-full ${dotColor} shadow-[0_0_6px_currentColor]`} />
-                                <span className={`text-[8px] font-mono font-bold px-1.5 py-0.5 rounded-md capitalize ${badgeColor}`}>
-                                  {label.slice(0, 5)}
-                                </span>
-                                <span className="text-[11px] text-[var(--color-text-muted)]">{arrow}</span>
-                                <span className="text-[8px] font-mono text-[var(--color-text-muted)]">
-                                  {new Date(ev.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  <GlassCard className="p-6">
+                    <h3 className="text-[13px] font-bold text-[var(--color-text-primary)] mb-3">Transcript</h3>
+                    {utteranceEvents.length === 0 ? (
+                      <p className="text-[var(--color-text-muted)] text-[13px]">No transcript recorded for this session.</p>
+                    ) : (
+                      <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+                        {utteranceEvents.map((e, i) => {
+                          const role = (e.payload.role as string) ?? "user";
+                          const isAgent = role === "agent";
+                          const isSelected = selectedAnchorTs === e.ts;
+                          return (
+                            <button
+                              key={i}
+                              onClick={() => setSelectedAnchorTs(e.ts)}
+                              className={`w-full text-left flex gap-3 p-2 rounded-lg transition-colors ${isAgent ? "" : "flex-row-reverse"} ${
+                                isSelected ? "bg-[var(--color-accent-violet)]/15 ring-1 ring-[var(--color-accent-violet)]/40" : "hover:bg-[#4F46E5]/[0.03]"
+                              }`}
+                            >
+                              <div className={`flex-none w-6 h-6 rounded-full flex items-center justify-center ${isAgent ? "bg-[var(--color-accent-violet)]/15 text-[var(--color-accent-violet)]" : "bg-[var(--color-accent-cyan)]/15 text-[var(--color-accent-cyan)]"}`}>
+                                {isAgent ? <Bot className="w-3 h-3" /> : <User className="w-3 h-3" />}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-[12.5px] text-[var(--color-text-primary)] leading-snug">{(e.payload.text as string) || "—"}</p>
+                                <span className="block text-[10px] font-mono text-[var(--color-text-muted)] mt-0.5">
+                                  {new Date(e.ts).toLocaleTimeString()}
                                 </span>
                               </div>
-                            );
-                          })}
-                        </div>
+                            </button>
+                          );
+                        })}
                       </div>
-                      <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-[var(--color-border-subtle)]">
-                        {Object.entries(EMOTION_COLORS).map(([label, color]) => (
-                          <span key={label} className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-md capitalize ${color}`}>
-                            {label}
-                          </span>
-                        ))}
-                        <span className="text-[9px] font-mono text-red-400 ml-2">⚡ escalation</span>
-                        <span className="text-[9px] font-mono text-[var(--color-text-muted)] ml-1">↑↓→ arousal</span>
-                      </div>
-                    </>
-                  )}
-                </GlassCard>
+                    )}
+                  </GlassCard>
+                </div>
               )}
 
               {tab === "diagnostics" && (
@@ -363,7 +430,7 @@ export default function SessionsPage() {
                   </h2>
                   <div className="max-h-[600px] overflow-y-auto pr-2 space-y-3">
                     {events.map((ev, i) => (
-                      <div key={i} className="flex gap-4 p-4 rounded-xl bg-white/[0.03] border border-[var(--color-border-subtle)]">
+                      <div key={i} className="flex gap-4 p-4 rounded-xl bg-[#4F46E5]/[0.03] border border-[var(--color-border-subtle)]">
                         <div className="flex-none pt-1">
                           <div className={`w-2.5 h-2.5 rounded-full ${ev.type === "escalation" ? "bg-red-400 shadow-[0_0_8px_#f87171]" : "bg-[var(--color-accent-cyan)] shadow-[0_0_8px_var(--color-accent-cyan)]"}`} />
                         </div>
@@ -388,7 +455,7 @@ export default function SessionsPage() {
                                 <span className="bg-purple-500/10 text-purple-400 px-2 py-0.5 rounded border border-purple-500/20">LTM Client: {(ev.payload.ltmClientIds as string[])?.length ?? 0}</span>
                               </div>
                               {!!ev.payload.timeline && (ev.payload.timeline as any[]).length > 0 && (
-                                <div className="bg-white/[0.03] border border-[var(--color-border-subtle)] rounded-lg p-3 space-y-1.5">
+                                <div className="bg-[#4F46E5]/[0.03] border border-[var(--color-border-subtle)] rounded-lg p-3 space-y-1.5">
                                   <span className="text-[9px] font-mono font-bold text-[var(--color-text-muted)] block uppercase">Grouped Timeline Events</span>
                                   <div className="space-y-2">
                                     {(ev.payload.timeline as any[]).map((evt, idx) => (
@@ -405,7 +472,7 @@ export default function SessionsPage() {
                                   {(ev.payload.scores as any[]).slice(0, 4).map((sObj, idx) => {
                                     const exp = (ev.payload.explanations as Record<string, any>)?.[sObj.id];
                                     return (
-                                      <div key={idx} className="bg-white/[0.03] border border-[var(--color-border-subtle)] rounded-lg p-2.5 space-y-1">
+                                      <div key={idx} className="bg-[#4F46E5]/[0.03] border border-[var(--color-border-subtle)] rounded-lg p-2.5 space-y-1">
                                         <div className="flex justify-between items-center text-[10px]">
                                           <span className="font-mono text-[var(--color-text-muted)]">ID: {sObj.id}</span>
                                           <span className="font-mono font-bold text-[var(--color-accent-cyan)]">Score: {sObj.score}</span>
@@ -425,7 +492,7 @@ export default function SessionsPage() {
                               )}
                             </div>
                           ) : (
-                            <pre className="text-[12px] text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono break-all bg-white/[0.03] p-3 rounded-lg border border-[var(--color-border-subtle)] max-h-32 overflow-hidden">
+                            <pre className="text-[12px] text-[var(--color-text-secondary)] whitespace-pre-wrap font-mono break-all bg-[#4F46E5]/[0.03] p-3 rounded-lg border border-[var(--color-border-subtle)] max-h-32 overflow-hidden">
                               {JSON.stringify(ev.payload, null, 2)}
                             </pre>
                           )}

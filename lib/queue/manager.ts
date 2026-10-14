@@ -98,13 +98,22 @@ export class CallQueueManager {
     const active = await this.getActiveCallCount();
     const max = await this.getMaxConcurrentCalls();
 
-    if (active < max && position === 1) {
-      return 0; // Next in line and there is a free slot
+    // There's an open slot for this caller as long as fewer than `max`
+    // calls are ahead of them in line (active calls + whoever queued
+    // before them). The previous version additionally required
+    // `position === 1`, which only ever let the single literal front-of-
+    // queue caller through immediately — two calls arriving within the
+    // same instant (e.g. dialing two patients back to back) land at
+    // positions 1 and 2, and the second was always quoted a multi-minute
+    // wait and sent to hold even with 9 of 10 slots sitting empty. Capacity,
+    // not literal queue position, is what should gate immediate acceptance.
+    if (active + (position - 1) < max) {
+      return 0;
     }
 
     const capacity = Math.max(1, max);
     const groupsAhead = Math.ceil(position / capacity);
-    
+
     return groupsAhead * this.AVERAGE_CALL_DURATION_MS;
   }
 

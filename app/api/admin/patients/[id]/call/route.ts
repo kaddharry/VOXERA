@@ -21,6 +21,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const { id } = await params;
   const patient = await getPatient(supabase, id, user.id);
   if (!patient) return NextResponse.json({ error: "Patient not found" }, { status: 404 });
+  // spec §17.4 — enforced server-side, not just a hidden/disabled button;
+  // see lib/scheduler/dispatcher.ts for the scheduled-call equivalent.
+  if (patient.doNotContact) {
+    return NextResponse.json({ error: "This patient has asked not to be contacted and cannot be called." }, { status: 403 });
+  }
 
   const body = await request.json().catch(() => ({}));
   const agentId = body.agentId ? String(body.agentId) : undefined;

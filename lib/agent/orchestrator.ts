@@ -11,7 +11,8 @@ import { logSessionEvent, makeEvent } from "../logging/session-logger";
 import { emitSessionEvent } from "../realtime/emitter";
 import { supabase as supabaseService } from "../db/supabase";
 import { getAgentWithTenant } from "../db/agents";
-import { getPatientById } from "../db/patients";
+import { getPatientCallContext } from "../db/patient-documents";
+import { createEscalationAlert } from "../db/alerts";
 import { retrieve, topScore } from "../memory/retrieval";
 import { stm } from "../memory/stm";
 import { vectorStore } from "../memory/store";
@@ -200,11 +201,11 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // "trusted infrastructure caller" reasoning as getAgentWithTenant's own
   // unscoped read) — safe to resolve in the same Promise.all below.
   const patientInfoPromise = input.patientId
-    ? getPatientById(supabaseService, input.patientId).catch((err) => {
+    ? getPatientCallContext(supabaseService, input.patientId).catch((err) => {
         console.warn("[Orchestrator] Failed to resolve patientId:", err);
-        return null;
+        return undefined;
       })
-    : Promise.resolve(null);
+    : Promise.resolve(undefined);
   let customInstructions: string | undefined;
   let resolvedAgent: { id: string; name: string; voicePersona?: string | null } | undefined;
   function applyAgentInfo(agentInfo: Awaited<typeof agentInfoPromise>) {
@@ -275,14 +276,13 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // still-in-flight agentInfoPromise instead of waiting behind it. This is
   // the join point: whichever of the three is slowest determines how long
   // this section takes, instead of the sum of all three.
-  const [agentInfo, textEmoResult, queryEmbedding, patientInfo] = await Promise.all([
+  const [agentInfo, textEmoResult, queryEmbedding, patientContext] = await Promise.all([
     agentInfoPromise,
     detectTextEmotion(input.transcript),
     embed(input.transcript, { isQuery: true }),
     patientInfoPromise,
   ]);
   applyAgentInfo(agentInfo);
-  const patientContext = patientInfo?.notes || undefined;
   const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
 
   // MUST run after applyAgentInfo() above — input.clientId only becomes the
@@ -517,6 +517,16 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       type: policy.escalate,
       reason: policy.notes.join(", ")
     }));
+    // Feeds the same Needs Attention queue lib/scheduler/dispatcher.ts
+    // writes to for exhausted/unresolved follow-ups (spec §11.4/§16.10) —
+    // a live-call escalation is just as much a human-review case as a
+    // scheduler one, and hospital staff shouldn't have to check two places.
+    void createEscalationAlert(supabaseService, {
+      clientId: evBase.clientId,
+      patientId: input.patientId ?? null,
+      sessionId: input.sessionId,
+      reason: `Escalation (${policy.escalate}): ${policy.notes.join(", ") || "flagged by policy"}`,
+    });
   }
 
   const personaLock = await personaLockPromise;

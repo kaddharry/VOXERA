@@ -8,12 +8,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET } from "../../app/api/analytics/route";
 
+function fakeRequest(url = "http://localhost/api/analytics") {
+  return { nextUrl: new URL(url) } as any;
+}
+
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock("../../lib/db/supabase", () => {
   const mockChain = {
     select: () => mockChain,
     eq: () => mockChain,
+    gte: () => mockChain,
     order: () => mockChain,
     limit: () => mockChain,
     then: (onfulfilled: any) => {
@@ -40,6 +45,7 @@ vi.mock("../../lib/db/server", () => {
   const mockChain = {
     select: () => mockChain,
     eq: () => mockChain,
+    gte: () => mockChain,
     order: () => mockChain,
     limit: () => mockChain,
     then: (onfulfilled: any) => {
@@ -158,7 +164,7 @@ describe("GET /api/analytics", () => {
   it("returns 401 Unauthorized if no authenticated user is found", async () => {
     (global as any).supabaseGetUserMock = vi.fn().mockResolvedValue({ data: { user: null } });
 
-    const response = await GET();
+    const response = await GET(fakeRequest());
     expect(response.status).toBe(401);
     
     const body = await response.json();
@@ -171,6 +177,7 @@ describe("GET /api/analytics", () => {
     const mockChainInstance = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
+      gte: vi.fn().mockReturnThis(),
       order: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
       then: vi.fn(),
@@ -193,7 +200,7 @@ describe("GET /api/analytics", () => {
       return Promise.resolve({ data: [], error: null }).then(onfulfilled);
     });
 
-    const response = await GET();
+    const response = await GET(fakeRequest());
     expect(response.status).toBe(200);
 
     const body = await response.json();
@@ -240,7 +247,7 @@ describe("GET /api/analytics", () => {
       return Promise.resolve({ data: null, error: new Error("Database connection failure") }).then(onfulfilled);
     });
 
-    const response = await GET();
+    const response = await GET(fakeRequest());
     expect(response.status).toBe(500);
 
     const body = await response.json();

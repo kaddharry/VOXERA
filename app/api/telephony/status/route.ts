@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/db/supabase";
 import { generateCallSummary } from "../../../../lib/agent/call-summary";
+import { handleFollowUpCallOutcome, applyDoNotContactRequest } from "../../../../lib/scheduler/dispatcher";
+import type { TwilioCallStatus } from "../../../../lib/scheduler/policy";
+import { updateDemoRequestStatusByCallSid } from "../../../../lib/db/demo-requests";
 
 export const dynamic = "force-dynamic";
 
@@ -49,12 +52,21 @@ export async function POST(req: NextRequest) {
       .from("call_logs")
       .update(updates)
       .eq("id", callSid)
-      .select("sessionId, clientId, patientId")
+      .select('sessionId, clientId, patientId, "followUpTaskId"')
       .single();
 
     if (error) {
       console.error("[Telephony/Status] DB update failed:", error);
       return NextResponse.json({ error: "DB update failed" }, { status: 500 });
+    }
+
+    // Public Book-a-Demo calls (spec §5) always carry clientId "demo" — see
+    // app/api/demo-requests/[id]/call/route.ts. Keep its status in sync so
+    // /book-demo/confirm's poll can show the right next step.
+    if (updatedCall?.clientId === "demo") {
+      updateDemoRequestStatusByCallSid(supabase, callSid, updates.status === "completed" ? "completed" : "failed").catch((err) =>
+        console.error(`[Telephony/Status] Demo request sync failed for ${callSid}:`, err),
+      );
     }
 
     // Post-call LLM-judge summary for the doctor to review — only for calls
@@ -66,11 +78,44 @@ export async function POST(req: NextRequest) {
     // latency to.
     if (updates.status === "completed" && updatedCall?.sessionId && updatedCall?.patientId) {
       generateCallSummary(updatedCall.sessionId, updatedCall.clientId)
-        .then((summary) => {
-          if (!summary) return;
-          return supabase.from("call_logs").update({ summary }).eq("id", callSid);
+        .then(async (summary) => {
+          if (!summary) {
+            // No transcript / summary failed — the scheduler still needs a
+            // decision, so it falls through to the conservative
+            // "needs_review" default rather than silently never resolving
+            // this follow-up task at all.
+            if (updatedCall.followUpTaskId) {
+              await handleFollowUpCallOutcome({
+                taskId: updatedCall.followUpTaskId,
+                twilioStatus: callStatus as TwilioCallStatus,
+              });
+            }
+            return;
+          }
+          await supabase.from("call_logs").update({ summary }).eq("id", callSid);
+          if (summary.requestedDoNotContact && updatedCall.patientId) {
+            await applyDoNotContactRequest(
+              updatedCall.clientId,
+              updatedCall.patientId,
+              "Patient asked to stop being called (detected from call transcript).",
+            );
+          }
+          if (updatedCall.followUpTaskId) {
+            await handleFollowUpCallOutcome({
+              taskId: updatedCall.followUpTaskId,
+              twilioStatus: callStatus as TwilioCallStatus,
+              followUpOutcome: summary.followUpOutcome,
+            });
+          }
         })
         .catch((err) => console.error(`[Telephony/Status] Call summary failed for ${callSid}:`, err));
+    } else if (updatedCall?.followUpTaskId) {
+      // Never connected (busy/no-answer/failed/canceled) — retryability is
+      // known immediately from the Twilio status alone, no summary needed.
+      handleFollowUpCallOutcome({
+        taskId: updatedCall.followUpTaskId,
+        twilioStatus: callStatus as TwilioCallStatus,
+      }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err));
     }
 
     // If this call was placed by a campaign, roll its outcome up into
