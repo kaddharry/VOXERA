@@ -33,7 +33,7 @@ interface AgentOption {
 }
 
 const STATUS_STYLES: Record<string, string> = {
-  pending: "bg-white/10 text-[var(--color-text-secondary)] border border-white/10",
+  pending: "bg-[#4F46E5]/10 text-[var(--color-text-secondary)] border border-[#4F46E5]/10",
   running: "bg-[var(--console-cyan)]/15 text-[var(--console-cyan)] border border-[var(--console-cyan)]/30",
   calling: "bg-[var(--console-cyan)]/15 text-[var(--console-cyan)] border border-[var(--console-cyan)]/30",
   completed: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
@@ -254,7 +254,7 @@ export default function CampaignsPage() {
             )}
             <button
               onClick={() => setShowRecall(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.05] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] text-[12px] font-semibold hover:text-[var(--color-text-primary)] hover:bg-white/[0.08] transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#4F46E5]/[0.05] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] text-[12px] font-semibold hover:text-[var(--color-text-primary)] hover:bg-[#4F46E5]/[0.08] transition-colors"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               Re-call
@@ -262,7 +262,7 @@ export default function CampaignsPage() {
             <button
               onClick={handleClear}
               disabled={clearing}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.05] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] text-[12px] font-semibold hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#4F46E5]/[0.05] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] text-[12px] font-semibold hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
             >
               {clearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
               Clear History
@@ -288,7 +288,7 @@ export default function CampaignsPage() {
               <select
                 value={recallAgentId}
                 onChange={(e) => setRecallAgentId(e.target.value)}
-                className="w-full bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-cyan)]/50 mb-4"
+                className="w-full bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-cyan)]/50 mb-4"
               >
                 <option value="">Select an agent…</option>
                 {agents.map((a) => (
@@ -298,7 +298,7 @@ export default function CampaignsPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowRecall(false)}
-                  className="flex-1 px-4 py-2 rounded-lg bg-white/[0.05] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+                  className="flex-1 px-4 py-2 rounded-lg bg-[#4F46E5]/[0.05] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
                 >
                   Cancel
                 </button>
@@ -338,7 +338,7 @@ export default function CampaignsPage() {
           <h2 className="text-[13px] font-bold text-[var(--color-text-primary)] mb-4">Recipients</h2>
           <div className="max-h-[500px] overflow-y-auto space-y-2 pr-1">
             {detail.calls.map((call) => (
-              <div key={call.id} className="flex items-center justify-between gap-3 p-3 rounded-lg bg-white/[0.03] border border-[var(--color-border-subtle)]">
+              <div key={call.id} className="flex items-center justify-between gap-3 p-3 rounded-lg bg-[#4F46E5]/[0.03] border border-[var(--color-border-subtle)]">
                 <span className="font-mono text-[13px] text-[var(--color-text-primary)]">{call.phoneNumber}</span>
                 <div className="flex items-center gap-3">
                   {call.error && <span className="text-[11px] text-red-400 max-w-[240px] truncate" title={call.error}>{call.error}</span>}
@@ -384,7 +384,7 @@ export default function CampaignsPage() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 required
-                className="w-full px-4 py-2.5 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[14px] text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)]"
+                className="w-full px-4 py-2.5 bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[14px] text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)]"
                 placeholder="e.g. October Reservation Reminders"
               />
             </div>
@@ -394,7 +394,7 @@ export default function CampaignsPage() {
               <select
                 value={agentId}
                 onChange={(e) => setAgentId(e.target.value)}
-                className="w-full px-4 py-2.5 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-xl text-[14px] text-[var(--color-text-primary)] focus:ring-1 focus:ring-[var(--color-accent-cyan)]"
+                className="w-full px-4 py-2.5 bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] rounded-xl text-[14px] text-[var(--color-text-primary)] focus:ring-1 focus:ring-[var(--color-accent-cyan)]"
               >
                 <option value="">Default agent</option>
                 {agents.map((a) => (
@@ -411,7 +411,7 @@ export default function CampaignsPage() {
                   type="button"
                   onClick={addRecipient}
                   disabled={!recipientDraft}
-                  className="px-3.5 py-2 rounded-lg bg-white/[0.06] border border-[var(--color-border-subtle)] text-[13px] font-semibold text-[var(--color-text-primary)] hover:bg-white/[0.1] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-none"
+                  className="px-3.5 py-2 rounded-lg bg-[#4F46E5]/[0.06] border border-[var(--color-border-subtle)] text-[13px] font-semibold text-[var(--color-text-primary)] hover:bg-[#4F46E5]/[0.1] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-none"
                 >
                   Add
                 </button>
@@ -421,7 +421,7 @@ export default function CampaignsPage() {
                   {recipientList.map((num) => (
                     <span
                       key={num}
-                      className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-md bg-white/[0.05] border border-[var(--color-border-subtle)] text-[12px] font-mono text-[var(--color-text-primary)]"
+                      className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-md bg-[#4F46E5]/[0.05] border border-[var(--color-border-subtle)] text-[12px] font-mono text-[var(--color-text-primary)]"
                     >
                       {num}
                       <button type="button" onClick={() => removeRecipient(num)} className="text-[var(--color-text-muted)] hover:text-red-400 transition-colors">
@@ -439,7 +439,7 @@ export default function CampaignsPage() {
                   value={recipientsText}
                   onChange={(e) => setRecipientsText(e.target.value)}
                   rows={5}
-                  className="w-full mt-2 px-4 py-3 bg-white/[0.04] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[13px] font-mono text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)] resize-none"
+                  className="w-full mt-2 px-4 py-3 bg-[#4F46E5]/[0.04] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[13px] font-mono text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)] resize-none"
                   placeholder={"+15551234567\n+15559876543"}
                 />
               </details>

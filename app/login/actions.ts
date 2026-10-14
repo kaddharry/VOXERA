@@ -6,7 +6,8 @@ import { createClient } from "../../lib/db/server";
 
 export async function login(formData: FormData) {
   const supabase = await createClient();
-  
+  const demoRequestId = formData.get("demoRequestId") as string | null;
+
   const data = {
     email: formData.get("email") as string,
     password: formData.get("password") as string,
@@ -15,9 +16,10 @@ export async function login(formData: FormData) {
   const { error } = await supabase.auth.signInWithPassword(data);
 
   if (error) {
-    redirect(`/login?error=${encodeURIComponent(error.message)}`);
+    const suffix = demoRequestId ? `&demoRequestId=${encodeURIComponent(demoRequestId)}` : "";
+    redirect(`/login?error=${encodeURIComponent(error.message)}${suffix}`);
   }
 
   revalidatePath("/", "layout");
-  redirect("/admin");
+  redirect(demoRequestId ? `/book-demo/confirm?id=${encodeURIComponent(demoRequestId)}` : "/admin");
 }

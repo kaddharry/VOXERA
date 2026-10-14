@@ -5,16 +5,21 @@ import { redirect } from "next/navigation";
 import { createClient } from "../../lib/db/server";
 
 export default async function SignupPage(props: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; demoRequestId?: string }>;
 }) {
   const searchParams = await props.searchParams;
+  const demoRequestId = searchParams?.demoRequestId;
 
   // Already signed in — go straight to the dashboard instead of showing
-  // the signup form again.
+  // the signup form again. A visitor arriving here mid Book-a-Demo flow
+  // (already has an account) instead continues straight to the confirm
+  // step (spec §5.5: "users who bypass Book a Demo should land in the same
+  // setup wizard... do not force them through the demo flow" — symmetric
+  // case here is someone already signed in landing ON a demo link).
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (user) {
-    redirect("/admin");
+    redirect(demoRequestId ? `/book-demo/confirm?id=${encodeURIComponent(demoRequestId)}` : "/admin");
   }
 
   return (
@@ -37,6 +42,7 @@ export default async function SignupPage(props: {
         )}
 
         <form className="mt-8 space-y-6" action={signup}>
+          {demoRequestId && <input type="hidden" name="demoRequestId" value={demoRequestId} />}
           <div className="space-y-4">
             <div>
               <label className="block text-[12px] font-mono font-bold tracking-widest text-[var(--color-text-secondary)] uppercase mb-2">Email Address</label>
@@ -74,7 +80,10 @@ export default async function SignupPage(props: {
 
         <p className="text-center text-[13px] text-[var(--color-text-secondary)]">
           Already have an account?{" "}
-          <Link href="/login" className="text-[var(--color-accent-cyan)] font-semibold hover:underline">
+          <Link
+            href={demoRequestId ? `/login?demoRequestId=${encodeURIComponent(demoRequestId)}` : "/login"}
+            className="text-[var(--color-accent-cyan)] font-semibold hover:underline"
+          >
             Sign in
           </Link>
         </p>

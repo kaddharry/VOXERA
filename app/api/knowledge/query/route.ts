@@ -12,15 +12,18 @@ export async function POST(request: NextRequest) {
 
   const body = (await request.json()) as {
     query?: string;
-    clientId?: string;
     topK?: number;
     listAll?: boolean;
   };
 
-  // Get authenticated clientId
+  // clientId is never taken from the request body — it previously fell back
+  // to a caller-supplied clientId (then the DEMO constant), letting anyone
+  // query another tenant's knowledge base by guessing/passing its id. Only
+  // the authenticated session's own id, or the fixed DEMO id for genuinely
+  // unauthenticated demo use, are valid sources of truth here.
   const supabaseServer = await createClient();
   const { data: { user } } = await supabaseServer.auth.getUser();
-  const clientId = user?.id ?? body.clientId ?? DEMO.clientId;
+  const clientId = user?.id ?? DEMO.clientId;
 
   // List all LTM_client entries (for knowledge base list view)
   if (body.listAll) {

@@ -1,12 +1,20 @@
 import { createClient } from "@/lib/db/server";
 import { Users, CheckCircle2, AlertCircle, Clock, Building, Plus } from "lucide-react";
 import Link from "next/link";
-
+import { redirect } from "next/navigation";
+import { isPlatformAdmin } from "@/lib/auth/roles";
 
 export const runtime = "nodejs";
 
 export default async function AdminTenantsPage() {
   const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!isPlatformAdmin(user?.email)) {
+    redirect("/admin");
+  }
 
   // Fetch tenants
   const { data: tenants, error: tenantsErr } = await supabase

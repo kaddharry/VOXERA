@@ -5,19 +5,21 @@ import { redirect } from "next/navigation";
 import { createClient } from "../../lib/db/server";
 
 export default async function LoginPage(props: {
-  searchParams: Promise<{ error?: string; message?: string }>;
+  searchParams: Promise<{ error?: string; message?: string; demoRequestId?: string }>;
 }) {
   const searchParams = await props.searchParams;
+  const demoRequestId = searchParams?.demoRequestId;
 
   // Already signed in with a valid session — go straight to the dashboard
   // instead of showing the login form again. This is what was missing:
   // opening /login (or being sent here) with a live session previously
   // always re-prompted for credentials rather than recognizing you were
-  // already authenticated.
+  // already authenticated. A Book-a-Demo visitor who's already signed in
+  // continues to the confirm step instead (spec §5.3 step 4).
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (user) {
-    redirect("/admin");
+    redirect(demoRequestId ? `/book-demo/confirm?id=${encodeURIComponent(demoRequestId)}` : "/admin");
   }
 
   return (
@@ -46,6 +48,7 @@ export default async function LoginPage(props: {
         )}
 
         <form className="mt-8 space-y-6" action={login}>
+          {demoRequestId && <input type="hidden" name="demoRequestId" value={demoRequestId} />}
           <div className="space-y-4">
             <div>
               <label className="block text-[12px] font-mono font-bold tracking-widest text-[var(--color-text-secondary)] uppercase mb-2">Email Address</label>
@@ -82,7 +85,10 @@ export default async function LoginPage(props: {
 
         <p className="text-center text-[13px] text-[var(--color-text-secondary)]">
           New to VOXERA?{" "}
-          <Link href="/signup" className="text-[var(--color-accent-cyan)] font-semibold hover:underline">
+          <Link
+            href={demoRequestId ? `/signup?demoRequestId=${encodeURIComponent(demoRequestId)}` : "/signup"}
+            className="text-[var(--color-accent-cyan)] font-semibold hover:underline"
+          >
             Create a workspace
           </Link>
         </p>
