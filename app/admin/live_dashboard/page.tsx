@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Radio, PhoneCall, Sparkles, ShieldAlert, Zap, Database, HelpCircle, History, Circle, LayoutGrid, Maximize2 } from "lucide-react";
+import { Radio, PhoneCall, ShieldAlert, Zap, Database, HelpCircle, History, Circle, LayoutGrid, Maximize2 } from "lucide-react";
 import { EngineDiagnosticPanel, type DiagnosticEmotionResult } from "../../_components/EngineDashboard";
 
 interface ActiveCall {
@@ -148,11 +148,18 @@ function LiveDashboardInner() {
   const [activeCalls, setActiveCalls] = useState<ActiveCall[]>([]);
   const [recentCalls, setRecentCalls] = useState<RecentCall[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(deepLinkedSessionId);
-  // "focus" = one big detail view (the original design). "grid" = every
-  // live call at once, side by side — what "can we see 2 callers live"
-  // actually needs: watching more than one call's transcript/emotion feed
-  // simultaneously, not just switching which single one is displayed.
+  // "focus" = one detail view (transcript + analytics for a single call).
+  // "grid" = every live call at once, side by side — what "can we see 2
+  // callers live" actually needs: watching more than one call's
+  // transcript/emotion feed simultaneously, not just switching which single
+  // one is displayed.
   const [viewMode, setViewMode] = useState<"focus" | "grid">("focus");
+  // Which analytics tab is showing for the focused call — Overview (emotion
+  // + engagement + flags), Engine Breakdown (the dual text-engine + acoustic
+  // diagnostic panel), or Data Source (retrieval/grounding explainability).
+  // Tabbed instead of stacked so the whole right column fits one viewport
+  // without scrolling past it.
+  const [analyticsTab, setAnalyticsTab] = useState<"overview" | "engine" | "source">("overview");
   // Every ACTIVE call gets its own live state, updated continuously in the
   // background regardless of which one is currently focused/visible — this
   // is what makes switching between two live callers lossless. Keyed by
@@ -168,7 +175,6 @@ function LiveDashboardInner() {
   // patient's history still shows a correct header even if it's aged out
   // of that short list.
   const [replayCallMeta, setReplayCallMeta] = useState<RecentCall | null>(null);
-  const orbRef = useRef<HTMLDivElement | null>(null);
   const transcriptContainerRef = useRef<HTMLDivElement | null>(null);
   const eventSourcesRef = useRef<Record<string, EventSource>>({});
 
@@ -306,18 +312,6 @@ function LiveDashboardInner() {
 
   const focusedLiveState = sessionId ? (isLive ? liveStates[sessionId] ?? null : replayState) : null;
 
-  // Orb reacts to real detected-emotion intensity/label — there's no local
-  // mic on this page (it's watching a phone call over SSE, not capturing
-  // audio itself), so intensity is the honest "how much is happening right
-  // now" signal available here.
-  useEffect(() => {
-    if (!orbRef.current) return;
-    const level = focusedLiveState ? focusedLiveState.intensity : 0;
-    const hue = focusedLiveState ? EMOTION_HUE[focusedLiveState.emotionLabel] ?? EMOTION_HUE.neutral : "#7679A0";
-    orbRef.current.style.setProperty("--level", level.toFixed(3));
-    orbRef.current.style.setProperty("--hue", hue);
-  }, [focusedLiveState?.intensity, focusedLiveState?.emotionLabel]);
-
   // Scroll only the transcript panel's own scroll container, not the page.
   // scrollIntoView() (the previous approach) scrolls EVERY scrollable
   // ancestor needed to bring its target into view, which in practice
@@ -333,23 +327,21 @@ function LiveDashboardInner() {
   const activeCall = activeCalls.find((c) => (c.sessionId || c.id) === sessionId);
   const recentCall = recentCalls.find((c) => (c.sessionId || c.id) === sessionId) ?? replayCallMeta;
   const hasMultipleCalls = activeCalls.length + recentCalls.length > 1;
+  const hue = focusedLiveState ? EMOTION_HUE[focusedLiveState.emotionLabel] ?? EMOTION_HUE.neutral : "#7679A0";
 
   return (
-    <div className="min-h-screen voxera-console px-8 py-10 flex flex-col items-center">
-      <div className="w-full max-w-6xl flex flex-col items-center">
-        <div className="flex items-center gap-2 mb-2">
-          <Radio className="w-4 h-4 text-[var(--console-cyan)]" />
-          <span className="text-[10.5px] font-mono uppercase tracking-[0.25em] text-[var(--console-text-dim)]">
-            Live Dashboard
-          </span>
+    <div className="flex h-full flex-col voxera-console">
+      {/* Page header row — title, call switcher (single scrollable line,
+          never wraps into extra rows) and the grid/focus toggle, all in one
+          compact strip instead of a tall centered hero. */}
+      <div className="flex flex-none items-center gap-3 border-b border-[var(--console-border)] px-6 py-3">
+        <div className="flex flex-none items-center gap-2">
+          <Radio className="h-4 w-4 text-[var(--console-cyan)]" />
+          <span className="text-[13px] font-semibold text-[var(--console-text)]">Live Calls</span>
         </div>
 
-        {/* Call switcher — active calls (live-pulsing) and recently-ended
-            calls (for evaluation) side by side, so multiple concurrent
-            calls (or a past one worth reviewing) are one click away instead
-            of only ever showing whatever connected first. */}
         {hasMultipleCalls && (
-          <div className="w-full flex flex-wrap items-center justify-center gap-2 mt-4">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
             {activeCalls.map((c) => {
               const id = c.sessionId || c.id;
               const selected = id === sessionId;
@@ -357,13 +349,13 @@ function LiveDashboardInner() {
                 <button
                   key={id}
                   onClick={() => selectCall(id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-mono transition-colors ${
+                  className={`flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1 text-[11.5px] font-mono transition-colors ${
                     selected && viewMode === "focus"
                       ? "bg-[var(--console-cyan)]/20 border border-[var(--console-cyan)]/50 text-[var(--console-cyan)]"
                       : "bg-[var(--console-surface)]/60 border border-[var(--console-border)] text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
                   }`}
                 >
-                  <Circle className="w-2 h-2 fill-current animate-pulse" />
+                  <Circle className="h-2 w-2 fill-current animate-pulse" />
                   {c.callerNumber || "Live call"}
                 </button>
               );
@@ -375,45 +367,46 @@ function LiveDashboardInner() {
                 <button
                   key={id}
                   onClick={() => selectCall(id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-mono transition-colors ${
+                  className={`flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1 text-[11.5px] font-mono transition-colors ${
                     selected && viewMode === "focus"
                       ? "bg-[var(--console-violet)]/20 border border-[var(--console-violet)]/50 text-[var(--console-violet)]"
                       : "bg-[var(--console-surface)]/60 border border-[var(--console-border)] text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
                   }`}
                 >
-                  <History className="w-3 h-3" />
+                  <History className="h-3 w-3" />
                   {c.callerNumber || "Call"}
                 </button>
               );
             })}
-
-            {/* Watching 2+ live callers at once needs a side-by-side grid,
-                not just fast switching between single-focus views — this
-                toggle is that view. Only worth showing once there's
-                actually more than one call happening live at the same
-                time. */}
-            {activeCalls.length > 1 && (
-              <button
-                onClick={() => setViewMode((m) => (m === "grid" ? "focus" : "grid"))}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-mono transition-colors ml-2 ${
-                  viewMode === "grid"
-                    ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-400"
-                    : "bg-[var(--console-surface)]/60 border border-[var(--console-border)] text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
-                }`}
-              >
-                {viewMode === "grid" ? <Maximize2 className="w-3 h-3" /> : <LayoutGrid className="w-3 h-3" />}
-                {viewMode === "grid" ? "Focus one call" : `View all ${activeCalls.length} live calls`}
-              </button>
-            )}
           </div>
         )}
 
+        {/* Watching 2+ live callers at once needs a side-by-side grid, not
+            just fast switching between single-focus views — this toggle is
+            that view. Only worth showing once there's actually more than
+            one call happening live at the same time. */}
+        {activeCalls.length > 1 && (
+          <button
+            onClick={() => setViewMode((m) => (m === "grid" ? "focus" : "grid"))}
+            className={`flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1 text-[11.5px] font-mono transition-colors ${
+              viewMode === "grid"
+                ? "bg-emerald-500/20 border border-emerald-500/50 text-emerald-400"
+                : "bg-[var(--console-surface)]/60 border border-[var(--console-border)] text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
+            }`}
+          >
+            {viewMode === "grid" ? <Maximize2 className="h-3 w-3" /> : <LayoutGrid className="h-3 w-3" />}
+            {viewMode === "grid" ? "Focus" : `All ${activeCalls.length}`}
+          </button>
+        )}
+      </div>
+
+      <div className="min-h-0 flex-1 p-4">
         {viewMode === "grid" ? (
-          <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-5 mt-8">
+          <div className="grid h-full grid-cols-1 gap-4 overflow-y-auto md:grid-cols-2">
             {activeCalls.map((c) => {
               const id = c.sessionId || c.id;
               const state = liveStates[id];
-              const hue = state ? EMOTION_HUE[state.emotionLabel] ?? EMOTION_HUE.neutral : "#7679A0";
+              const cardHue = state ? EMOTION_HUE[state.emotionLabel] ?? EMOTION_HUE.neutral : "#7679A0";
               const lastTurns = state?.transcript.slice(-4) ?? [];
               return (
                 <button
@@ -422,11 +415,11 @@ function LiveDashboardInner() {
                     selectCall(id);
                     setViewMode("focus");
                   }}
-                  className="text-left voxera-console-hairline rounded-2xl bg-[var(--console-surface)]/60 backdrop-blur-xl p-4 flex flex-col gap-3 hover:border-[var(--console-cyan)]/40 transition-colors"
+                  className="flex min-h-[220px] flex-col gap-3 rounded-2xl voxera-console-hairline bg-[var(--console-surface)]/60 p-4 text-left backdrop-blur-xl transition-colors hover:border-[var(--console-cyan)]/40"
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: hue }} />
+                      <span className="h-2 w-2 rounded-full animate-pulse" style={{ background: cardHue }} />
                       <span className="text-[13.5px] font-bold text-[var(--console-text)]">{c.callerNumber || "Live call"}</span>
                     </div>
                     <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--console-text-dim)] capitalize">
@@ -437,13 +430,13 @@ function LiveDashboardInner() {
                   <div className="flex items-center gap-4 text-[11px] text-[var(--console-text-dim)]">
                     <span>Engagement <span className="text-[var(--console-text)] font-semibold">{state?.caiScore ?? 50}</span>/100</span>
                     {state && Object.values(state.flags).some(Boolean) && (
-                      <span className="flex items-center gap-1 text-red-400"><ShieldAlert className="w-3 h-3" /> flagged</span>
+                      <span className="flex items-center gap-1 text-red-400"><ShieldAlert className="h-3 w-3" /> flagged</span>
                     )}
                   </div>
 
-                  <div className="flex-1 min-h-[110px] max-h-[150px] overflow-y-auto flex flex-col gap-1.5 text-[12px]">
+                  <div className="flex min-h-[110px] max-h-[150px] flex-1 flex-col gap-1.5 overflow-y-auto text-[12px]">
                     {lastTurns.length === 0 ? (
-                      <div className="flex-1 flex items-center justify-center text-[var(--console-text-dim)] italic">
+                      <div className="flex flex-1 items-center justify-center italic text-[var(--console-text-dim)]">
                         Waiting for the first turn…
                       </div>
                     ) : (
@@ -457,7 +450,7 @@ function LiveDashboardInner() {
                           }`}
                         >
                           {t.text}
-                          {t.streaming && <span className="inline-block w-1.5 h-3.5 bg-current opacity-70 ml-0.5 align-middle animate-pulse" />}
+                          {t.streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-current align-middle opacity-70" />}
                         </div>
                       ))
                     )}
@@ -466,111 +459,158 @@ function LiveDashboardInner() {
               );
             })}
           </div>
-        ) : (
-          <>
-            <div ref={orbRef} className="voxera-orb-live w-40 h-40 sm:w-48 sm:h-48 flex-none mt-4 mb-6" />
-
-            <div className="text-center mb-10">
-              {activeCall ? (
-                <>
-                  <div className="text-[15px] font-bold text-[var(--console-text)]">{activeCall.callerNumber || "Live call"}</div>
-                  <div className="text-[11px] font-mono uppercase tracking-widest text-[var(--console-cyan)] flex items-center justify-center gap-1.5 mt-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--console-cyan)] animate-pulse" /> On call
-                    {focusedLiveState && <span className="text-[var(--console-text-dim)] capitalize">· {focusedLiveState.emotionLabel}</span>}
-                  </div>
-                </>
-              ) : recentCall ? (
-                <>
-                  <div className="text-[15px] font-bold text-[var(--console-text)]">{recentCall.callerNumber || "Call"}</div>
-                  <div className="text-[11px] font-mono uppercase tracking-widest text-[var(--console-violet)] flex items-center justify-center gap-1.5 mt-1">
-                    <History className="w-3 h-3" /> Ended{recentCall.durationMs ? ` · ${Math.round(recentCall.durationMs / 1000)}s` : ""}
-                    {recentCall.status === "failed" && <span className="text-red-400">· failed</span>}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="text-[15px] font-bold text-[var(--console-text)]">Waiting for a call</div>
-                  <div className="text-[11.5px] text-[var(--console-text-dim)] mt-1 max-w-md">
-                    Build an agent in Agent Builder, upload its knowledge base, then place a call from Bulk Calls or a
-                    real inbound call — this page picks it up automatically once it connects.
-                  </div>
-                </>
-              )}
+        ) : !focusedLiveState && !activeCall && !recentCall ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+            <Radio className="h-8 w-8 text-[var(--console-text-dim)]" />
+            <div className="text-[15px] font-bold text-[var(--console-text)]">Waiting for a call</div>
+            <div className="max-w-md text-[12.5px] text-[var(--console-text-dim)]">
+              Build an agent in Agent Builder, upload its knowledge base, then place a call from Bulk Calls or a real
+              inbound call — this page picks it up automatically once it connects.
             </div>
-
-            {focusedLiveState && (
-              <div className="w-full grid grid-cols-1 lg:grid-cols-[1fr_420px] gap-6">
-                {/* Live transcript — the real call, not the browser test-call feature */}
-                <div className="voxera-console-hairline rounded-2xl bg-[var(--console-surface)]/60 backdrop-blur-xl p-5 flex flex-col min-h-[420px] max-h-[560px]">
-                  <div className="voxera-console-label text-[10px] font-bold mb-3 flex items-center gap-1.5">
-                    <PhoneCall className="w-3.5 h-3.5" /> {isLive ? "Live Transcript" : "Transcript"}
+          </div>
+        ) : (
+          <div className="grid h-full grid-cols-1 gap-4 lg:grid-cols-[1fr_380px]">
+            {/* Transcript column — compact status strip up top instead of a
+                full-width hero, then the conversation filling the rest of
+                the column with its own internal scroll. */}
+            <div className="flex min-h-0 flex-col rounded-2xl voxera-console-hairline bg-[var(--console-surface)]/60 backdrop-blur-xl">
+              <div className="flex flex-none items-center gap-3 border-b border-[var(--console-border)] px-4 py-3">
+                <span className="h-2.5 w-2.5 flex-none rounded-full animate-pulse" style={{ background: hue }} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13.5px] font-bold text-[var(--console-text)]">
+                    {activeCall?.callerNumber || recentCall?.callerNumber || "Call"}
                   </div>
-                  <div ref={transcriptContainerRef} className="flex-1 overflow-y-auto flex flex-col gap-2.5 pr-1">
-                    {focusedLiveState.transcript.length === 0 ? (
-                      <div className="flex-1 flex items-center justify-center text-[12px] text-[var(--console-text-dim)] italic">
-                        Waiting for the first turn…
-                      </div>
+                  <div className="flex items-center gap-1.5 text-[10.5px] font-mono uppercase tracking-widest text-[var(--console-text-dim)]">
+                    {activeCall ? (
+                      <>
+                        <span className="text-[var(--console-cyan)]">On call</span>
+                        {focusedLiveState && <span className="capitalize">· {focusedLiveState.emotionLabel}</span>}
+                      </>
                     ) : (
-                      focusedLiveState.transcript.map((t, i) => (
-                        <div
-                          key={i}
-                          className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-[13px] leading-snug ${
-                            t.role === "user"
-                              ? "self-end bg-[var(--console-violet)]/20 text-[var(--console-text)]"
-                              : "self-start bg-[var(--console-surface-raised)] border border-[var(--console-border)] text-[var(--console-text)]"
-                          }`}
-                        >
-                          {t.text}
-                          {t.streaming && <span className="inline-block w-1.5 h-3.5 bg-current opacity-70 ml-0.5 align-middle animate-pulse" />}
-                        </div>
-                      ))
+                      <>
+                        <History className="h-3 w-3" />
+                        Ended{recentCall?.durationMs ? ` · ${Math.round(recentCall.durationMs / 1000)}s` : ""}
+                        {recentCall?.status === "failed" && <span className="text-red-400">· failed</span>}
+                      </>
                     )}
                   </div>
                 </div>
+                <PhoneCall className="h-3.5 w-3.5 flex-none text-[var(--console-text-dim)]" />
+              </div>
 
-                {/* Dual-engine emotion analysis + CAI + flags */}
-                <div className="flex flex-col gap-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="voxera-console-hairline rounded-xl bg-[var(--console-surface)]/60 backdrop-blur-xl p-3.5">
-                      <div className="text-[9px] font-mono uppercase tracking-widest text-[var(--console-text-dim)] mb-1">Detected Emotion</div>
-                      <div className="text-[15px] font-bold capitalize text-[var(--console-text)]">{focusedLiveState.emotionLabel}</div>
-                      <div className="text-[10.5px] text-[var(--console-text-dim)] mt-1">{(focusedLiveState.confidence * 100).toFixed(0)}% conf</div>
-                    </div>
-                    <div className="voxera-console-hairline rounded-xl bg-[var(--console-surface)]/60 backdrop-blur-xl p-3.5">
-                      <div className="text-[9px] font-mono uppercase tracking-widest text-[var(--console-text-dim)] mb-1 flex items-center gap-1">
-                        <Zap className="w-3 h-3" /> Engagement
-                      </div>
-                      <div className="text-[15px] font-bold text-[var(--console-text)]">{focusedLiveState.caiScore}<span className="text-[11px] font-normal text-[var(--console-text-dim)]"> /100</span></div>
-                      <div className="text-[10.5px] text-[var(--console-text-dim)] mt-1">{focusedLiveState.caiCategory}</div>
-                    </div>
+              <div ref={transcriptContainerRef} className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-4">
+                {!focusedLiveState || focusedLiveState.transcript.length === 0 ? (
+                  <div className="flex flex-1 items-center justify-center text-[12px] italic text-[var(--console-text-dim)]">
+                    Waiting for the first turn…
                   </div>
-
-                  {Object.values(focusedLiveState.flags).some(Boolean) && (
-                    <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3.5 py-2.5 flex items-center gap-2 text-red-400 text-[11.5px] font-medium">
-                      <ShieldAlert className="w-4 h-4 flex-none" />
-                      {Object.entries(focusedLiveState.flags).filter(([, v]) => v).map(([k]) => k.replace(/_/g, " ")).join(", ")}
+                ) : (
+                  focusedLiveState.transcript.map((t, i) => (
+                    <div
+                      key={i}
+                      className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-[13px] leading-snug ${
+                        t.role === "user"
+                          ? "self-end bg-[var(--console-violet)]/20 text-[var(--console-text)]"
+                          : "self-start bg-[var(--console-surface-raised)] border border-[var(--console-border)] text-[var(--console-text)]"
+                      }`}
+                    >
+                      {t.text}
+                      {t.streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-current align-middle opacity-70" />}
                     </div>
-                  )}
+                  ))
+                )}
+              </div>
+            </div>
 
-                  {/* Explainability — which knowledge source the reply actually
-                      drew from and why, or that nothing cleared the grounding
-                      bar and the predefined fallback/hedge language was used
-                      instead. */}
-                  {focusedLiveState.retrieval && (
-                    <div className="voxera-console-hairline rounded-xl bg-[var(--console-surface)]/60 backdrop-blur-xl p-3.5">
-                      <div className="text-[9px] font-mono uppercase tracking-widest text-[var(--console-text-dim)] mb-2 flex items-center gap-1">
-                        {focusedLiveState.retrieval.usedFallback ? <HelpCircle className="w-3 h-3" /> : <Database className="w-3 h-3" />}
-                        Data Source
+            {/* Analytics column — tabbed instead of stacked, so Overview +
+                Engine Breakdown + Data Source each get the full column
+                height instead of adding to it. */}
+            <div className="flex min-h-0 flex-col rounded-2xl voxera-console-hairline bg-[var(--console-surface)]/60 backdrop-blur-xl">
+              <div className="flex flex-none items-center gap-1 border-b border-[var(--console-border)] px-2 pt-2">
+                {(
+                  [
+                    { key: "overview", label: "Overview" },
+                    { key: "engine", label: "Engine" },
+                    { key: "source", label: "Data Source" },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.key}
+                    onClick={() => setAnalyticsTab(tab.key)}
+                    className={`rounded-t-lg px-3 py-2 text-[11.5px] font-semibold transition-colors ${
+                      analyticsTab === tab.key
+                        ? "bg-[var(--console-surface-raised)] text-[var(--console-text)]"
+                        : "text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                {!focusedLiveState ? (
+                  <div className="flex h-full items-center justify-center text-[12px] italic text-[var(--console-text-dim)]">
+                    No analytics yet.
+                  </div>
+                ) : analyticsTab === "overview" ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-xl voxera-console-hairline bg-[var(--console-surface-raised)]/60 p-3.5">
+                        <div className="mb-1 text-[9px] font-mono uppercase tracking-widest text-[var(--console-text-dim)]">
+                          Detected Emotion
+                        </div>
+                        <div className="text-[15px] font-bold capitalize text-[var(--console-text)]">
+                          {focusedLiveState.emotionLabel}
+                        </div>
+                        <div className="mt-1 text-[10.5px] text-[var(--console-text-dim)]">
+                          {(focusedLiveState.confidence * 100).toFixed(0)}% conf
+                        </div>
                       </div>
-                      {focusedLiveState.retrieval.usedFallback ? (
-                        <div className="text-[12px] text-amber-400 leading-snug">
+                      <div className="rounded-xl voxera-console-hairline bg-[var(--console-surface-raised)]/60 p-3.5">
+                        <div className="mb-1 flex items-center gap-1 text-[9px] font-mono uppercase tracking-widest text-[var(--console-text-dim)]">
+                          <Zap className="h-3 w-3" /> Engagement
+                        </div>
+                        <div className="text-[15px] font-bold text-[var(--console-text)]">
+                          {focusedLiveState.caiScore}
+                          <span className="text-[11px] font-normal text-[var(--console-text-dim)]"> /100</span>
+                        </div>
+                        <div className="mt-1 text-[10.5px] text-[var(--console-text-dim)]">{focusedLiveState.caiCategory}</div>
+                      </div>
+                    </div>
+
+                    {Object.values(focusedLiveState.flags).some(Boolean) && (
+                      <div className="flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3.5 py-2.5 text-[11.5px] font-medium text-red-400">
+                        <ShieldAlert className="h-4 w-4 flex-none" />
+                        {Object.entries(focusedLiveState.flags).filter(([, v]) => v).map(([k]) => k.replace(/_/g, " ")).join(", ")}
+                      </div>
+                    )}
+                  </div>
+                ) : analyticsTab === "engine" ? (
+                  <EngineDiagnosticPanel diagnostics={focusedLiveState.diagnostics} compact />
+                ) : (
+                  // Explainability — which knowledge source the reply actually
+                  // drew from and why, or that nothing cleared the grounding
+                  // bar and the predefined fallback/hedge language was used
+                  // instead.
+                  <div>
+                    {!focusedLiveState.retrieval ? (
+                      <div className="text-[11.5px] italic text-[var(--console-text-dim)]">No retrieval data for this turn yet.</div>
+                    ) : focusedLiveState.retrieval.usedFallback ? (
+                      <div className="flex items-start gap-2 text-[12px] leading-snug text-amber-400">
+                        <HelpCircle className="mt-0.5 h-3.5 w-3.5 flex-none" />
+                        <div>
                           Nothing cleared the grounding bar — spoke the predefined fallback instead of guessing.
                           {focusedLiveState.retrieval.fallbackText && (
-                            <div className="mt-1.5 text-[11px] text-[var(--console-text-dim)] italic">"{focusedLiveState.retrieval.fallbackText}"</div>
+                            <div className="mt-1.5 text-[11px] italic text-[var(--console-text-dim)]">
+                              "{focusedLiveState.retrieval.fallbackText}"
+                            </div>
                           )}
                         </div>
-                      ) : focusedLiveState.retrieval.topSource ? (
-                        <div className="text-[12px] text-[var(--console-text)] leading-snug">
+                      </div>
+                    ) : focusedLiveState.retrieval.topSource ? (
+                      <div className="flex items-start gap-2 text-[12px] leading-snug text-[var(--console-text)]">
+                        <Database className="mt-0.5 h-3.5 w-3.5 flex-none text-[var(--console-cyan)]" />
+                        <div>
                           Pulled from <span className="font-semibold text-[var(--console-cyan)]">{focusedLiveState.retrieval.topSource}</span>
                           {focusedLiveState.retrieval.similarity !== undefined && (
                             <span className="text-[var(--console-text-dim)]"> · {(focusedLiveState.retrieval.similarity * 100).toFixed(0)}% match</span>
@@ -579,22 +619,15 @@ function LiveDashboardInner() {
                             <div className="mt-1 text-[11px] text-[var(--console-text-dim)]">{focusedLiveState.retrieval.reason}</div>
                           )}
                         </div>
-                      ) : (
-                        <div className="text-[11.5px] text-[var(--console-text-dim)] italic">No knowledge lookup needed for this turn.</div>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="voxera-console-hairline rounded-2xl bg-[var(--console-surface)]/60 backdrop-blur-xl p-4">
-                    <div className="voxera-console-label text-[10px] font-bold mb-3 flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5" /> Engine Breakdown
-                    </div>
-                    <EngineDiagnosticPanel diagnostics={focusedLiveState.diagnostics} compact />
+                      </div>
+                    ) : (
+                      <div className="text-[11.5px] italic text-[var(--console-text-dim)]">No knowledge lookup needed for this turn.</div>
+                    )}
                   </div>
-                </div>
+                )}
               </div>
-            )}
-          </>
+            </div>
+          </div>
         )}
       </div>
     </div>
