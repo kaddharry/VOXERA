@@ -55,3 +55,7 @@ _env.local
 
 # Tesseract.js downloads its OCR language model to cwd at runtime — not source
 *.traineddata
+
+# local agent tooling state (not app source)
+/.cairn/
+/.cairn-cache/
