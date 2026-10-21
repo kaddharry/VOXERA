@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { UserCheck, Plus, Phone, Loader2, X, Upload, FileText, ChevronDown, ChevronUp, ShieldAlert, ExternalLink, History, Trash2, Files, CalendarClock } from "lucide-react";
+import { UserCheck, Plus, Phone, Loader2, X, Upload, FileText, ChevronDown, ChevronUp, ShieldAlert, ExternalLink, History, Trash2, Files, CalendarClock, Pause, Play, XCircle } from "lucide-react";
 import { GlassCard } from "../../_components/GlassCard";
 import { PhoneInput } from "../../_components/PhoneInput";
 import { DateRangeTimePicker, expandDailyAttemptTimes, defaultDateSelectionValue, type DateSelectionValue } from "../../../components/admin/DateRangeTimePicker";
@@ -50,6 +50,15 @@ interface PatientDocument {
   mimeType: string | null;
   extractedText: string;
   createdAt: number;
+}
+
+interface FollowUpTask {
+  id: string;
+  status: string;
+  nextAttemptAt: number;
+  attemptCount: number;
+  maxAttempts: number;
+  lastOutcome: string | null;
 }
 
 export default function PatientsPage() {
@@ -132,6 +141,7 @@ export default function PatientsPage() {
             });
       const data = await res.json();
       if (res.ok) {
+        loadFollowUps(scheduleTarget.id);
         setScheduleTarget(null);
       } else {
         setScheduleMessage(data.error || "Failed to schedule follow-up");
@@ -143,34 +153,23 @@ export default function PatientsPage() {
     }
   }
 
-  // Post-call analysis history — collapsed by default per patient, fetched
-  // lazily the first time it's expanded rather than for every patient on
-  // page load.
-  const [expandedPatientId, setExpandedPatientId] = useState<string | null>(null);
+  // Documents / History / Follow-ups are mutually exclusive floating
+  // popovers per patient row (see `openPanel` below) rather than three
+  // independently-toggleable inline sections — opening one used to push
+  // every row below it down the page, and with more than one expanded at
+  // once the list turned into an unreadable stack. Only one panel, for one
+  // patient, is ever open at a time; it floats over the rows beneath it
+  // instead of displacing them.
+  type PanelType = "docs" | "history" | "followups";
+  const [openPanel, setOpenPanel] = useState<{ patientId: string; type: PanelType } | null>(null);
+
   const [callsByPatient, setCallsByPatient] = useState<Record<string, PatientCall[] | "loading">>({});
-
-  function toggleHistory(patientId: string) {
-    if (expandedPatientId === patientId) {
-      setExpandedPatientId(null);
-      return;
-    }
-    setExpandedPatientId(patientId);
-    if (!callsByPatient[patientId]) {
-      setCallsByPatient((prev) => ({ ...prev, [patientId]: "loading" }));
-      fetch(`/api/admin/patients/${patientId}/calls`)
-        .then((r) => r.json())
-        .then((data: { calls?: PatientCall[] }) => {
-          setCallsByPatient((prev) => ({ ...prev, [patientId]: data.calls ?? [] }));
-        })
-        .catch(() => setCallsByPatient((prev) => ({ ...prev, [patientId]: [] })));
-    }
-  }
-
-  // Per-patient document list — each patient can now have several records
-  // attached (migration_v17.sql) instead of a single notes blob that got
-  // silently overwritten by the last upload.
-  const [expandedDocsPatientId, setExpandedDocsPatientId] = useState<string | null>(null);
   const [docsByPatient, setDocsByPatient] = useState<Record<string, PatientDocument[] | "loading">>({});
+  // Fetched eagerly (not lazily, on first popover open) for every patient as
+  // soon as the list loads — this is what the "Next follow-up" line under
+  // each patient's phone number reads from, so a scheduled call is visible
+  // immediately without opening anything.
+  const [followUpsByPatient, setFollowUpsByPatient] = useState<Record<string, FollowUpTask[]>>({});
   const [addingDocFor, setAddingDocFor] = useState<string | null>(null);
   const [newDocFile, setNewDocFile] = useState<File | null>(null);
   const [newDocText, setNewDocText] = useState("");
@@ -186,13 +185,44 @@ export default function PatientsPage() {
       .catch(() => setDocsByPatient((prev) => ({ ...prev, [patientId]: [] })));
   }
 
-  function toggleDocuments(patientId: string) {
-    if (expandedDocsPatientId === patientId) {
-      setExpandedDocsPatientId(null);
-      return;
-    }
-    setExpandedDocsPatientId(patientId);
-    if (!docsByPatient[patientId]) loadDocuments(patientId);
+  function loadCalls(patientId: string) {
+    setCallsByPatient((prev) => ({ ...prev, [patientId]: "loading" }));
+    fetch(`/api/admin/patients/${patientId}/calls`)
+      .then((r) => r.json())
+      .then((data: { calls?: PatientCall[] }) => {
+        setCallsByPatient((prev) => ({ ...prev, [patientId]: data.calls ?? [] }));
+      })
+      .catch(() => setCallsByPatient((prev) => ({ ...prev, [patientId]: [] })));
+  }
+
+  function loadFollowUps(patientId: string) {
+    return fetch(`/api/admin/patients/${patientId}/follow-ups`)
+      .then((r) => r.json())
+      .then((data: { tasks?: FollowUpTask[] }) => {
+        setFollowUpsByPatient((prev) => ({ ...prev, [patientId]: data.tasks ?? [] }));
+      })
+      .catch(() => setFollowUpsByPatient((prev) => ({ ...prev, [patientId]: [] })));
+  }
+
+  function togglePanel(patientId: string, type: PanelType) {
+    setOpenPanel((prev) => (prev && prev.patientId === patientId && prev.type === type ? null : { patientId, type }));
+    if (type === "docs" && !docsByPatient[patientId]) loadDocuments(patientId);
+    if (type === "history" && !callsByPatient[patientId]) loadCalls(patientId);
+  }
+
+  async function actOnFollowUp(patientId: string, taskId: string, action: "pause" | "resume" | "cancel") {
+    const res = await fetch(`/api/follow-ups/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (res.ok) loadFollowUps(patientId);
+  }
+
+  function nextFollowUp(patientId: string): FollowUpTask | undefined {
+    return (followUpsByPatient[patientId] ?? [])
+      .filter((t) => t.status === "scheduled")
+      .sort((a, b) => a.nextAttemptAt - b.nextAttemptAt)[0];
   }
 
   async function addDocument(patientId: string) {
@@ -237,6 +267,21 @@ export default function PatientsPage() {
       .then((data: { programmes?: Programme[] }) => setProgrammes(data.programmes ?? []))
       .catch(() => {});
   }, []);
+
+  // Next-follow-up badges need every patient's follow-ups, not just the one
+  // whose popover happens to be open — fetched once the list itself is in,
+  // and again whenever it's reloaded (e.g. after adding a patient).
+  useEffect(() => {
+    if (!patients) return;
+    Promise.all(
+      patients.map((p) =>
+        fetch(`/api/admin/patients/${p.id}/follow-ups`)
+          .then((r) => r.json())
+          .then((data: { tasks?: FollowUpTask[] }) => [p.id, data.tasks ?? []] as const)
+          .catch(() => [p.id, []] as const),
+      ),
+    ).then((entries) => setFollowUpsByPatient(Object.fromEntries(entries)));
+  }, [patients]);
 
   async function handleAdd() {
     setSaving(true);
@@ -405,9 +450,10 @@ export default function PatientsPage() {
         <div className="flex flex-col gap-3">
           {patients.map((p) => {
             const calls = callsByPatient[p.id];
-            const expanded = expandedPatientId === p.id;
+            const nextTask = nextFollowUp(p.id);
+            const isOpen = (type: PanelType) => openPanel?.patientId === p.id && openPanel.type === type;
             return (
-              <GlassCard key={p.id} className="p-5">
+              <GlassCard key={p.id} className="p-5 relative">
                 <div className="flex items-center gap-4">
                   <div className="w-10 h-10 rounded-full bg-[var(--color-accent-violet)]/15 text-[var(--color-accent-violet)] flex items-center justify-center font-semibold text-[14px] flex-none">
                     {p.name.charAt(0).toUpperCase()}
@@ -422,28 +468,50 @@ export default function PatientsPage() {
                         <FileText className="w-3 h-3 flex-none" /> {p.notes.slice(0, 80)}
                       </div>
                     )}
+                    {/* Always visible, no click required — this is the direct fix
+                        for "I scheduled a call but can't see it anywhere." */}
+                    {nextTask && (
+                      <button
+                        onClick={() => togglePanel(p.id, "followups")}
+                        className="text-[11px] text-[var(--color-accent-cyan)] mt-0.5 flex items-center gap-1 hover:underline"
+                      >
+                        <CalendarClock className="w-3 h-3 flex-none" />
+                        Next follow-up: {new Date(nextTask.nextAttemptAt).toLocaleString()}
+                      </button>
+                    )}
                   </div>
                   <button
-                    onClick={() => toggleDocuments(p.id)}
+                    onClick={() => togglePanel(p.id, "docs")}
                     className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-[12.5px] font-semibold transition-all flex-none ${
-                      expandedDocsPatientId === p.id
+                      isOpen("docs")
                         ? "bg-[var(--color-accent-violet)]/15 border-[var(--color-accent-violet)]/40 text-[var(--color-accent-violet)]"
                         : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
                     }`}
                   >
                     <Files className="w-3.5 h-3.5" /> Documents
-                    {expandedDocsPatientId === p.id ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    {isOpen("docs") ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                   </button>
                   <button
-                    onClick={() => toggleHistory(p.id)}
+                    onClick={() => togglePanel(p.id, "history")}
                     className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-[12.5px] font-semibold transition-all flex-none ${
-                      expanded
+                      isOpen("history")
                         ? "bg-[var(--color-accent-violet)]/15 border-[var(--color-accent-violet)]/40 text-[var(--color-accent-violet)]"
                         : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
                     }`}
                   >
                     <History className="w-3.5 h-3.5" /> History
-                    {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    {isOpen("history") ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
+                  <button
+                    onClick={() => togglePanel(p.id, "followups")}
+                    className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-[12.5px] font-semibold transition-all flex-none ${
+                      isOpen("followups")
+                        ? "bg-[var(--color-accent-violet)]/15 border-[var(--color-accent-violet)]/40 text-[var(--color-accent-violet)]"
+                        : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                    }`}
+                  >
+                    <CalendarClock className="w-3.5 h-3.5" /> Follow-ups
+                    {isOpen("followups") ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                   </button>
                   {p.doNotContact ? (
                     <span className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/25 text-red-400 text-[12px] font-semibold flex-none">
@@ -467,8 +535,14 @@ export default function PatientsPage() {
                   )}
                 </div>
 
-                {expandedDocsPatientId === p.id && (
-                  <div className="mt-4 pt-4 border-t border-[var(--color-border-subtle)] flex flex-col gap-3">
+                {openPanel?.patientId === p.id && (
+                  <>
+                    {/* Click-outside-to-close backdrop — invisible, just
+                        catches the click; the popover itself sits above it. */}
+                    <div className="fixed inset-0 z-30" onClick={() => setOpenPanel(null)} />
+                    <div className="absolute left-0 right-0 top-full mt-2 z-40 max-h-[60vh] overflow-y-auto rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)] p-4 shadow-2xl">
+                    {openPanel.type === "docs" && (
+                      <div className="flex flex-col gap-3">
                     {(() => {
                       const docs = docsByPatient[p.id];
                       if (docs === "loading" || docs === undefined) {
@@ -558,11 +632,11 @@ export default function PatientsPage() {
                         </>
                       );
                     })()}
-                  </div>
-                )}
+                      </div>
+                    )}
 
-                {expanded && (
-                  <div className="mt-4 pt-4 border-t border-[var(--color-border-subtle)] flex flex-col gap-3">
+                    {openPanel.type === "history" && (
+                      <div className="flex flex-col gap-3">
                     {calls === "loading" || calls === undefined ? (
                       <div className="flex justify-center py-6">
                         <Loader2 className="w-4 h-4 animate-spin text-[var(--color-text-muted)]" />
@@ -628,7 +702,58 @@ export default function PatientsPage() {
                         </div>
                       ))
                     )}
-                  </div>
+                      </div>
+                    )}
+
+                    {openPanel.type === "followups" && (
+                      <div className="flex flex-col gap-3">
+                        {(followUpsByPatient[p.id] ?? []).length === 0 ? (
+                          <p className="text-[12px] text-[var(--color-text-muted)] italic py-2">
+                            No follow-ups scheduled for {p.name}. Use "Schedule" to set one up.
+                          </p>
+                        ) : (
+                          (followUpsByPatient[p.id] ?? [])
+                            .slice()
+                            .sort((a, b) => b.nextAttemptAt - a.nextAttemptAt)
+                            .map((t) => (
+                              <div
+                                key={t.id}
+                                className="rounded-xl bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] p-3.5 flex items-center justify-between gap-3"
+                              >
+                                <div className="min-w-0">
+                                  <p className="text-[12.5px] font-semibold text-[var(--color-text-primary)]">
+                                    {new Date(t.nextAttemptAt).toLocaleString()}
+                                  </p>
+                                  <p className="text-[11.5px] text-[var(--color-text-muted)] mt-0.5">
+                                    {t.status} · attempt {t.attemptCount} of {t.maxAttempts}
+                                    {t.lastOutcome && ` · ${t.lastOutcome}`}
+                                  </p>
+                                </div>
+                                {(t.status === "scheduled" || t.status === "paused") && (
+                                  <div className="flex gap-1.5 flex-none">
+                                    <button
+                                      onClick={() => actOnFollowUp(p.id, t.id, t.status === "scheduled" ? "pause" : "resume")}
+                                      className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)] transition-colors"
+                                      aria-label={t.status === "scheduled" ? "Pause" : "Resume"}
+                                    >
+                                      {t.status === "scheduled" ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                                    </button>
+                                    <button
+                                      onClick={() => actOnFollowUp(p.id, t.id, "cancel")}
+                                      className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                      aria-label="Cancel"
+                                    >
+                                      <XCircle className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            ))
+                        )}
+                      </div>
+                    )}
+                    </div>
+                  </>
                 )}
               </GlassCard>
             );

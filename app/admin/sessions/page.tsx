@@ -59,6 +59,15 @@ const EMOTION_COLORS: Record<string, string> = {
 
 const POSITIVE_EMOTIONS = new Set(["joy", "gratitude", "excitement", "calm"]);
 
+/** Calls placed from the Test Agent page (app/admin/try-call) rather than a
+ * real phone call — see the literal "Browser Demo" callerNumber it inserts.
+ * These never have a patientId, but they're not "unlinked" in the sense of a
+ * real caller whose number didn't match a patient record, so they get their
+ * own label rather than being lumped in with genuine unmatched phone calls. */
+function isTestCall(callerNumber: string | null): boolean {
+  return callerNumber === "Browser Demo";
+}
+
 function emotionBadge(label: string) {
   return EMOTION_COLORS[label] ?? "bg-[#4F46E5]/10 text-[var(--color-text-secondary)] border border-[#4F46E5]/10";
 }
@@ -308,7 +317,7 @@ export default function SessionsPage() {
                     <ChevronRight className={`h-3.5 w-3.5 flex-none text-[var(--color-text-muted)] transition-transform ${isOpen ? "rotate-90" : ""}`} />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[13px] font-semibold text-[var(--color-text-primary)]">
-                        {g.patient?.name ?? "Unlinked Calls"}
+                        {g.patient?.name ?? (isTestCall(g.calls[0].callerNumber) ? "Test Call" : "Unlinked Calls")}
                       </div>
                       <div className="truncate text-[11px] text-[var(--color-text-muted)]">
                         {g.patient?.phone ?? g.calls[0].callerNumber ?? "Unknown number"}
@@ -371,7 +380,8 @@ export default function SessionsPage() {
                   compact line, not a stacked block. */}
               <div className="flex flex-none items-baseline gap-2 border-b border-[var(--color-border-subtle)] px-6 py-2.5">
                 <span className="text-[13.5px] font-semibold text-[var(--color-text-primary)]">
-                  {(selectedCall?.patientId && patients[selectedCall.patientId]?.name) ?? "Unlinked call"}
+                  {(selectedCall?.patientId && patients[selectedCall.patientId]?.name) ??
+                    (isTestCall(selectedCall?.callerNumber ?? null) ? "Test call" : "Unlinked call")}
                 </span>
                 <span className="text-[12px] text-[var(--color-text-muted)]">
                   {(selectedCall?.patientId && patients[selectedCall.patientId]?.phone) ?? selectedCall?.callerNumber ?? "Unknown number"}
