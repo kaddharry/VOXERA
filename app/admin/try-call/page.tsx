@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, PhoneCall } from "lucide-react";
+import { PhoneCall } from "lucide-react";
 import { createClient } from "../../../lib/db/server";
 import { VoiceAgent } from "../../_components/VoiceAgent";
 
@@ -30,30 +30,26 @@ export default async function TryCallPage() {
   });
 
   return (
-    <div className="p-6 sm:p-10 max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <Link
-            href="/admin"
-            className="inline-flex items-center gap-1.5 text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors mb-3"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" /> Back to Dashboard
-          </Link>
-          <h1 className="font-display text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)] flex items-center gap-3">
-            <PhoneCall className="w-8 h-8 text-[var(--color-accent-cyan)]" />
-            Try a Call
-          </h1>
-          <p className="mt-2 text-[15px] text-[var(--color-text-secondary)] max-w-xl">
-            Speak or type as a caller. This session is live — open{" "}
-            <Link href="/admin" className="text-[var(--color-accent-cyan)] hover:underline">
-              the dashboard
-            </Link>{" "}
-            in another tab to watch the emotion engine react in real time.
-          </p>
+    <div className="flex h-full flex-col font-body">
+      {/* Compact single-line header — matches the rest of the admin shell;
+          the breadcrumb above already names this page. */}
+      <header className="flex flex-none items-center gap-2 border-b border-[var(--color-border-subtle)] px-6 py-3 md:px-10">
+        <PhoneCall className="h-4 w-4 flex-none text-[var(--color-accent-cyan)]" />
+        <span className="text-[13px] font-semibold text-[var(--color-text-primary)]">Test Agent</span>
+        <span className="hidden truncate text-[12px] text-[var(--color-text-muted)] sm:inline">
+          · speak or type as a caller — this session is live, watch it react on the{" "}
+          <Link href="/admin/live_dashboard" className="text-[var(--color-accent-cyan)] hover:underline">
+            Live Calls
+          </Link>{" "}
+          page
+        </span>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-6 md:p-10">
+        <div className="mx-auto max-w-4xl">
+          <VoiceAgent sessionId={sessionId} clientId={user.id} userId={user.id} />
         </div>
       </div>
-
-      <VoiceAgent sessionId={sessionId} clientId={user.id} userId={user.id} />
     </div>
   );
 }

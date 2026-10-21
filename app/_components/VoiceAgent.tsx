@@ -127,6 +127,12 @@ export function VoiceAgent({ sessionId, clientId, userId, showExamples }: VoiceA
   const [history, setHistory] = useState<TurnEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
+  /** True only once the caller has actually done something (started
+   * recording, or sent a typed turn) — the "Live call" banner used to key
+   * off `sessionId` alone, which the page always passes in from the moment
+   * it loads (a call_logs row is created on mount), so it showed "Live
+   * call · End Call" immediately even though nothing had happened yet. */
+  const [callStarted, setCallStarted] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [micSupported, setMicSupported] = useState(false);
@@ -176,6 +182,7 @@ export function VoiceAgent({ sessionId, clientId, userId, showExamples }: VoiceA
   const submitTurn = useCallback(
     async (text: string, sttConfidence?: number) => {
       if (!text.trim() || busy) return;
+      setCallStarted(true);
       setBusy(true);
       setError(null);
       setStage("thinking");
@@ -313,6 +320,7 @@ export function VoiceAgent({ sessionId, clientId, userId, showExamples }: VoiceA
       mediaRecorderRef.current = mr;
       mr.start();
       setRecording(true);
+      setCallStarted(true);
       setStage("recording");
     } catch (e) {
       setError(describeMicError(e));
@@ -363,11 +371,12 @@ export function VoiceAgent({ sessionId, clientId, userId, showExamples }: VoiceA
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId }),
     }).catch(() => {});
+    setCallStarted(false);
   }, [sessionId]);
 
   return (
     <div className="flex flex-col gap-6">
-      {sessionId && (
+      {sessionId && callStarted && (
         <div className="flex items-center justify-between rounded-xl bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] px-4 py-3">
           <div className="flex items-center gap-2 text-[12px] font-mono text-[var(--color-text-secondary)]">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
