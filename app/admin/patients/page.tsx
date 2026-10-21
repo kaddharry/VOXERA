@@ -449,11 +449,10 @@ export default function PatientsPage() {
       ) : (
         <div className="flex flex-col gap-3">
           {patients.map((p) => {
-            const calls = callsByPatient[p.id];
             const nextTask = nextFollowUp(p.id);
             const isOpen = (type: PanelType) => openPanel?.patientId === p.id && openPanel.type === type;
             return (
-              <GlassCard key={p.id} className="p-5 relative">
+              <GlassCard key={p.id} className="p-5">
                 <div className="flex items-center gap-4">
                   <div className="w-10 h-10 rounded-full bg-[var(--color-accent-violet)]/15 text-[var(--color-accent-violet)] flex items-center justify-center font-semibold text-[14px] flex-none">
                     {p.name.charAt(0).toUpperCase()}
@@ -534,227 +533,6 @@ export default function PatientsPage() {
                     </>
                   )}
                 </div>
-
-                {openPanel?.patientId === p.id && (
-                  <>
-                    {/* Click-outside-to-close backdrop — invisible, just
-                        catches the click; the popover itself sits above it. */}
-                    <div className="fixed inset-0 z-30" onClick={() => setOpenPanel(null)} />
-                    <div className="absolute left-0 right-0 top-full mt-2 z-40 max-h-[60vh] overflow-y-auto rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)] p-4 shadow-2xl">
-                    {openPanel.type === "docs" && (
-                      <div className="flex flex-col gap-3">
-                    {(() => {
-                      const docs = docsByPatient[p.id];
-                      if (docs === "loading" || docs === undefined) {
-                        return (
-                          <div className="flex justify-center py-6">
-                            <Loader2 className="w-4 h-4 animate-spin text-[var(--color-text-muted)]" />
-                          </div>
-                        );
-                      }
-                      return (
-                        <>
-                          {docs.length === 0 ? (
-                            <p className="text-[12px] text-[var(--color-text-muted)] italic">No documents attached yet.</p>
-                          ) : (
-                            docs.map((doc) => (
-                              <div
-                                key={doc.id}
-                                className="rounded-xl bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] p-3.5 flex items-start justify-between gap-3"
-                              >
-                                <div className="min-w-0">
-                                  <div className="text-[12.5px] font-semibold text-[var(--color-text-primary)] flex items-center gap-1.5 truncate">
-                                    <FileText className="w-3.5 h-3.5 flex-none" /> {doc.filename}
-                                  </div>
-                                  <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">
-                                    {new Date(doc.createdAt).toLocaleDateString()}
-                                  </div>
-                                  <p className="text-[11.5px] text-[var(--color-text-secondary)] mt-1.5 line-clamp-2">
-                                    {doc.extractedText.slice(0, 160)}
-                                  </p>
-                                </div>
-                                <button
-                                  onClick={() => deleteDocument(p.id, doc.id)}
-                                  className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors flex-none"
-                                  aria-label={`Delete ${doc.filename}`}
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            ))
-                          )}
-
-                          {addingDocFor === p.id ? (
-                            <div className="rounded-xl border border-dashed border-[var(--color-border-subtle)] p-3.5 flex flex-col gap-2.5">
-                              <label className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-dashed border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)] cursor-pointer hover:border-[var(--color-accent-violet)]/40 transition-colors">
-                                <Upload className="w-4 h-4 text-[var(--color-text-muted)] flex-none" />
-                                <span className="text-[12px] text-[var(--color-text-muted)] flex-1 min-w-0 truncate">
-                                  {newDocFile ? newDocFile.name : "Click to upload a PDF or text file"}
-                                </span>
-                                <input
-                                  type="file"
-                                  accept=".pdf,.txt,.md"
-                                  className="hidden"
-                                  onChange={(e) => setNewDocFile(e.target.files?.[0] ?? null)}
-                                />
-                              </label>
-                              <textarea
-                                value={newDocText}
-                                onChange={(e) => setNewDocText(e.target.value)}
-                                rows={2}
-                                placeholder="Or paste text directly…"
-                                className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[12.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
-                              />
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => { setAddingDocFor(null); setNewDocFile(null); setNewDocText(""); }}
-                                  className="px-3 py-1.5 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[12px] text-[var(--color-text-secondary)]"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  onClick={() => addDocument(p.id)}
-                                  disabled={savingDoc || (!newDocFile && !newDocText.trim())}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--color-accent-violet)] text-[#0A0C14] text-[12px] font-semibold disabled:opacity-40 transition-all"
-                                >
-                                  {savingDoc && <Loader2 className="w-3 h-3 animate-spin" />} Add
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => setAddingDocFor(p.id)}
-                              className="flex items-center gap-1.5 self-start px-3 py-1.5 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[12px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
-                            >
-                              <Plus className="w-3.5 h-3.5" /> Add document
-                            </button>
-                          )}
-                        </>
-                      );
-                    })()}
-                      </div>
-                    )}
-
-                    {openPanel.type === "history" && (
-                      <div className="flex flex-col gap-3">
-                    {calls === "loading" || calls === undefined ? (
-                      <div className="flex justify-center py-6">
-                        <Loader2 className="w-4 h-4 animate-spin text-[var(--color-text-muted)]" />
-                      </div>
-                    ) : calls.length === 0 ? (
-                      <p className="text-[12px] text-[var(--color-text-muted)] italic py-2">
-                        No calls yet for {p.name}.
-                      </p>
-                    ) : (
-                      calls.map((c) => (
-                        <div
-                          key={c.id}
-                          className="rounded-xl bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] p-3.5"
-                        >
-                          <div className="flex items-center justify-between gap-3 mb-2">
-                            <div className="text-[12px] text-[var(--color-text-secondary)]">
-                              {new Date(c.startedAt).toLocaleString()}
-                              {c.durationMs != null && (
-                                <span className="text-[var(--color-text-muted)]"> · {Math.round(c.durationMs / 1000)}s</span>
-                              )}
-                              <span
-                                className={`ml-2 text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                                  c.status === "completed"
-                                    ? "bg-emerald-500/15 text-emerald-400"
-                                    : c.status === "failed"
-                                      ? "bg-red-500/15 text-red-400"
-                                      : "bg-[#4F46E5]/10 text-[var(--color-text-muted)]"
-                                }`}
-                              >
-                                {c.status}
-                              </span>
-                            </div>
-                            {c.sessionId && (
-                              <Link
-                                href={`/admin/live_dashboard?session=${c.sessionId}`}
-                                className="flex items-center gap-1 text-[11px] font-semibold text-[var(--color-accent-violet)] hover:underline flex-none"
-                              >
-                                Full analysis <ExternalLink className="w-3 h-3" />
-                              </Link>
-                            )}
-                          </div>
-
-                          {c.summary ? (
-                            <div className="flex flex-col gap-1.5">
-                              <p className="text-[12.5px] text-[var(--color-text-primary)] leading-snug">
-                                {c.summary.sentimentTrajectory}
-                              </p>
-                              {c.summary.flaggedConcerns.length > 0 && (
-                                <div className="flex items-start gap-1.5 text-[12px] text-amber-400">
-                                  <ShieldAlert className="w-3.5 h-3.5 flex-none mt-0.5" />
-                                  <span>{c.summary.flaggedConcerns.join("; ")}</span>
-                                </div>
-                              )}
-                              <p className="text-[11.5px] text-[var(--color-text-muted)] italic">
-                                → {c.summary.recommendedAction}
-                              </p>
-                            </div>
-                          ) : (
-                            <p className="text-[11.5px] text-[var(--color-text-muted)] italic">
-                              {c.status === "completed" ? "Summary still generating…" : "No summary — call did not complete."}
-                            </p>
-                          )}
-                        </div>
-                      ))
-                    )}
-                      </div>
-                    )}
-
-                    {openPanel.type === "followups" && (
-                      <div className="flex flex-col gap-3">
-                        {(followUpsByPatient[p.id] ?? []).length === 0 ? (
-                          <p className="text-[12px] text-[var(--color-text-muted)] italic py-2">
-                            No follow-ups scheduled for {p.name}. Use "Schedule" to set one up.
-                          </p>
-                        ) : (
-                          (followUpsByPatient[p.id] ?? [])
-                            .slice()
-                            .sort((a, b) => b.nextAttemptAt - a.nextAttemptAt)
-                            .map((t) => (
-                              <div
-                                key={t.id}
-                                className="rounded-xl bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] p-3.5 flex items-center justify-between gap-3"
-                              >
-                                <div className="min-w-0">
-                                  <p className="text-[12.5px] font-semibold text-[var(--color-text-primary)]">
-                                    {new Date(t.nextAttemptAt).toLocaleString()}
-                                  </p>
-                                  <p className="text-[11.5px] text-[var(--color-text-muted)] mt-0.5">
-                                    {t.status} · attempt {t.attemptCount} of {t.maxAttempts}
-                                    {t.lastOutcome && ` · ${t.lastOutcome}`}
-                                  </p>
-                                </div>
-                                {(t.status === "scheduled" || t.status === "paused") && (
-                                  <div className="flex gap-1.5 flex-none">
-                                    <button
-                                      onClick={() => actOnFollowUp(p.id, t.id, t.status === "scheduled" ? "pause" : "resume")}
-                                      className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)] transition-colors"
-                                      aria-label={t.status === "scheduled" ? "Pause" : "Resume"}
-                                    >
-                                      {t.status === "scheduled" ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-                                    </button>
-                                    <button
-                                      onClick={() => actOnFollowUp(p.id, t.id, "cancel")}
-                                      className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                                      aria-label="Cancel"
-                                    >
-                                      <XCircle className="w-3.5 h-3.5" />
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            ))
-                        )}
-                      </div>
-                    )}
-                    </div>
-                  </>
-                )}
               </GlassCard>
             );
           })}
@@ -948,6 +726,243 @@ export default function PatientsPage() {
           </div>
         </div>
       )}
+
+      {/* Documents / History / Follow-ups modal — a real centered overlay with
+          a backdrop, same pattern as the Call and Schedule modals above,
+          rather than a dropdown anchored to the row's button. An anchored
+          dropdown inside a scrolling list of visually-similar cards read as
+          "still part of the row" instead of a clear popup — this doesn't. */}
+      {openPanel && (() => {
+        const patient = patients?.find((pp) => pp.id === openPanel.patientId);
+        if (!patient) return null;
+        const calls = callsByPatient[patient.id];
+        const panelTitle = openPanel.type === "docs" ? "Documents" : openPanel.type === "history" ? "Call History" : "Follow-ups";
+        return (
+          <div className="fixed inset-0 z-[200] bg-black/50 flex items-center justify-center p-6" onClick={() => setOpenPanel(null)}>
+            <div
+              className="w-full max-w-lg max-h-[80vh] overflow-y-auto bg-[var(--color-bg-elevated)] rounded-2xl border border-[var(--color-border-subtle)] shadow-2xl p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 mb-4">
+                <div>
+                  <h3 className="text-[15px] font-semibold text-[var(--color-text-primary)]">{panelTitle}</h3>
+                  <p className="text-[12.5px] text-[var(--color-text-muted)]">{patient.name}</p>
+                </div>
+                <button
+                  onClick={() => setOpenPanel(null)}
+                  className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)] transition-colors flex-none"
+                  aria-label="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {openPanel.type === "docs" && (
+                <div className="flex flex-col gap-3">
+                  {(() => {
+                    const docs = docsByPatient[patient.id];
+                    if (docs === "loading" || docs === undefined) {
+                      return (
+                        <div className="flex justify-center py-6">
+                          <Loader2 className="w-4 h-4 animate-spin text-[var(--color-text-muted)]" />
+                        </div>
+                      );
+                    }
+                    return (
+                      <>
+                        {docs.length === 0 ? (
+                          <p className="text-[12px] text-[var(--color-text-muted)] italic">No documents attached yet.</p>
+                        ) : (
+                          docs.map((doc) => (
+                            <div
+                              key={doc.id}
+                              className="rounded-xl bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] p-3.5 flex items-start justify-between gap-3"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-[12.5px] font-semibold text-[var(--color-text-primary)] flex items-center gap-1.5 truncate">
+                                  <FileText className="w-3.5 h-3.5 flex-none" /> {doc.filename}
+                                </div>
+                                <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">
+                                  {new Date(doc.createdAt).toLocaleDateString()}
+                                </div>
+                                <p className="text-[11.5px] text-[var(--color-text-secondary)] mt-1.5 line-clamp-2">
+                                  {doc.extractedText.slice(0, 160)}
+                                </p>
+                              </div>
+                              <button
+                                onClick={() => deleteDocument(patient.id, doc.id)}
+                                className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors flex-none"
+                                aria-label={`Delete ${doc.filename}`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))
+                        )}
+
+                        {addingDocFor === patient.id ? (
+                          <div className="rounded-xl border border-dashed border-[var(--color-border-subtle)] p-3.5 flex flex-col gap-2.5">
+                            <label className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg border border-dashed border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] cursor-pointer hover:border-[var(--color-accent-violet)]/40 transition-colors">
+                              <Upload className="w-4 h-4 text-[var(--color-text-muted)] flex-none" />
+                              <span className="text-[12px] text-[var(--color-text-muted)] flex-1 min-w-0 truncate">
+                                {newDocFile ? newDocFile.name : "Click to upload a PDF or text file"}
+                              </span>
+                              <input
+                                type="file"
+                                accept=".pdf,.txt,.md"
+                                className="hidden"
+                                onChange={(e) => setNewDocFile(e.target.files?.[0] ?? null)}
+                              />
+                            </label>
+                            <textarea
+                              value={newDocText}
+                              onChange={(e) => setNewDocText(e.target.value)}
+                              rows={2}
+                              placeholder="Or paste text directly…"
+                              className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[12.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => { setAddingDocFor(null); setNewDocFile(null); setNewDocText(""); }}
+                                className="px-3 py-1.5 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] text-[12px] text-[var(--color-text-secondary)]"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => addDocument(patient.id)}
+                                disabled={savingDoc || (!newDocFile && !newDocText.trim())}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--color-accent-violet)] text-[#0A0C14] text-[12px] font-semibold disabled:opacity-40 transition-all"
+                              >
+                                {savingDoc && <Loader2 className="w-3 h-3 animate-spin" />} Add
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setAddingDocFor(patient.id)}
+                            className="flex items-center gap-1.5 self-start px-3 py-1.5 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] text-[12px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+                          >
+                            <Plus className="w-3.5 h-3.5" /> Add document
+                          </button>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {openPanel.type === "history" && (
+                <div className="flex flex-col gap-3">
+                  {calls === "loading" || calls === undefined ? (
+                    <div className="flex justify-center py-6">
+                      <Loader2 className="w-4 h-4 animate-spin text-[var(--color-text-muted)]" />
+                    </div>
+                  ) : calls.length === 0 ? (
+                    <p className="text-[12px] text-[var(--color-text-muted)] italic py-2">No calls yet for {patient.name}.</p>
+                  ) : (
+                    calls.map((c) => (
+                      <div key={c.id} className="rounded-xl bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] p-3.5">
+                        <div className="flex items-center justify-between gap-3 mb-2">
+                          <div className="text-[12px] text-[var(--color-text-secondary)]">
+                            {new Date(c.startedAt).toLocaleString()}
+                            {c.durationMs != null && (
+                              <span className="text-[var(--color-text-muted)]"> · {Math.round(c.durationMs / 1000)}s</span>
+                            )}
+                            <span
+                              className={`ml-2 text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                                c.status === "completed"
+                                  ? "bg-emerald-500/15 text-emerald-400"
+                                  : c.status === "failed"
+                                    ? "bg-red-500/15 text-red-400"
+                                    : "bg-[#4F46E5]/10 text-[var(--color-text-muted)]"
+                              }`}
+                            >
+                              {c.status}
+                            </span>
+                          </div>
+                          {c.sessionId && (
+                            <Link
+                              href={`/admin/live_dashboard?session=${c.sessionId}`}
+                              className="flex items-center gap-1 text-[11px] font-semibold text-[var(--color-accent-violet)] hover:underline flex-none"
+                            >
+                              Full analysis <ExternalLink className="w-3 h-3" />
+                            </Link>
+                          )}
+                        </div>
+
+                        {c.summary ? (
+                          <div className="flex flex-col gap-1.5">
+                            <p className="text-[12.5px] text-[var(--color-text-primary)] leading-snug">{c.summary.sentimentTrajectory}</p>
+                            {c.summary.flaggedConcerns.length > 0 && (
+                              <div className="flex items-start gap-1.5 text-[12px] text-amber-400">
+                                <ShieldAlert className="w-3.5 h-3.5 flex-none mt-0.5" />
+                                <span>{c.summary.flaggedConcerns.join("; ")}</span>
+                              </div>
+                            )}
+                            <p className="text-[11.5px] text-[var(--color-text-muted)] italic">→ {c.summary.recommendedAction}</p>
+                          </div>
+                        ) : (
+                          <p className="text-[11.5px] text-[var(--color-text-muted)] italic">
+                            {c.status === "completed" ? "Summary still generating…" : "No summary — call did not complete."}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {openPanel.type === "followups" && (
+                <div className="flex flex-col gap-3">
+                  {(followUpsByPatient[patient.id] ?? []).length === 0 ? (
+                    <p className="text-[12px] text-[var(--color-text-muted)] italic py-2">
+                      No follow-ups scheduled for {patient.name}. Use &ldquo;Schedule&rdquo; to set one up.
+                    </p>
+                  ) : (
+                    (followUpsByPatient[patient.id] ?? [])
+                      .slice()
+                      .sort((a, b) => b.nextAttemptAt - a.nextAttemptAt)
+                      .map((t) => (
+                        <div
+                          key={t.id}
+                          className="rounded-xl bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] p-3.5 flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-[12.5px] font-semibold text-[var(--color-text-primary)]">
+                              {new Date(t.nextAttemptAt).toLocaleString()}
+                            </p>
+                            <p className="text-[11.5px] text-[var(--color-text-muted)] mt-0.5">
+                              {t.status} · attempt {t.attemptCount} of {t.maxAttempts}
+                              {t.lastOutcome && ` · ${t.lastOutcome}`}
+                            </p>
+                          </div>
+                          {(t.status === "scheduled" || t.status === "paused") && (
+                            <div className="flex gap-1.5 flex-none">
+                              <button
+                                onClick={() => actOnFollowUp(patient.id, t.id, t.status === "scheduled" ? "pause" : "resume")}
+                                className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors"
+                                aria-label={t.status === "scheduled" ? "Pause" : "Resume"}
+                              >
+                                {t.status === "scheduled" ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                              </button>
+                              <button
+                                onClick={() => actOnFollowUp(patient.id, t.id, "cancel")}
+                                className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                aria-label="Cancel"
+                              >
+                                <XCircle className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
