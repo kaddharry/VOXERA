@@ -90,12 +90,46 @@ export default function PatientProfilePage() {
   const [calls, setCalls] = useState<PatientCall[] | null>(null);
   const [alerts, setAlerts] = useState<Alert[] | null>(null);
 
+  // Every fetch here needs its own .catch() — without one, a failed
+  // request (network blip, a non-JSON error response, anything) leaves
+  // that tab's state at `null` forever, which renders as a spinner that
+  // never stops instead of an actual empty/error state.
   useEffect(() => {
-    fetch(`/api/admin/patients/${id}`).then((r) => r.json()).then((d) => setPatient(d.patient ?? null));
-    fetch(`/api/admin/patients/${id}/documents`).then((r) => r.json()).then((d) => setDocuments(d.documents ?? []));
-    fetch(`/api/admin/patients/${id}/follow-ups`).then((r) => r.json()).then((d) => setTasks(d.tasks ?? []));
-    fetch(`/api/admin/patients/${id}/calls`).then((r) => r.json()).then((d) => setCalls(d.calls ?? []));
-    fetch(`/api/alerts?status=all&patientId=${id}`).then((r) => r.json()).then((d) => setAlerts(d.alerts ?? []));
+    fetch(`/api/admin/patients/${id}`)
+      .then((r) => r.json())
+      .then((d) => setPatient(d.patient ?? null))
+      .catch((e) => {
+        console.error("[PatientProfilePage] Failed to load patient:", e);
+        setPatient(null);
+      });
+    fetch(`/api/admin/patients/${id}/documents`)
+      .then((r) => r.json())
+      .then((d) => setDocuments(d.documents ?? []))
+      .catch((e) => {
+        console.error("[PatientProfilePage] Failed to load documents:", e);
+        setDocuments([]);
+      });
+    fetch(`/api/admin/patients/${id}/follow-ups`)
+      .then((r) => r.json())
+      .then((d) => setTasks(d.tasks ?? []))
+      .catch((e) => {
+        console.error("[PatientProfilePage] Failed to load follow-ups:", e);
+        setTasks([]);
+      });
+    fetch(`/api/admin/patients/${id}/calls`)
+      .then((r) => r.json())
+      .then((d) => setCalls(d.calls ?? []))
+      .catch((e) => {
+        console.error("[PatientProfilePage] Failed to load calls:", e);
+        setCalls([]);
+      });
+    fetch(`/api/alerts?status=all&patientId=${id}`)
+      .then((r) => r.json())
+      .then((d) => setAlerts(d.alerts ?? []))
+      .catch((e) => {
+        console.error("[PatientProfilePage] Failed to load alerts:", e);
+        setAlerts([]);
+      });
   }, [id]);
 
   async function toggleDoNotContact(value: boolean) {
