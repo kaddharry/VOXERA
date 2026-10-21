@@ -33,9 +33,13 @@ export async function GET(
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Full row (not just an ownership-check id) — the Sessions admin page
+  // uses this to show which patient the call belongs to and surface the
+  // post-call clinical summary (lib/agent/call-summary.ts) alongside the
+  // raw event log, instead of an opaque session id with no context.
   const { data: call } = await supabase
     .from("call_logs")
-    .select("id")
+    .select('id, "sessionId", "patientId", "callerNumber", status, "startedAt", "endedAt", "durationMs", summary')
     .eq("sessionId", sessionId)
     .eq("clientId", user.id)
     .maybeSingle();
@@ -45,5 +49,5 @@ export async function GET(
   }
 
   const events = await getSessionLog(sessionId);
-  return Response.json({ sessionId, eventCount: events.length, events });
+  return Response.json({ sessionId, eventCount: events.length, events, call });
 }

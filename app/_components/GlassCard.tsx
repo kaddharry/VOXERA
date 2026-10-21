@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 export function GlassCard({ className = "", children }: { className?: string; children: ReactNode }) {
   return (
     <div
-      className={`bg-white/70 backdrop-blur-xl rounded-2xl border border-[var(--vx-indigo,#4F46E5)]/10 shadow-[0_8px_32px_rgba(79,70,229,0.10)] hover:border-[var(--vx-indigo,#4F46E5)]/25 transition-colors ${className}`}
+      className={`bg-[var(--color-bg-surface)]/80 backdrop-blur-xl rounded-2xl border border-[var(--color-border-subtle)] shadow-[0_8px_32px_rgba(0,0,0,0.12)] hover:border-[var(--color-border-active)] transition-colors ${className}`}
     >
       {children}
     </div>

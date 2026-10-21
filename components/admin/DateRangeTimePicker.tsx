@@ -130,7 +130,7 @@ export function DateRangeTimePicker({ value, onChange }: { value: DateSelectionV
   return (
     <div className="flex flex-col gap-4">
       {/* Month grid */}
-      <div className="rounded-xl border border-[var(--color-border-subtle)] bg-white p-3.5">
+      <div className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)] p-3.5">
         <div className="flex items-center justify-between mb-3">
           <button
             type="button"
@@ -208,7 +208,7 @@ export function DateRangeTimePicker({ value, onChange }: { value: DateSelectionV
             <button
               type="button"
               onClick={() => setTimeMode("keyboard")}
-              className={`p-1.5 rounded-md transition-colors ${timeMode === "keyboard" ? "bg-white shadow-sm text-[var(--color-accent-violet)]" : "text-[var(--color-text-muted)]"}`}
+              className={`p-1.5 rounded-md transition-colors ${timeMode === "keyboard" ? "bg-[var(--color-bg-elevated)] shadow-sm text-[var(--color-accent-violet)]" : "text-[var(--color-text-muted)]"}`}
               aria-label="Type the time"
               title="Type the time"
             >
@@ -217,7 +217,7 @@ export function DateRangeTimePicker({ value, onChange }: { value: DateSelectionV
             <button
               type="button"
               onClick={() => setTimeMode("clock")}
-              className={`p-1.5 rounded-md transition-colors ${timeMode === "clock" ? "bg-white shadow-sm text-[var(--color-accent-violet)]" : "text-[var(--color-text-muted)]"}`}
+              className={`p-1.5 rounded-md transition-colors ${timeMode === "clock" ? "bg-[var(--color-bg-elevated)] shadow-sm text-[var(--color-accent-violet)]" : "text-[var(--color-text-muted)]"}`}
               aria-label="Set the time on a clock"
               title="Set the time on a clock"
             >
@@ -248,7 +248,7 @@ function KeyboardTimeInput({ value, onChange }: { value: DateSelectionValue; onC
           const n = Number(e.target.value);
           if (Number.isFinite(n)) onChange({ ...value, hour12: Math.min(12, Math.max(1, n)) });
         }}
-        className="w-[72px] bg-white border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[16px] text-center tabular-nums text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+        className="w-[72px] bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[16px] text-center tabular-nums text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
       />
       <span className="text-[16px] text-[var(--color-text-muted)]">:</span>
       <input
@@ -260,9 +260,9 @@ function KeyboardTimeInput({ value, onChange }: { value: DateSelectionValue; onC
           const n = Number(e.target.value);
           if (Number.isFinite(n)) onChange({ ...value, minute: Math.min(59, Math.max(0, n)) });
         }}
-        className="w-[72px] bg-white border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[16px] text-center tabular-nums text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+        className="w-[72px] bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[16px] text-center tabular-nums text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
       />
-      <div className="flex gap-1 ml-1 p-1 rounded-lg bg-white border border-[var(--color-border-subtle)]">
+      <div className="flex gap-1 ml-1 p-1 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)]">
         {(["AM", "PM"] as const).map((mer) => (
           <button
             key={mer}
@@ -363,7 +363,7 @@ function AnalogClockInput({ value, onChange }: { value: DateSelectionValue; onCh
         >
           {String(value.minute).padStart(2, "0")}
         </button>
-        <div className="flex gap-1 ml-2 p-1 rounded-lg bg-white border border-[var(--color-border-subtle)]">
+        <div className="flex gap-1 ml-2 p-1 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)]">
           {(["AM", "PM"] as const).map((mer) => (
             <button
               key={mer}
@@ -387,7 +387,7 @@ function AnalogClockInput({ value, onChange }: { value: DateSelectionValue; onCh
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
       >
-        <circle cx={CLOCK_CENTER} cy={CLOCK_CENTER} r={CLOCK_RADIUS + 10} fill="white" stroke="var(--color-border-subtle)" />
+        <circle cx={CLOCK_CENTER} cy={CLOCK_CENTER} r={CLOCK_RADIUS + 10} fill="var(--color-bg-elevated)" stroke="var(--color-border-subtle)" />
         {(hand === "hour" ? Array.from({ length: 12 }, (_, i) => i + 1) : [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]).map((n) => {
           const deg = hand === "hour" ? hourToAngle(n === 12 ? 12 : n) : minuteToAngle(n);
           const lx = CLOCK_CENTER + CLOCK_RADIUS * Math.sin((deg * Math.PI) / 180);

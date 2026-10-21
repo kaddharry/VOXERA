@@ -1,7 +1,17 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { Check, Upload, Sparkles, MessageSquare, Phone, Volume2, Calendar, PhoneCall, Trash2, Bot } from "lucide-react";
+import { Check, Upload, Sparkles, MessageSquare, Phone, Volume2, Calendar, PhoneCall, Trash2, Bot, Settings2 } from "lucide-react";
+
+const SETTINGS_TABS = [
+  { id: "general", label: "General", icon: Settings2 },
+  { id: "phone", label: "Phone Numbers", icon: PhoneCall },
+  { id: "voice", label: "Voice & Cloning", icon: Volume2 },
+  { id: "integrations", label: "Integrations", icon: Calendar },
+  { id: "recovery", label: "Customer Recovery", icon: Phone },
+] as const;
+
+type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
 
 interface PhoneNumberRow {
   id: number;
@@ -53,6 +63,8 @@ export default function SettingsPage() {
   const [newLabel, setNewLabel] = useState("");
   const [addingNumber, setAddingNumber] = useState(false);
   const [addNumberError, setAddNumberError] = useState<string | null>(null);
+
+  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -263,20 +275,64 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="p-6 md:p-10 font-body min-h-screen">
-      <header className="mb-10">
-        <h1 className="font-display text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)]">Settings</h1>
-        <p className="text-[15px] text-[var(--color-text-secondary)] mt-2">
+    <div className="flex h-full flex-col font-body">
+      <header className="flex-none border-b border-[var(--color-border-subtle)] px-6 py-5 md:px-10">
+        <h1 className="text-2xl font-semibold tracking-tight text-[var(--color-text-primary)]">Settings</h1>
+        <p className="mt-1 text-[13.5px] text-[var(--color-text-secondary)]">
           Configure your AI receptionist's voice, greetings, integrations, and customer recovery triggers.
         </p>
       </header>
 
-      <div className="max-w-3xl space-y-8">
+      <div className="flex min-h-0 flex-1">
+        {/* Category sub-nav — grouping these five sections into tabs instead
+            of one long stacked scroll, same pattern as the main sidebar. */}
+        <nav className="hidden w-56 flex-none space-y-1 border-r border-[var(--color-border-subtle)] p-4 md:block">
+          {SETTINGS_TABS.map((tab) => {
+            const isActive = tab.id === activeTab;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[13.5px] font-medium transition-colors ${
+                  isActive
+                    ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
+                    : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]/60 hover:text-[var(--color-text-primary)]"
+                }`}
+              >
+                <tab.icon className="size-4 flex-none" />
+                <span className="truncate">{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Mobile: the same tabs as a horizontal scrollable strip instead of
+            a sidebar. */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="flex gap-1.5 overflow-x-auto border-b border-[var(--color-border-subtle)] px-4 py-3 md:hidden">
+            {SETTINGS_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors ${
+                  tab.id === activeTab
+                    ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
+                    : "text-[var(--color-text-secondary)]"
+                }`}
+              >
+                <tab.icon className="size-3.5" />
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="max-w-2xl p-6 md:p-8">
         {/* Custom Greeting Section */}
+        {activeTab === "general" && (
         <section className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 md:p-8 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
           <div className="flex items-center gap-3 mb-4">
             <MessageSquare className="w-5 h-5 text-[var(--color-accent-cyan)]" />
-            <h2 className="text-[14px] font-mono font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Custom Greeting</h2>
+            <h2 className="text-[14px] font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Custom Greeting</h2>
           </div>
           <p className="text-[14px] text-[var(--color-text-muted)] mb-4">
             Specify the initial welcome message your AI receptionist will say when answering inbound calls.
@@ -289,12 +345,14 @@ export default function SettingsPage() {
             placeholder="Welcome to Hotel Paradise. How may I assist you today?"
           />
         </section>
+        )}
 
         {/* Phone Numbers / Default Inbound Agent Section */}
+        {activeTab === "phone" && (
         <section className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 md:p-8 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
           <div className="flex items-center gap-3 mb-4">
             <PhoneCall className="w-5 h-5 text-[var(--color-accent-cyan)]" />
-            <h2 className="text-[14px] font-mono font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Phone Numbers & Inbound Routing</h2>
+            <h2 className="text-[14px] font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Phone Numbers & Inbound Routing</h2>
           </div>
           <p className="text-[14px] text-[var(--color-text-muted)] mb-6">
             Register the Twilio numbers that route to this workspace, and choose which agent answers each one.
@@ -380,12 +438,14 @@ export default function SettingsPage() {
             </div>
           )}
         </section>
+        )}
 
         {/* Voice Persona Section */}
+        {activeTab === "voice" && (
         <section className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 md:p-8 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
           <div className="flex items-center gap-3 mb-4">
             <Volume2 className="w-5 h-5 text-[var(--color-accent-cyan)]" />
-            <h2 className="text-[14px] font-mono font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Voice Persona & Cloning</h2>
+            <h2 className="text-[14px] font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Voice Persona & Cloning</h2>
           </div>
           <p className="text-[14px] text-[var(--color-text-muted)] mb-6">
             Choose a default voice persona or upload a custom audio sample to clone a branded voice.
@@ -496,12 +556,14 @@ export default function SettingsPage() {
             </div>
           </div>
         </section>
+        )}
 
         {/* Google Calendar Integration Section (Issue #12) */}
+        {activeTab === "integrations" && (
         <section className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 md:p-8 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
           <div className="flex items-center gap-3 mb-4">
             <Calendar className="w-5 h-5 text-[var(--color-accent-cyan)]" />
-            <h2 className="text-[14px] font-mono font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Google Calendar Integration</h2>
+            <h2 className="text-[14px] font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Google Calendar Integration</h2>
           </div>
           <p className="text-[14px] text-[var(--color-text-muted)] mb-6">
             Configure tenant-specific Google Service Account credentials to synchronize reservations directly to your calendar. Credentials are securely encrypted at rest.
@@ -542,13 +604,15 @@ export default function SettingsPage() {
             </div>
           </div>
         </section>
+        )}
 
         {/* Customer Recovery Section */}
+        {activeTab === "recovery" && (
         <section className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 md:p-8 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <Phone className="w-5 h-5 text-[var(--color-accent-cyan)]" />
-              <h2 className="text-[14px] font-mono font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Customer Recovery</h2>
+              <h2 className="text-[14px] font-bold uppercase tracking-widest text-[var(--color-text-primary)]">Customer Recovery</h2>
             </div>
             
             <button
@@ -596,21 +660,26 @@ export default function SettingsPage() {
             </div>
           </div>
         </section>
-
-        {/* Global Save */}
-        <div className="flex items-center gap-4 pt-4">
-          <button
-            onClick={handleSaveSettings}
-            className="px-6 py-2.5 text-[14px] font-semibold text-white btn-gradient rounded-xl transition-all hover:scale-[1.02] shadow-[0_0_15px_var(--color-accent-glow)]"
-          >
-            Save Settings
-          </button>
-          {saved && (
-            <span className="flex items-center gap-1 text-[13px] text-emerald-400 font-medium font-mono">
-              <Check className="w-4 h-4" /> Settings saved successfully
-            </span>
-          )}
+        )}
+          </div>
         </div>
+      </div>
+
+      {/* Global Save — sticky across every tab, since one click saves the
+          greeting, calendar credentials and recovery template together
+          regardless of which category is currently showing. */}
+      <div className="flex flex-none items-center gap-4 border-t border-[var(--color-border-subtle)] px-6 py-4 md:px-10">
+        <button
+          onClick={handleSaveSettings}
+          className="px-6 py-2.5 text-[14px] font-semibold text-white btn-gradient rounded-xl transition-all hover:scale-[1.02] shadow-[0_0_15px_var(--color-accent-glow)]"
+        >
+          Save Settings
+        </button>
+        {saved && (
+          <span className="flex items-center gap-1 text-[13px] text-emerald-400 font-medium font-mono">
+            <Check className="w-4 h-4" /> Settings saved successfully
+          </span>
+        )}
       </div>
     </div>
   );

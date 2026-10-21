@@ -51,9 +51,17 @@ html {
    rubber-band scrolling flashes the light html/body background behind it,
    since body's own background resolves from --color-bg-base at body's scope
    (light), one level above where these classes redefine that token. */
-html:has(.voxera-demo-dark, .voxera-admin-dark),
-body:has(.voxera-demo-dark, .voxera-admin-dark) {
+html:has(.voxera-demo-dark),
+body:has(.voxera-demo-dark) {
   background-color: var(--console-bg);
+}
+
+/* The admin platform's dark theme is a literal black, not the shared
+   (light) --console-bg default — that token only resolves dark inside
+   .voxera-admin-dark itself, which html/body sit outside of. */
+html:has(.voxera-admin-dark),
+body:has(.voxera-admin-dark) {
+  background-color: #000000;
 }
 
 /* Voxera brand ramp, lifted from the logo mark: deep indigo on the left
@@ -357,20 +365,56 @@ body:has(.voxera-demo-dark, .voxera-admin-dark) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   ADMIN PLATFORM — same light glass register as everywhere else now.
+   ADMIN PLATFORM — true-black dashboard theme (shadcn/TanStack "Vercel" dark
+   preset: oklch(0 0 0) page background, oklch(0.14 0 0) card surfaces),
+   cloned from https://github.com/Kiranism/tanstack-start-dashboard so the
+   whole admin shell (sidebar, header, every GlassCard panel) reads as one
+   flat-black instrument panel instead of the site's light glass register.
+   Every admin component already reads color through these --color-* tokens,
+   so this one block re-themes the whole platform at once.
    ════════════════════════════════════════════════════════════════════════════ */
 .voxera-admin-dark {
-  color-scheme: light;
-  --color-bg-base:     var(--console-bg);
-  --color-bg-surface:  var(--console-surface);
-  --color-bg-elevated: var(--console-surface-raised);
-  --color-text-primary:   var(--console-text);
-  --color-text-secondary: var(--console-text-dim);
-  --color-text-muted:     #8A8AB0;
-  --color-border-subtle: var(--console-border);
-  --color-border-active: var(--console-border-active);
-  --color-accent-violet: var(--console-violet);
-  --color-accent-cyan:   var(--console-cyan);
+  color-scheme: dark;
+  --color-bg-base:     #000000;
+  --color-bg-surface:  #171717;
+  --color-bg-elevated: #242424;
+  --color-text-primary:   #FFFFFF;
+  --color-text-secondary: #B8B8B8;
+  --color-text-muted:     #8A8A8A;
+  --color-border-subtle: rgba(255, 255, 255, 0.1);
+  --color-border-active: rgba(255, 255, 255, 0.18);
+  --color-accent-violet: #A78BFA;
+  --color-accent-cyan:   #60A5FA;
+  /* Chart palette — orange + blue, matching the reference dashboard's bar,
+     area and pie charts. */
+  --chart-1: #FF8A4C;
+  --chart-2: #3B82F6;
+  --chart-3: #9CA3AF;
+  --chart-4: #52525B;
+  --chart-5: #E5E7EB;
+  --sidebar: #0D0D0D;
+  /* The site-wide serif "display" font (Lora) is a landing-page brand
+     choice that reads as a mismatch against this flat-black instrument
+     panel — every "font-display" heading across the admin platform
+     (Dashboard, Settings, Agents, etc.) switches to the clean sans body
+     face instead, matching the reference dashboard's type system. */
+  --font-display: var(--font-body);
+
+  /* The "Live Calls" console (and anything else still reading the older
+     --console-* tokens directly — EngineDashboard, VoiceOrb, the Test Agent
+     drawer) didn't follow the --color-* re-theme above because it's a
+     separate token set. Overriding it here too means every one of those
+     surfaces goes dark the same way, instead of staying stuck on the
+     site-wide light glass palette. */
+  --console-bg: #000000;
+  --console-surface: #171717;
+  --console-surface-raised: #242424;
+  --console-border: rgba(255, 255, 255, 0.1);
+  --console-border-active: rgba(255, 255, 255, 0.18);
+  --console-text: #FFFFFF;
+  --console-text-dim: #B8B8B8;
+  --console-violet: #A78BFA;
+  --console-cyan: #60A5FA;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -566,11 +610,11 @@ body {
   gap: 4px;
   padding: 6px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(10, 10, 10, 0.6);
   backdrop-filter: blur(22px) saturate(160%);
   -webkit-backdrop-filter: blur(22px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 8px 32px rgba(79, 70, 229, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
   transition: box-shadow 0.3s ease, background 0.3s ease;
 }
 
@@ -579,8 +623,8 @@ body {
 
 .vxl-nav-left.vxl-nav-scrolled,
 .vxl-nav-right.vxl-nav-scrolled {
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 10px 36px rgba(79, 70, 229, 0.16);
+  background: rgba(0, 0, 0, 0.82);
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.45);
 }
 
 .vxl-logo {
@@ -592,7 +636,8 @@ body {
   width: 40px;
   height: 40px;
   border-radius: 9999px;
-  background: #fff;
+  background: #171717;
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 .vxl-logo-mark { width: 22px; height: 22px; object-fit: contain; display: block; }
 
@@ -602,26 +647,38 @@ body {
   border-radius: 9999px;
   font-size: 14px;
   font-weight: 500;
-  color: #3A3A55;
+  color: rgba(255, 255, 255, 0.72);
   text-decoration: none;
   transition: background 0.2s ease, color 0.2s ease;
   white-space: nowrap;
 }
-.vxl-nav-link:hover { background: rgba(79, 70, 229, 0.08); color: #0D0D1A; }
+.vxl-nav-link:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+
+.vxl-nav-login {
+  padding: 10px 16px;
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.vxl-nav-login:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
 
 .vxl-nav-cta {
   padding: 10px 18px;
   border-radius: 9999px;
   font-size: 14px;
   font-weight: 600;
-  color: #fff;
-  background: linear-gradient(135deg, var(--vx-indigo-deep), var(--vx-indigo));
+  color: #0D0D0D;
+  background: #A78BFA;
   text-decoration: none;
   white-space: nowrap;
-  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.3);
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
+  box-shadow: 0 4px 14px rgba(167, 139, 250, 0.25);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, background 0.2s ease;
 }
-.vxl-nav-cta:hover { box-shadow: 0 6px 20px rgba(79, 70, 229, 0.4); transform: translateY(-1px); }
+.vxl-nav-cta:hover { background: #BBA6FB; box-shadow: 0 6px 20px rgba(167, 139, 250, 0.35); transform: translateY(-1px); }
 
 .vxl-nav-burger {
   display: none;
@@ -631,8 +688,8 @@ body {
   height: 36px;
   border-radius: 9999px;
   border: none;
-  background: rgba(79, 70, 229, 0.08);
-  color: #0D0D1A;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -649,22 +706,22 @@ body {
   gap: 2px;
   padding: 10px 14px 16px;
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(10, 10, 10, 0.92);
   backdrop-filter: blur(22px);
   -webkit-backdrop-filter: blur(22px);
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 12px 40px rgba(79, 70, 229, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
 
 .vxl-nav-mobile-link {
   font-size: 15px;
   font-weight: 500;
-  color: #3A3A55;
+  color: rgba(255, 255, 255, 0.72);
   text-decoration: none;
   padding: 13px 10px;
-  border-bottom: 1px solid rgba(79, 70, 229, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-.vxl-nav-mobile-link:hover { color: #0D0D1A; }
+.vxl-nav-mobile-link:hover { color: #fff; }
 .vxl-nav-mobile-cta { margin-top: 12px; text-align: center; justify-content: center; }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -682,9 +739,9 @@ body {
   min-height: 620px;
   overflow: hidden;
   background:
-    radial-gradient(ellipse 70% 60% at 18% 12%, rgba(255,255,255,0.22), transparent 55%),
-    radial-gradient(ellipse 60% 55% at 85% 90%, rgba(199,187,250,0.55), transparent 60%),
-    linear-gradient(135deg, var(--vx-indigo-deep) 0%, var(--vx-indigo) 42%, var(--vx-violet) 72%, var(--vx-lavender) 100%);
+    radial-gradient(ellipse 70% 60% at 18% 12%, rgba(167,139,250,0.16), transparent 55%),
+    radial-gradient(ellipse 60% 55% at 85% 90%, rgba(96,165,250,0.14), transparent 60%),
+    linear-gradient(135deg, #000000 0%, #0D0D0D 45%, #171717 100%);
 }
 
 .vxl-hero-video {
@@ -700,7 +757,7 @@ body {
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: linear-gradient(to bottom, rgba(12, 9, 38, 0.15) 0%, rgba(20, 14, 56, 0.42) 55%, rgba(16, 11, 48, 0.68) 100%);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.5) 55%, rgba(0, 0, 0, 0.72) 100%);
 }
 
 .vxl-hero-orbs { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
@@ -738,7 +795,7 @@ body {
   letter-spacing: -0.02em;
 }
 .landing .vxl-hero-h1 em,
-.landing .vxl-hero-h1 .vxl-accent { color: #DAD3FB; font-style: italic; }
+.landing .vxl-hero-h1 .vxl-accent { color: #A78BFA; font-style: italic; }
 
 .landing .vxl-hero-sub {
   font-size: 16px;
@@ -798,12 +855,12 @@ body {
 .vxl-hero-cta-glass {
   display: flex;
   gap: 8px;
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(10, 10, 10, 0.55);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-radius: 9999px;
   padding: 6px 6px 6px 22px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   width: 100%;
   max-width: 380px;
 }
@@ -821,16 +878,12 @@ body {
   font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
-  /* The pill it sits in (.vxl-hero-cta-glass) is a light frosted-white
-     surface, not the dark hero background behind it — white text here
-     was invisible (confirmed on a real mobile screenshot), same mistake
-     this file's own comment two rules up warns about for the headline. */
-  color: var(--vx-indigo-deep);
+  color: rgba(255, 255, 255, 0.85);
   border-radius: 9999px;
   background: transparent;
   transition: background 0.2s ease;
 }
-.vxl-hero-secondary-btn:hover { background: rgba(79, 70, 229, 0.08); }
+.vxl-hero-secondary-btn:hover { background: rgba(255, 255, 255, 0.1); }
 
 .vxl-hero-input {
   flex: 1;
@@ -852,11 +905,11 @@ body {
   cursor: pointer;
   border: none;
   border-radius: 9999px;
-  background: #fff;
-  color: var(--vx-indigo-deep);
-  transition: transform 0.2s ease;
+  background: #A78BFA;
+  color: #0D0D0D;
+  transition: transform 0.2s ease, background 0.2s ease;
 }
-.vxl-hero-input-btn:hover { transform: translateY(-1px); }
+.vxl-hero-input-btn:hover { background: #BBA6FB; transform: translateY(-1px); }
 
 /* ════════════════════════════════════════════════════════════════════════════
    FEATURES — "How VOXERA works", a static 3-card grid (glass mockup panels

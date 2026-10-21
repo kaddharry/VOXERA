@@ -50,6 +50,9 @@ export default function Nav() {
       </nav>
 
       <div className={`vxl-nav-right ${scrolledCls}`}>
+        <Link href="/login" className="vxl-nav-login">
+          Log in
+        </Link>
         <Link href="/book-demo" className="vxl-nav-cta">
           Book a demo
         </Link>

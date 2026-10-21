@@ -640,7 +640,7 @@ export default function PatientsPage() {
       {/* Agent-selection modal — always prompted, every time */}
       {callTarget && (
         <div className="fixed inset-0 z-[200] bg-black/50 flex items-center justify-center p-6">
-          <div className="p-6 w-full max-w-sm bg-white rounded-2xl border border-[var(--color-border-subtle)] shadow-2xl">
+          <div className="p-6 w-full max-w-sm bg-[var(--color-bg-elevated)] rounded-2xl border border-[var(--color-border-subtle)] shadow-2xl">
             <h3 className="text-[15px] font-semibold text-[var(--color-text-primary)] mb-1">Call {callTarget.name}</h3>
             <p className="text-[12px] text-[var(--color-text-muted)] mb-4">{callTarget.phone}</p>
             <label className="text-[11px] font-mono uppercase tracking-widest text-[var(--color-text-muted)] mb-1.5 block">Agent</label>
@@ -678,7 +678,7 @@ export default function PatientsPage() {
       {/* Schedule-a-follow-up modal */}
       {scheduleTarget && (
         <div className="fixed inset-0 z-[200] bg-black/50 flex items-center justify-center p-6">
-          <div className="p-6 w-full max-w-md max-h-[88vh] overflow-y-auto bg-white rounded-2xl border border-[var(--color-border-subtle)] shadow-2xl">
+          <div className="p-6 w-full max-w-md max-h-[88vh] overflow-y-auto bg-[var(--color-bg-elevated)] rounded-2xl border border-[var(--color-border-subtle)] shadow-2xl">
             <h3 className="text-[17px] font-semibold text-[var(--color-text-primary)] mb-1">Schedule a follow-up for {scheduleTarget.name}</h3>
             <p className="text-[13.5px] text-[var(--color-text-muted)] mb-4">{scheduleTarget.phone}</p>
 

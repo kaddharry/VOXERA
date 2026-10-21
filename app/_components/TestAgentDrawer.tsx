@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { Radio, X, Phone, PhoneOff, Sparkles, ChevronDown, Database, ListTree, AlertTriangle, CheckCircle2, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
 import { getMicSupport, describeMicError } from "./micUtils";
 import { useVoiceActivityDetection } from "./useVoiceActivityDetection";
@@ -844,12 +845,19 @@ export function TestAgentDrawer() {
   );
   const isViewingLatest = !selectedTurn || selectedTurn.id === latestAssistantTurn?.id;
 
+  // Dark-instrument-panel reads right on the black admin dashboard but
+  // would clash with the light marketing site this same floating widget
+  // also appears on — so it only inverts to dark on /admin routes, reusing
+  // the exact same --console-* overrides the admin shell defines.
+  const pathname = usePathname();
+  const adminDark = pathname?.startsWith("/admin") ? "voxera-admin-dark" : "";
+
   return (
     <>
       <button
         onClick={() => setOpen((o) => !o)}
         aria-label={open ? "Close agent test panel" : "Talk to the agent"}
-        className="fixed bottom-6 right-6 z-[110] flex items-center gap-2.5 pl-4 pr-5 py-3.5 rounded-full bg-[var(--console-bg)] border border-[var(--console-border-active)] text-[var(--console-text)] shadow-[0_10px_40px_-8px_rgba(139,92,246,0.55)] hover:shadow-[0_14px_50px_-8px_rgba(139,92,246,0.7)] transition-shadow"
+        className={`${adminDark} fixed bottom-6 right-6 z-[110] flex items-center gap-2.5 pl-4 pr-5 py-3.5 rounded-full bg-[var(--console-bg)] border border-[var(--console-border-active)] text-[var(--console-text)] shadow-[0_10px_40px_-8px_rgba(139,92,246,0.55)] hover:shadow-[0_14px_50px_-8px_rgba(139,92,246,0.7)] transition-shadow`}
       >
         {open ? <X className="w-4 h-4" /> : <Radio className="w-4 h-4 text-[var(--console-violet)]" />}
         <span className="text-[13px] font-semibold">{open ? "Close" : "Talk to the agent"}</span>
@@ -857,7 +865,7 @@ export function TestAgentDrawer() {
       </button>
 
       <div
-        className={`fixed inset-y-0 right-0 z-[105] w-full sm:w-[820px] xl:w-[960px] max-w-full voxera-console border-l border-[var(--console-border)] shadow-[-20px_0_60px_-15px_rgba(10,12,20,0.6)] transition-transform duration-300 ease-out flex flex-col ${
+        className={`${adminDark} fixed inset-y-0 right-0 z-[105] w-full sm:w-[820px] xl:w-[960px] max-w-full voxera-console border-l border-[var(--console-border)] shadow-[-20px_0_60px_-15px_rgba(10,12,20,0.6)] transition-transform duration-300 ease-out flex flex-col ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >
