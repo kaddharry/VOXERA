@@ -138,53 +138,57 @@ export default function PatientProfilePage() {
 
   if (!patient) {
     return (
-      <div className="p-6 md:p-10 flex justify-center">
+      <div className="flex h-full items-center justify-center">
         <Loader2 className="w-5 h-5 animate-spin text-[var(--color-text-muted)]" />
       </div>
     );
   }
 
   return (
-    <div className="p-6 md:p-10 font-body max-w-5xl mx-auto">
-      <Link href="/admin/patients" className="inline-flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors mb-6">
-        <ArrowLeft className="w-4 h-4" /> Back to Patients
-      </Link>
-
-      <div className="flex items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-full bg-[var(--color-accent-violet)]/15 text-[var(--color-accent-violet)] flex items-center justify-center font-semibold text-[20px] flex-none">
-            {patient.name.charAt(0).toUpperCase()}
+    <div className="flex h-full flex-col font-body">
+      {/* Compact header: back link + identity on one row, Do Not Contact
+          action on the right — matches the rest of the admin shell. */}
+      <header className="flex flex-none flex-col gap-3 border-b border-[var(--color-border-subtle)] px-6 py-3 md:px-10">
+        <Link href="/admin/patients" className="inline-flex w-fit items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]">
+          <ArrowLeft className="w-3.5 h-3.5" /> Back to Patients
+        </Link>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex h-9 w-9 flex-none items-center justify-center rounded-full bg-[var(--color-accent-violet)]/15 text-[13px] font-semibold text-[var(--color-accent-violet)]">
+              {patient.name.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <h1 className="truncate text-[14.5px] font-semibold text-[var(--color-text-primary)]">{patient.name}</h1>
+              <p className="truncate font-mono text-[12px] text-[var(--color-text-muted)]">{patient.phone}</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-[22px] font-semibold text-[var(--color-text-primary)]">{patient.name}</h1>
-            <p className="text-[15px] text-[var(--color-text-muted)] font-mono">{patient.phone}</p>
-          </div>
+          <button
+            onClick={() => toggleDoNotContact(!patient.doNotContact)}
+            className={`flex-none rounded-lg border px-3 py-1.5 text-[12.5px] font-semibold transition-colors ${
+              patient.doNotContact
+                ? "bg-red-500/15 border-red-500/30 text-red-400 hover:bg-red-500/25"
+                : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+            }`}
+          >
+            {patient.doNotContact ? "Do Not Contact — Clear" : "Mark Do Not Contact"}
+          </button>
         </div>
-        <button
-          onClick={() => toggleDoNotContact(!patient.doNotContact)}
-          className={`px-3 py-2 rounded-lg text-[14px] font-semibold border transition-colors flex-none ${
-            patient.doNotContact
-              ? "bg-red-500/15 border-red-500/30 text-red-400 hover:bg-red-500/25"
-              : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          }`}
-        >
-          {patient.doNotContact ? "Do Not Contact — Clear" : "Mark Do Not Contact"}
-        </button>
-      </div>
+      </header>
 
       {patient.doNotContact && (
-        <div className="mb-6 p-3.5 rounded-xl bg-red-500/10 border border-red-500/25 text-[15px] text-red-400">
+        <div className="mx-6 mt-3 flex-none rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-2.5 text-[13px] text-red-400 md:mx-10">
           <strong>Do Not Contact.</strong> This patient will not be called by the scheduler or "Call Now" until this is cleared.
           {patient.doNotContactReason && <span className="block mt-1 text-red-400/80">{patient.doNotContactReason}</span>}
         </div>
       )}
 
-      <div className="flex items-center gap-1.5 mb-6 border-b border-[var(--color-border-subtle)] overflow-x-auto">
+      {/* Tab bar */}
+      <div className="flex flex-none items-center gap-1 overflow-x-auto border-b border-[var(--color-border-subtle)] px-6 pt-2 md:px-10">
         {TABS.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`flex items-center gap-1.5 px-3.5 py-2.5 text-[15px] font-medium whitespace-nowrap border-b-2 transition-colors ${
+            className={`flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3.5 py-2.5 text-[13px] font-medium transition-colors ${
               tab === t.id
                 ? "border-[var(--color-accent-violet)] text-[var(--color-text-primary)]"
                 : "border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
@@ -198,6 +202,8 @@ export default function PatientProfilePage() {
           </button>
         ))}
       </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-6 md:px-10">
 
       {tab === "summary" && (
         <div className="grid sm:grid-cols-2 gap-4">
@@ -399,6 +405,7 @@ export default function PatientProfilePage() {
           )}
         </GlassCard>
       )}
+      </div>
     </div>
   );
 }

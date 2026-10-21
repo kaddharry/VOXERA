@@ -296,28 +296,27 @@ export default function PatientsPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto px-6 py-10">
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-[var(--color-accent-violet)]/10 border border-[var(--color-accent-violet)]/25 rounded-xl text-[var(--color-accent-violet)]">
-            <UserCheck className="w-5 h-5" />
-          </div>
-          <div>
-            <h1 className="text-[20px] font-semibold text-[var(--color-text-primary)]">Patients</h1>
-            <p className="text-[12.5px] text-[var(--color-text-muted)]">
-              Each patient gets their own knowledge base — call them, watch it live on the Live Dashboard.
-            </p>
-          </div>
+    <div className="flex h-full flex-col font-body">
+      {/* Compact single-line header — matches the rest of the admin shell;
+          the breadcrumb above already names this page. */}
+      <header className="flex flex-none items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] px-6 py-3 md:px-10">
+        <div className="flex items-center gap-2 min-w-0">
+          <UserCheck className="h-4 w-4 flex-none text-[var(--color-accent-cyan)]" />
+          <span className="text-[13px] font-semibold text-[var(--color-text-primary)]">Patients</span>
+          <span className="hidden truncate text-[12px] text-[var(--color-text-muted)] sm:inline">
+            · each patient gets their own knowledge base
+          </span>
         </div>
         <button
           onClick={() => setShowAdd((s) => !s)}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--color-accent-violet)] text-[#0A0C14] text-[13px] font-semibold hover:brightness-110 transition-all"
+          className="flex flex-none items-center gap-1.5 rounded-lg btn-gradient px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-all hover:scale-[1.02]"
         >
-          {showAdd ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+          {showAdd ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
           {showAdd ? "Cancel" : "Add Patient"}
         </button>
-      </div>
+      </header>
 
+      <div className="min-h-0 flex-1 overflow-y-auto p-6 md:px-10">
       {showAdd && (
         <GlassCard className="p-6 mb-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
@@ -636,6 +635,7 @@ export default function PatientsPage() {
           })}
         </div>
       )}
+      </div>
 
       {/* Agent-selection modal — always prompted, every time */}
       {callTarget && (
