@@ -53,7 +53,7 @@ function encodeMulaw(pcmSample: number): number {
   if (pcmSample > CLIP) pcmSample = CLIP;
   pcmSample += BIAS;
   let exponent = 7;
-  for (let expMask = 0x4000; (pcmSample & expMask) === 0 && exponent > 0; exponent--, expMask >>= 1) {}
+  for (let expMask = 0x4000; (pcmSample & expMask) === 0 && exponent > 0; exponent--, expMask >>= 1) { }
   const mantissa = (pcmSample >> (exponent + 3)) & 0x0f;
   const mulawByte = ~(sign | (exponent << 4) | mantissa);
   return mulawByte & 0xff;
@@ -221,33 +221,33 @@ export class TelephonyStreamHandler {
     console.log(`[TelephonyStream] Deepgram ready for session: ${this.sessionId}`);
   }
   private async onInitFailed(err: unknown) {
-  console.error(`[TelephonyStream] Initialisation failed for ${this.callSid}:`, err);
-  this.hasEnded = true;
+    console.error(`[TelephonyStream] Initialisation failed for ${this.callSid}:`, err);
+    this.hasEnded = true;
 
-  try {
-    this.deepgram.close();
-  } catch {
-    // may have failed before connecting
+    try {
+      this.deepgram.close();
+    } catch {
+      // may have failed before connecting
+    }
+
+    if (this.slotTaken) {
+      await callQueue.markCallEnded();
+    }
+
+    const endedAt = Date.now();
+
+    await this.updateCallLog({
+      status: "failed",
+      endedAt,
+      durationMs: endedAt - this.startedAt,
+    });
+
+    try {
+      this.ws.close(1011, "stream initialisation failed");
+    } catch {
+      // socket may already be gone
+    }
   }
-
-  if (this.slotTaken) {
-    await callQueue.markCallEnded();
-  }
-
-  const endedAt = Date.now();
-
-  await this.updateCallLog({
-    status: "failed",
-    endedAt,
-    durationMs: endedAt - this.startedAt,
-  });
-
-  try {
-    this.ws.close(1011, "stream initialisation failed");
-  } catch {
-    // socket may already be gone
-  }
-}
 
   /**
    * Resolves the voice model/provider to use for the rest of this call.
@@ -296,7 +296,7 @@ export class TelephonyStreamHandler {
     if (!this.currentSpeakStream) {
       const stream = new DeepgramSpeakStream(
         { model: this.voiceModel, encoding: "linear16", sampleRate: 8000 },
-        () => {} // replaced per-turn via setAudioHandler before first use
+        () => { } // replaced per-turn via setAudioHandler before first use
       );
       this.currentSpeakStream = stream;
       this.speakStreamReadyPromise = stream.connect().catch((err) => {
@@ -337,7 +337,11 @@ export class TelephonyStreamHandler {
         if (customParams?.clientId) this.clientId = customParams.clientId;
         if (customParams?.agentId) this.agentId = customParams.agentId;
         if (customParams?.patientId) this.patientId = customParams.patientId;
-        if (customParams?.caller) this.callerNumber = customParams.caller;
+        // if (customParams?.caller) this.callerNumber = customParams.caller;
+        if (customParams?.caller) {
+          this.callerNumber = customParams.caller;
+          this.userId = `caller-${customParams.caller.replace(/\D/g, "")}`;
+        }
 
         console.log(`[TelephonyStream] Stream started: callSid=${this.callSid} clientId=${this.clientId}${this.agentId ? ` agentId=${this.agentId}` : ""} streamSid=${this.streamSid}`);
 

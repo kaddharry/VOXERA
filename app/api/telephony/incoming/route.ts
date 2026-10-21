@@ -123,8 +123,9 @@ export async function POST(req: NextRequest) {
     // non-Twilio WS testing) — Twilio does not reliably forward them on the
     // Media Stream connection URL. The real source of truth is the
     // <Parameter> elements below, delivered via the "start" event.
-    const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}${agentId ? `&agentId=${agentId}` : ""}${patientId ? `&patientId=${patientId}` : ""}`;
+    // const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}${agentId ? `&agentId=${agentId}` : ""}${patientId ? `&patientId=${patientId}` : ""}`;
 
+    const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream`;
     console.log(`[Telephony] Connecting ${callSid} to stream: ${wsUrl}`);
 
     return new NextResponse(
