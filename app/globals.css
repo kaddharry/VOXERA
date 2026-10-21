@@ -64,20 +64,31 @@ body:has(.voxera-admin-dark) {
   background-color: #000000;
 }
 
+/* Same reasoning for the landing page's own dark theme (--lp-* tokens,
+   redefined dark below) — html/body sit outside .landing too. */
+html:has(.landing),
+body:has(.landing) {
+  background-color: #000000;
+}
+
 /* Voxera brand ramp, lifted from the logo mark: deep indigo on the left
    facet fading through violet into the pale lavender right facet. The
    landing page's glass surfaces, gradients and accent text all draw from
    this ramp so the page reads as one object with the logo, not a generic
    purple SaaS template. */
+/* Exactly the admin dashboard's neutral dark palette (.voxera-admin-dark
+   below), not a landing-page-specific tint — the whole site reads as one
+   theme instead of the admin being neutral black/gray and the landing page
+   being a different indigo-tinted dark. */
 :root {
-  --lp-bg: #FAFBFF;
-  --lp-bg-surface: #F2F4FF;
-  --lp-bg-card: #FFFFFF;
-  --lp-text-primary: #0D0D1A;
-  --lp-text-secondary: #5A5A80;
-  --lp-text-muted: #A0A0C0;
-  --lp-border: rgba(79, 70, 229, 0.13);
-  --lp-border-strong: rgba(79, 70, 229, 0.32);
+  --lp-bg: #000000;
+  --lp-bg-surface: #171717;
+  --lp-bg-card: #242424;
+  --lp-text-primary: #FFFFFF;
+  --lp-text-secondary: #B8B8B8;
+  --lp-text-muted: #8A8A8A;
+  --lp-border: rgba(255, 255, 255, 0.1);
+  --lp-border-strong: rgba(255, 255, 255, 0.18);
   --vx-indigo-deep: #332E8C;
   --vx-indigo: #4F46E5;
   --vx-violet: #7C5CFA;
@@ -470,8 +481,9 @@ body {
    ════════════════════════════════════════════════════════════════════════════ */
 
 .landing {
+  color-scheme: dark;
   background: var(--lp-bg);
-  color: #0D0D1A;
+  color: var(--lp-text-primary);
   font-family: var(--font-body), "DM Sans", sans-serif;
   font-weight: 400;
   font-size: 16px;
@@ -488,11 +500,11 @@ body {
   font-weight: 400;
   letter-spacing: -0.02em;
   line-height: 1.1;
-  color: #0D0D1A;
+  color: var(--lp-text-primary);
   margin: 0;
 }
 
-.landing p { margin: 0; color: #5A5A80; line-height: 1.7; }
+.landing p { margin: 0; color: var(--lp-text-secondary); line-height: 1.7; }
 .landing a { text-decoration: none; }
 .landing em { font-style: italic; }
 
@@ -738,10 +750,7 @@ body {
   height: 100svh;
   min-height: 620px;
   overflow: hidden;
-  background:
-    radial-gradient(ellipse 70% 60% at 18% 12%, rgba(167,139,250,0.16), transparent 55%),
-    radial-gradient(ellipse 60% 55% at 85% 90%, rgba(96,165,250,0.14), transparent 60%),
-    linear-gradient(135deg, #000000 0%, #0D0D0D 45%, #171717 100%);
+  background: linear-gradient(135deg, #000000 0%, #0D0D0D 45%, #171717 100%);
 }
 
 .vxl-hero-video {
@@ -927,7 +936,7 @@ body {
   font-weight: 400;
   line-height: 1.1;
   letter-spacing: -0.02em;
-  color: #0D0D1A;
+  color: var(--lp-text-primary);
 }
 
 .vxl-features-grid-static {
@@ -946,7 +955,7 @@ body {
   font-family: var(--font-display), "Lora", serif;
   font-size: 20px;
   font-weight: 400;
-  color: #0D0D1A;
+  color: var(--lp-text-primary);
   letter-spacing: -0.015em;
   margin-bottom: 8px;
 }
@@ -959,9 +968,9 @@ body {
   border-radius: 1.75rem;
   overflow: hidden;
   position: relative;
-  background: linear-gradient(150deg, #F3F1FF 0%, #ffffff 55%, #EEF0FF 100%);
-  border: 1px solid rgba(79, 70, 229, 0.12);
-  box-shadow: 0 20px 50px rgba(79, 70, 229, 0.12);
+  background: linear-gradient(150deg, #171717 0%, #121212 55%, #1A1A1A 100%);
+  border: 1px solid var(--lp-border);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
   padding: clamp(18px, 2.4vw, 28px);
   display: flex;
   flex-direction: column;
@@ -976,7 +985,7 @@ body {
   font-size: clamp(12px, 1.3vw, 14px);
   line-height: 1.5;
 }
-.vxl-mock-bubble-caller { align-self: flex-start; background: #fff; border: 1px solid rgba(79,70,229,0.12); color: #3A3A55; border-bottom-left-radius: 4px; }
+.vxl-mock-bubble-caller { align-self: flex-start; background: rgba(255,255,255,0.06); border: 1px solid var(--lp-border); color: var(--lp-text-primary); border-bottom-left-radius: 4px; }
 .vxl-mock-bubble-agent { align-self: flex-end; background: linear-gradient(135deg, var(--vx-indigo-deep), var(--vx-indigo)); color: #fff; border-bottom-right-radius: 4px; }
 
 /* Mockup 2 — escalation / "keeps you in the loop" */
@@ -985,18 +994,18 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: rgba(255,255,255,0.8);
-  border: 1px solid rgba(79,70,229,0.1);
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--lp-border);
   border-radius: 14px;
   padding: 12px 16px;
 }
 .vxl-mock-row-dot { width: 8px; height: 8px; border-radius: 9999px; flex-shrink: 0; }
-.vxl-mock-row-text { font-size: clamp(12px, 1.25vw, 14px); color: #2A2A42; font-weight: 500; flex: 1; }
+.vxl-mock-row-text { font-size: clamp(12px, 1.25vw, 14px); color: var(--lp-text-primary); font-weight: 500; flex: 1; }
 .vxl-mock-row-tag { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 9999px; white-space: nowrap; }
 
 /* Mockup 3 — analytics readout */
 .vxl-mock-analytics { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; align-content: center; }
-.vxl-mock-stat { background: rgba(255,255,255,0.85); border: 1px solid rgba(79,70,229,0.1); border-radius: 16px; padding: clamp(14px,2vw,20px); }
+.vxl-mock-stat { background: rgba(255,255,255,0.05); border: 1px solid var(--lp-border); border-radius: 16px; padding: clamp(14px,2vw,20px); }
 .vxl-mock-stat-value { font-family: var(--font-body), "DM Sans", sans-serif; font-weight: 700; font-size: clamp(18px, 2.4vw, 28px); color: var(--vx-indigo-deep); letter-spacing: -0.02em; }
 .vxl-mock-stat-label { font-size: 11px; color: var(--lp-text-muted); margin-top: 4px; }
 
@@ -1147,14 +1156,14 @@ body {
    ════════════════════════════════════════════════════════════════════════════ */
 .vxl-faq-section { background: var(--lp-bg); padding: clamp(60px, 10vw, 140px) clamp(16px, 4vw, 48px); }
 .vxl-faq-inner { max-width: 700px; margin: 0 auto; }
-.vxl-faq-h2 { font-family: var(--font-display), "Lora", serif; font-size: clamp(1.8rem, 3.6vw, 2.6rem); font-weight: 400; letter-spacing: -0.02em; color: #0D0D1A; margin-bottom: 44px; text-align: center; }
+.vxl-faq-h2 { font-family: var(--font-display), "Lora", serif; font-size: clamp(1.8rem, 3.6vw, 2.6rem); font-weight: 400; letter-spacing: -0.02em; color: var(--lp-text-primary); margin-bottom: 44px; text-align: center; }
 
 .vxl-faq-item {
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.04);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(79, 70, 229, 0.1);
+  border: 1px solid var(--lp-border);
   margin-bottom: 10px;
   overflow: hidden;
   transition: opacity 0.5s ease, transform 0.5s ease;
@@ -1173,7 +1182,7 @@ body {
   gap: 16px;
 }
 
-.vxl-faq-question { font-size: 15.5px; font-weight: 600; color: #0D0D1A; line-height: 1.4; }
+.vxl-faq-question { font-size: 15.5px; font-weight: 600; color: var(--lp-text-primary); line-height: 1.4; }
 
 .vxl-faq-toggle {
   width: 28px;
@@ -1184,7 +1193,7 @@ body {
   justify-content: center;
   flex-shrink: 0;
   transition: transform 0.3s ease, background 0.2s ease;
-  background: rgba(79, 70, 229, 0.1);
+  background: rgba(167, 139, 250, 0.14);
 }
 .vxl-faq-toggle.vxl-faq-open { transform: rotate(45deg); background: var(--vx-indigo); }
 
@@ -1204,7 +1213,7 @@ body {
   justify-content: center;
   overflow: hidden;
   padding: clamp(80px, 12vw, 150px) clamp(16px, 4vw, 48px);
-  background: linear-gradient(135deg, #15123F 0%, var(--vx-indigo-deep) 45%, var(--vx-indigo) 80%, var(--vx-violet) 100%);
+  background: linear-gradient(135deg, #000000 0%, #0D0D0D 50%, #171717 100%);
 }
 
 .vxl-cta-image {
@@ -1220,9 +1229,7 @@ body {
   position: absolute;
   inset: 0;
   z-index: 1;
-  background:
-    radial-gradient(ellipse 60% 55% at 20% 15%, rgba(79,70,229,0.15), transparent 55%),
-    linear-gradient(to bottom, rgba(16,11,48,0.45) 0%, rgba(16,11,48,0.6) 100%);
+  background: linear-gradient(to bottom, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.65) 100%);
 }
 
 .vxl-cta-content {
@@ -1245,26 +1252,26 @@ body {
   color: #fff;
 }
 .landing .vxl-cta-h2 em,
-.landing .vxl-cta-h2 .vxl-accent { color: #DAD3FB; font-style: italic; }
+.landing .vxl-cta-h2 .vxl-accent { color: #A78BFA; font-style: italic; }
 
 /* ════════════════════════════════════════════════════════════════════════════
    FOOTER
    ════════════════════════════════════════════════════════════════════════════ */
-.vxl-footer { background: var(--lp-bg); border-top: 1px solid rgba(79, 70, 229, 0.1); padding: clamp(44px, 6vw, 80px) clamp(16px, 4vw, 48px) clamp(24px, 4vw, 40px); }
+.vxl-footer { background: var(--lp-bg); border-top: 1px solid var(--lp-border); padding: clamp(44px, 6vw, 80px) clamp(16px, 4vw, 48px) clamp(24px, 4vw, 40px); }
 .vxl-footer-inner { max-width: 1100px; margin: 0 auto; }
 .vxl-footer-top { display: flex; flex-wrap: wrap; gap: 44px; justify-content: space-between; margin-bottom: 48px; }
 .vxl-footer-brand { flex: 1 1 240px; }
 .vxl-footer-brand-row { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
-.landing .vxl-footer-tagline { font-family: var(--font-display), "Lora", serif; font-size: 20px; font-weight: 400; letter-spacing: -0.01em; line-height: 1.3; color: #0D0D1A; max-width: 240px; }
+.landing .vxl-footer-tagline { font-family: var(--font-display), "Lora", serif; font-size: 20px; font-weight: 400; letter-spacing: -0.01em; line-height: 1.3; color: var(--lp-text-primary); max-width: 240px; }
 .vxl-footer-cta { margin-top: 20px; }
 
 .vxl-footer-links { display: flex; flex-wrap: wrap; gap: 44px; flex: 1 1 320px; justify-content: flex-end; }
 .vxl-footer-col-title { font-size: 12px; font-weight: 700; color: var(--lp-text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px; }
 .vxl-footer-col-links { display: flex; flex-direction: column; gap: 10px; }
-.vxl-footer-col-link { font-size: 14px; color: #3A3A55; text-decoration: none; font-weight: 400; transition: opacity 0.2s; }
+.vxl-footer-col-link { font-size: 14px; color: var(--lp-text-secondary); text-decoration: none; font-weight: 400; transition: opacity 0.2s; }
 .vxl-footer-col-link:hover { opacity: 0.6; }
 
-.vxl-footer-bottom { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; padding-top: 24px; border-top: 1px solid rgba(79, 70, 229, 0.08); }
+.vxl-footer-bottom { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; padding-top: 24px; border-top: 1px solid var(--lp-border); }
 .vxl-footer-copy { font-size: 13px; color: var(--lp-text-muted); }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -1294,7 +1301,7 @@ body {
   font-weight: 400;
   letter-spacing: -0.02em;
   line-height: 1.15;
-  color: #0D0D1A;
+  color: var(--lp-text-primary);
   margin-bottom: 16px;
 }
 
@@ -1316,8 +1323,8 @@ body {
   border-radius: 1.75rem;
   overflow: hidden;
   aspect-ratio: 4 / 3;
-  box-shadow: 0 30px 70px rgba(79, 70, 229, 0.16);
-  border: 1px solid rgba(79, 70, 229, 0.1);
+  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--lp-border);
 }
 
 .vxl-overview-media video,
@@ -1329,7 +1336,7 @@ body {
   font-weight: 400;
   letter-spacing: -0.015em;
   line-height: 1.2;
-  color: #0D0D1A;
+  color: var(--lp-text-primary);
   margin-bottom: 14px;
 }
 
@@ -1339,7 +1346,7 @@ body {
    HOVER GALLERY — dark "here's how it works" strip with five expandable panels
    ════════════════════════════════════════════════════════════════════════════ */
 .vxl-gallery-section {
-  background: #0A0818;
+  background: #000000;
   padding: clamp(70px, 10vw, 130px) clamp(16px, 4vw, 48px) clamp(50px, 7vw, 90px);
 }
 
@@ -1440,7 +1447,7 @@ body {
   font-size: clamp(1.9rem, 3.6vw, 2.7rem);
   font-weight: 400;
   letter-spacing: -0.02em;
-  color: #0D0D1A;
+  color: var(--lp-text-primary);
   margin-bottom: 12px;
 }
 
@@ -1455,11 +1462,11 @@ body {
 }
 
 .vxl-industry-card {
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  box-shadow: 0 6px 24px rgba(79, 70, 229, 0.06);
+  border: 1px solid var(--lp-border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
   border-radius: 20px;
   padding: 26px 24px;
 }
@@ -1476,7 +1483,7 @@ body {
   margin-bottom: 16px;
 }
 
-.vxl-industry-title { font-size: 16px; font-weight: 700; color: #0D0D1A; margin-bottom: 8px; letter-spacing: -0.01em; }
+.vxl-industry-title { font-size: 16px; font-weight: 700; color: var(--lp-text-primary); margin-bottom: 8px; letter-spacing: -0.01em; }
 .vxl-industry-desc { font-size: 13.5px; color: var(--lp-text-secondary); line-height: 1.6; }
 
 /* ════════════════════════════════════════════════════════════════════════════

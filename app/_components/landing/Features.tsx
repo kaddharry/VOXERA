@@ -86,12 +86,12 @@ function FeatureMockup({ id }: { id: string }) {
         <div className="vxl-mock-row">
           <span className="vxl-mock-row-dot" style={{ background: "#22C55E" }} />
           <span className="vxl-mock-row-text">Day-3 check-in completed — recovery on track</span>
-          <span className="vxl-mock-row-tag" style={{ background: "rgba(34,197,94,0.12)", color: "#16A34A" }}>Auto</span>
+          <span className="vxl-mock-row-tag" style={{ background: "rgba(34,197,94,0.16)", color: "#4ADE80" }}>Auto</span>
         </div>
         <div className="vxl-mock-row">
           <span className="vxl-mock-row-dot" style={{ background: "#F59E0B" }} />
           <span className="vxl-mock-row-text">Reported low-grade fever — flagged for review</span>
-          <span className="vxl-mock-row-tag" style={{ background: "rgba(245,158,11,0.14)", color: "#B45309" }}>Needs you</span>
+          <span className="vxl-mock-row-tag" style={{ background: "rgba(245,158,11,0.18)", color: "#FBBF24" }}>Needs you</span>
         </div>
         <div className="vxl-mock-row">
           <span className="vxl-mock-row-dot" style={{ background: "var(--vx-indigo)" }} />
