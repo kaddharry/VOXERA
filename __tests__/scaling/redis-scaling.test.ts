@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { CallQueueManager } from "../../lib/queue/manager";
-import { MockRedis, redis } from "../../lib/redis/client";
+import { LocalStore, redis } from "../../lib/redis/client";
 import {
   isSupabaseHealthy,
   recordSupabaseFailure,
   recordSupabaseSuccess,
 } from "../../lib/db/supabase";
 
-describe("Distributed Redis Architecture & Telephony Scaling (Issue #13)", () => {
+describe("Call Queue & Circuit Breaker over the shared in-process store (Issue #13)", () => {
   beforeEach(async () => {
-    // Reset the static MockRedis database to keep tests isolated
-    MockRedis.reset();
+    // Reset the static in-process store to keep tests isolated
+    LocalStore.reset();
   });
 
   describe("CallQueueManager Distributed Queue Synchronization", () => {
@@ -68,7 +68,7 @@ describe("Distributed Redis Architecture & Telephony Scaling (Issue #13)", () =>
 
   describe("Distributed Supabase Circuit Breaker", () => {
     beforeEach(async () => {
-      // Clear Supabase circuit keys from Redis
+      // Clear Supabase circuit keys from the shared store
       await redis.set("voxera:cb:consecutive_failures", "0");
       await redis.set("voxera:cb:last_failure_at", "0");
 
@@ -77,7 +77,7 @@ describe("Distributed Redis Architecture & Telephony Scaling (Issue #13)", () =>
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
 
-    it("propagates circuit breaker trips to all instances via Redis", async () => {
+    it("propagates circuit breaker trips to all instances via the shared store", async () => {
       // Verify healthy initially
       expect(isSupabaseHealthy()).toBe(true);
 
@@ -97,7 +97,7 @@ describe("Distributed Redis Architecture & Telephony Scaling (Issue #13)", () =>
       // Verify circuit is now open after the threshold is reached
       expect(isSupabaseHealthy()).toBe(false);
 
-      // Verify Redis contains the failures (the point of this test: propagation)
+      // Verify the shared store contains the failures (the point of this test: propagation)
       const redisFailures = await redis.get("voxera:cb:consecutive_failures");
       expect(redisFailures).toBe("3");
     });
