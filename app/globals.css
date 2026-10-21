@@ -566,11 +566,11 @@ body {
   gap: 4px;
   padding: 6px;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(10, 10, 10, 0.6);
   backdrop-filter: blur(22px) saturate(160%);
   -webkit-backdrop-filter: blur(22px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 8px 32px rgba(79, 70, 229, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
   transition: box-shadow 0.3s ease, background 0.3s ease;
 }
 
@@ -579,8 +579,8 @@ body {
 
 .vxl-nav-left.vxl-nav-scrolled,
 .vxl-nav-right.vxl-nav-scrolled {
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 10px 36px rgba(79, 70, 229, 0.16);
+  background: rgba(0, 0, 0, 0.82);
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.45);
 }
 
 .vxl-logo {
@@ -592,7 +592,8 @@ body {
   width: 40px;
   height: 40px;
   border-radius: 9999px;
-  background: #fff;
+  background: #171717;
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 .vxl-logo-mark { width: 22px; height: 22px; object-fit: contain; display: block; }
 
@@ -602,26 +603,38 @@ body {
   border-radius: 9999px;
   font-size: 14px;
   font-weight: 500;
-  color: #3A3A55;
+  color: rgba(255, 255, 255, 0.72);
   text-decoration: none;
   transition: background 0.2s ease, color 0.2s ease;
   white-space: nowrap;
 }
-.vxl-nav-link:hover { background: rgba(79, 70, 229, 0.08); color: #0D0D1A; }
+.vxl-nav-link:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+
+.vxl-nav-login {
+  padding: 10px 16px;
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.vxl-nav-login:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
 
 .vxl-nav-cta {
   padding: 10px 18px;
   border-radius: 9999px;
   font-size: 14px;
   font-weight: 600;
-  color: #fff;
-  background: linear-gradient(135deg, var(--vx-indigo-deep), var(--vx-indigo));
+  color: #0D0D0D;
+  background: #A78BFA;
   text-decoration: none;
   white-space: nowrap;
-  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.3);
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
+  box-shadow: 0 4px 14px rgba(167, 139, 250, 0.25);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, background 0.2s ease;
 }
-.vxl-nav-cta:hover { box-shadow: 0 6px 20px rgba(79, 70, 229, 0.4); transform: translateY(-1px); }
+.vxl-nav-cta:hover { background: #BBA6FB; box-shadow: 0 6px 20px rgba(167, 139, 250, 0.35); transform: translateY(-1px); }
 
 .vxl-nav-burger {
   display: none;
@@ -631,8 +644,8 @@ body {
   height: 36px;
   border-radius: 9999px;
   border: none;
-  background: rgba(79, 70, 229, 0.08);
-  color: #0D0D1A;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
   cursor: pointer;
   flex-shrink: 0;
 }
@@ -649,22 +662,22 @@ body {
   gap: 2px;
   padding: 10px 14px 16px;
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(10, 10, 10, 0.92);
   backdrop-filter: blur(22px);
   -webkit-backdrop-filter: blur(22px);
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 12px 40px rgba(79, 70, 229, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
 
 .vxl-nav-mobile-link {
   font-size: 15px;
   font-weight: 500;
-  color: #3A3A55;
+  color: rgba(255, 255, 255, 0.72);
   text-decoration: none;
   padding: 13px 10px;
-  border-bottom: 1px solid rgba(79, 70, 229, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-.vxl-nav-mobile-link:hover { color: #0D0D1A; }
+.vxl-nav-mobile-link:hover { color: #fff; }
 .vxl-nav-mobile-cta { margin-top: 12px; text-align: center; justify-content: center; }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -682,9 +695,9 @@ body {
   min-height: 620px;
   overflow: hidden;
   background:
-    radial-gradient(ellipse 70% 60% at 18% 12%, rgba(255,255,255,0.22), transparent 55%),
-    radial-gradient(ellipse 60% 55% at 85% 90%, rgba(199,187,250,0.55), transparent 60%),
-    linear-gradient(135deg, var(--vx-indigo-deep) 0%, var(--vx-indigo) 42%, var(--vx-violet) 72%, var(--vx-lavender) 100%);
+    radial-gradient(ellipse 70% 60% at 18% 12%, rgba(167,139,250,0.16), transparent 55%),
+    radial-gradient(ellipse 60% 55% at 85% 90%, rgba(96,165,250,0.14), transparent 60%),
+    linear-gradient(135deg, #000000 0%, #0D0D0D 45%, #171717 100%);
 }
 
 .vxl-hero-video {
@@ -700,7 +713,7 @@ body {
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: linear-gradient(to bottom, rgba(12, 9, 38, 0.15) 0%, rgba(20, 14, 56, 0.42) 55%, rgba(16, 11, 48, 0.68) 100%);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.5) 55%, rgba(0, 0, 0, 0.72) 100%);
 }
 
 .vxl-hero-orbs { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
@@ -738,7 +751,7 @@ body {
   letter-spacing: -0.02em;
 }
 .landing .vxl-hero-h1 em,
-.landing .vxl-hero-h1 .vxl-accent { color: #DAD3FB; font-style: italic; }
+.landing .vxl-hero-h1 .vxl-accent { color: #A78BFA; font-style: italic; }
 
 .landing .vxl-hero-sub {
   font-size: 16px;
@@ -798,12 +811,12 @@ body {
 .vxl-hero-cta-glass {
   display: flex;
   gap: 8px;
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(10, 10, 10, 0.55);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-radius: 9999px;
   padding: 6px 6px 6px 22px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   width: 100%;
   max-width: 380px;
 }
@@ -821,16 +834,12 @@ body {
   font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
-  /* The pill it sits in (.vxl-hero-cta-glass) is a light frosted-white
-     surface, not the dark hero background behind it — white text here
-     was invisible (confirmed on a real mobile screenshot), same mistake
-     this file's own comment two rules up warns about for the headline. */
-  color: var(--vx-indigo-deep);
+  color: rgba(255, 255, 255, 0.85);
   border-radius: 9999px;
   background: transparent;
   transition: background 0.2s ease;
 }
-.vxl-hero-secondary-btn:hover { background: rgba(79, 70, 229, 0.08); }
+.vxl-hero-secondary-btn:hover { background: rgba(255, 255, 255, 0.1); }
 
 .vxl-hero-input {
   flex: 1;
@@ -852,11 +861,11 @@ body {
   cursor: pointer;
   border: none;
   border-radius: 9999px;
-  background: #fff;
-  color: var(--vx-indigo-deep);
-  transition: transform 0.2s ease;
+  background: #A78BFA;
+  color: #0D0D0D;
+  transition: transform 0.2s ease, background 0.2s ease;
 }
-.vxl-hero-input-btn:hover { transform: translateY(-1px); }
+.vxl-hero-input-btn:hover { background: #BBA6FB; transform: translateY(-1px); }
 
 /* ════════════════════════════════════════════════════════════════════════════
    FEATURES — "How VOXERA works", a static 3-card grid (glass mockup panels
