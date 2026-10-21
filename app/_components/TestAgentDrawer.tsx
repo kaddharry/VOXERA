@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { Radio, X, Phone, PhoneOff, Sparkles, ChevronDown, Database, ListTree, AlertTriangle, CheckCircle2, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
+import { Radio, X, Phone, PhoneOff, Sparkles, ChevronDown, Database, ListTree, AlertTriangle, CheckCircle2, Mic, MicOff, Volume2, VolumeX, Activity, LineChart, Zap, Shuffle, ClipboardList } from "lucide-react";
 import { getMicSupport, describeMicError } from "./micUtils";
 import { useVoiceActivityDetection } from "./useVoiceActivityDetection";
 import {
@@ -977,7 +977,8 @@ export function TestAgentDrawer() {
           <div className="sm:w-[360px] flex-none min-h-0 overflow-y-auto px-5 py-4 flex flex-col gap-4 border-b sm:border-b-0 sm:border-r border-[var(--console-border)]">
             <div>
               <div className="flex items-center justify-between mb-2">
-                <div className="voxera-console-label text-[10px] font-bold">
+                <div className="voxera-console-label flex items-center gap-1.5 text-[10px] font-bold">
+                  <Activity className="h-3 w-3" />
                   {isViewingLatest ? "Live Analytics" : "Reasoning Trace"}{" "}
                   {status === "thinking" && isViewingLatest && (
                     <span className="text-[var(--console-cyan)] normal-case">· updating…</span>
@@ -1071,7 +1072,9 @@ export function TestAgentDrawer() {
             )}
 
             <div>
-              <div className="voxera-console-label text-[9px] mb-1.5">Session Trajectory</div>
+              <div className="voxera-console-label mb-1.5 flex items-center gap-1.5 text-[9px]">
+                <LineChart className="h-3 w-3" /> Session Trajectory
+              </div>
               <EmotionTimeline history={emotionHistory} />
             </div>
 
@@ -1105,7 +1108,9 @@ export function TestAgentDrawer() {
 
             {turns.length > 0 && (
               <div>
-                <div className="voxera-console-label text-[9px] mb-1.5">Session Summary</div>
+                <div className="voxera-console-label mb-1.5 flex items-center gap-1.5 text-[9px]">
+                  <ClipboardList className="h-3 w-3" /> Session Summary
+                </div>
                 <SessionScorecard turns={turns} />
               </div>
             )}
@@ -1114,12 +1119,45 @@ export function TestAgentDrawer() {
           {/* RIGHT — continuous conversation */}
           <div className="flex-1 min-w-0 min-h-0 overflow-y-auto px-5 py-4 flex flex-col gap-3">
             {turns.length === 0 && !interim ? (
-              <div className="flex flex-col items-center justify-center text-center gap-2 py-10 flex-1">
-                <Radio className="w-6 h-6 text-[var(--console-text-dim)]" />
-                <p className="text-[12.5px] text-[var(--console-text-dim)] max-w-[280px]">
-                  Start a call and speak — talk over the agent any time to interrupt it, just like a
-                  real conversation. Live analytics for every turn appear on the left.
-                </p>
+              <div className="flex flex-1 flex-col items-center justify-center gap-7 px-6 py-10 text-center">
+                <div className="voxera-orb is-idle !h-20 !w-20 flex-none">
+                  <div className="voxera-orb-core !h-11 !w-11">
+                    <Sparkles className="h-5 w-5" />
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-[16px] font-bold text-[var(--console-text)]">Ready when you are</h3>
+                  <p className="mt-1.5 max-w-sm text-[12.5px] leading-relaxed text-[var(--console-text-dim)]">
+                    Speak naturally — talk over the agent any time to interrupt it, just like a real
+                    conversation. Everything it hears, decides, and says shows up on the left, live.
+                  </p>
+                </div>
+
+                <div className="grid w-full max-w-sm grid-cols-1 gap-2 text-left">
+                  {[
+                    { icon: Zap, text: "Real-time barge-in — interrupt it mid-sentence" },
+                    { icon: Activity, text: "Engine diagnostics for every single reply" },
+                    { icon: Shuffle, text: "Test the demo agent or any of your own" },
+                  ].map((f) => (
+                    <div
+                      key={f.text}
+                      className="flex items-center gap-2.5 rounded-xl border border-[var(--console-border)] bg-[var(--console-surface)] px-3 py-2.5"
+                    >
+                      <f.icon className="h-3.5 w-3.5 flex-none text-[var(--console-cyan)]" />
+                      <span className="text-[11.5px] text-[var(--console-text)]">{f.text}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  onClick={startCall}
+                  disabled={!micSupported}
+                  title={!micSupported ? "Microphone requires HTTPS (or localhost) and a supported browser" : undefined}
+                  className="flex items-center gap-2 rounded-xl bg-[var(--console-violet)] px-6 py-2.5 text-[13px] font-semibold text-[#0A0C14] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Phone className="h-4 w-4" /> Start Call
+                </button>
               </div>
             ) : (
               <>
