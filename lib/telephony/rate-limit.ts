@@ -13,11 +13,9 @@ interface WindowState {
 
 /**
  * Simple fixed-window rate limiter keyed by an arbitrary string (e.g. an IP
- * address). Implemented app-side with plain get/set rather than relying on
- * native Redis EXPIRE/SET-EX, because MockRedis (the in-process fallback used
- * in local dev when REDIS_URL is unset — see lib/redis/client.ts) only
- * implements get/set/incr/decr/hash/zset/pub-sub, not TTL commands. This way
- * the same logic works identically against real ioredis and MockRedis.
+ * address). Implemented app-side with plain get/set rather than a native
+ * EXPIRE/SET-EX TTL command, since the shared in-process store (see
+ * lib/redis/client.ts) only implements get/set/incr/decr/hash/zset/pub-sub.
  */
 export async function checkRateLimit(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
   const now = Date.now();

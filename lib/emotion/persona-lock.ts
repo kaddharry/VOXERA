@@ -25,9 +25,10 @@ import { redis } from "../redis/client";
  * actually saves is the LLM's tone whiplash from reacting to single-turn
  * noise, which was the actual product complaint — not compute.
  *
- * State lives in Redis (or MockRedis in dev — see lib/redis/client.ts),
- * keyed per session, so it survives across turns/instances the same way
- * the Supabase circuit breaker's state does.
+ * State lives in the shared in-process store (lib/redis/client.ts), keyed
+ * per session, so it survives across turns the same way the Supabase
+ * circuit breaker's state does — within this one process; see that file's
+ * doc comment for why there's no cross-instance store anymore.
  */
 
 type ValenceSign = "neg" | "pos" | "neu";
@@ -64,11 +65,12 @@ async function loadState(sessionId: string): Promise<PersonaLockState | null> {
 
 async function saveState(sessionId: string, state: PersonaLockState): Promise<void> {
   try {
-    // 2h TTL on real Redis (ioredis) — long enough for any realistic call,
-    // short enough not to accumulate stale session state forever. MockRedis
-    // (lib/redis/client.ts) ignores the extra args and never expires keys,
-    // which is fine for dev/test — session counts there are inherently
-    // bounded by how many test calls get run.
+    // The "EX", 7200 (2h TTL) args are vestigial — the in-process store
+    // (lib/redis/client.ts) ignores them and never expires keys. That's
+    // fine in practice (entries are bounded by how many sessions have
+    // actually run since the process started), but a long-lived production
+    // process will accumulate one entry per session forever; revisit if
+    // that ever becomes a real memory concern.
     await redis.set(redisKey(sessionId), JSON.stringify(state), "EX", 7200);
   } catch (err) {
     console.warn("[PersonaLock] Failed to persist state:", err);
