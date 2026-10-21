@@ -16,16 +16,17 @@ import {
   X,
   UserCheck,
   Radio,
+  MessageSquare,
 } from "lucide-react";
 
-// Follow-up Schedule and Calls & Insights were merged into Overview; Bulk
-// Calls is reachable from Hospital Setup rather than being a top-level
-// destination — mirrors app/admin/layout.tsx's desktop sidebar.
+// Bulk Calls is reachable from Hospital Setup rather than being a top-level
+// destination — mirrors components/admin/AdminShell.tsx's desktop sidebar.
 const BASE_NAV_ITEMS = [
   { href: "/admin", icon: LayoutDashboard, label: "Overview" },
   { href: "/admin/patients", icon: UserCheck, label: "Patients" },
   { href: "/admin/live_dashboard", icon: Radio, label: "Live Calls" },
-  { href: "/admin/agents", icon: Bot, label: "Hospital Setup" },
+  { href: "/admin/sessions", icon: MessageSquare, label: "Calls & Insights" },
+  { href: "/admin/agents", icon: Bot, label: "Agent Builder" },
   { href: "/admin/knowledge", icon: Database, label: "Hospital Information & Policies" },
   { href: "/admin/try-call", icon: PhoneCall, label: "Test Agent" },
   { href: "/admin/settings", icon: Settings, label: "Team & Settings" },
@@ -45,7 +46,7 @@ export function AdminMobileNav({ userEmail, isPlatformAdmin = false }: { userEma
       <div className="flex items-center justify-between p-4">
         <Link href="/" className="flex items-center gap-2">
           <Image src="/images/voxera-logo.png" alt="" width={26} height={26} className="flex-none" />
-          <span className="font-display text-[22px] leading-none text-gradient">VOXERA</span>
+          <span className="font-body text-[18px] font-semibold leading-none tracking-tight text-[var(--color-text-primary)]">VOXERA</span>
         </Link>
         <button
           type="button"
@@ -65,7 +66,7 @@ export function AdminMobileNav({ userEmail, isPlatformAdmin = false }: { userEma
               key={href}
               href={href}
               onClick={() => setOpen(false)}
-              className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl border border-transparent text-[14px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-white hover:border-[var(--color-border-subtle)] hover:shadow-[0_2px_10px_rgba(79,70,229,0.08)] transition-all"
+              className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl border border-transparent text-[14px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] hover:border-[var(--color-border-subtle)] transition-all"
             >
               <Icon className="w-4 h-4 text-[var(--color-text-muted)] flex-none" />
               {label}

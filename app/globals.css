@@ -51,9 +51,17 @@ html {
    rubber-band scrolling flashes the light html/body background behind it,
    since body's own background resolves from --color-bg-base at body's scope
    (light), one level above where these classes redefine that token. */
-html:has(.voxera-demo-dark, .voxera-admin-dark),
-body:has(.voxera-demo-dark, .voxera-admin-dark) {
+html:has(.voxera-demo-dark),
+body:has(.voxera-demo-dark) {
   background-color: var(--console-bg);
+}
+
+/* The admin platform's dark theme is a literal black, not the shared
+   (light) --console-bg default — that token only resolves dark inside
+   .voxera-admin-dark itself, which html/body sit outside of. */
+html:has(.voxera-admin-dark),
+body:has(.voxera-admin-dark) {
+  background-color: #000000;
 }
 
 /* Voxera brand ramp, lifted from the logo mark: deep indigo on the left
@@ -357,20 +365,56 @@ body:has(.voxera-demo-dark, .voxera-admin-dark) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   ADMIN PLATFORM — same light glass register as everywhere else now.
+   ADMIN PLATFORM — true-black dashboard theme (shadcn/TanStack "Vercel" dark
+   preset: oklch(0 0 0) page background, oklch(0.14 0 0) card surfaces),
+   cloned from https://github.com/Kiranism/tanstack-start-dashboard so the
+   whole admin shell (sidebar, header, every GlassCard panel) reads as one
+   flat-black instrument panel instead of the site's light glass register.
+   Every admin component already reads color through these --color-* tokens,
+   so this one block re-themes the whole platform at once.
    ════════════════════════════════════════════════════════════════════════════ */
 .voxera-admin-dark {
-  color-scheme: light;
-  --color-bg-base:     var(--console-bg);
-  --color-bg-surface:  var(--console-surface);
-  --color-bg-elevated: var(--console-surface-raised);
-  --color-text-primary:   var(--console-text);
-  --color-text-secondary: var(--console-text-dim);
-  --color-text-muted:     #8A8AB0;
-  --color-border-subtle: var(--console-border);
-  --color-border-active: var(--console-border-active);
-  --color-accent-violet: var(--console-violet);
-  --color-accent-cyan:   var(--console-cyan);
+  color-scheme: dark;
+  --color-bg-base:     #000000;
+  --color-bg-surface:  #171717;
+  --color-bg-elevated: #242424;
+  --color-text-primary:   #FFFFFF;
+  --color-text-secondary: #B8B8B8;
+  --color-text-muted:     #8A8A8A;
+  --color-border-subtle: rgba(255, 255, 255, 0.1);
+  --color-border-active: rgba(255, 255, 255, 0.18);
+  --color-accent-violet: #A78BFA;
+  --color-accent-cyan:   #60A5FA;
+  /* Chart palette — orange + blue, matching the reference dashboard's bar,
+     area and pie charts. */
+  --chart-1: #FF8A4C;
+  --chart-2: #3B82F6;
+  --chart-3: #9CA3AF;
+  --chart-4: #52525B;
+  --chart-5: #E5E7EB;
+  --sidebar: #0D0D0D;
+  /* The site-wide serif "display" font (Lora) is a landing-page brand
+     choice that reads as a mismatch against this flat-black instrument
+     panel — every "font-display" heading across the admin platform
+     (Dashboard, Settings, Agents, etc.) switches to the clean sans body
+     face instead, matching the reference dashboard's type system. */
+  --font-display: var(--font-body);
+
+  /* The "Live Calls" console (and anything else still reading the older
+     --console-* tokens directly — EngineDashboard, VoiceOrb, the Test Agent
+     drawer) didn't follow the --color-* re-theme above because it's a
+     separate token set. Overriding it here too means every one of those
+     surfaces goes dark the same way, instead of staying stuck on the
+     site-wide light glass palette. */
+  --console-bg: #000000;
+  --console-surface: #171717;
+  --console-surface-raised: #242424;
+  --console-border: rgba(255, 255, 255, 0.1);
+  --console-border-active: rgba(255, 255, 255, 0.18);
+  --console-text: #FFFFFF;
+  --console-text-dim: #B8B8B8;
+  --console-violet: #A78BFA;
+  --console-cyan: #60A5FA;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════

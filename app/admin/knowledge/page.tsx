@@ -177,30 +177,26 @@ export default function KnowledgeBasePage() {
   const totalPages = Math.max(Math.ceil(totalCount / limit), 1);
 
   return (
-    <div className="p-6 md:p-10 font-body min-h-screen relative">
-      <header className="mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div>
-          <h1 className="font-display text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)] flex items-center gap-3">
-            <Database className="w-8 h-8 text-[var(--color-accent-cyan)]" />
-            Hospital Information & Policies
-          </h1>
-          <p className="text-[15px] text-[var(--color-text-secondary)] mt-2 max-w-xl">
-            Upload PDF, TXT, Markdown, CSV, JSON, or DOCX documents to feed hospital facts, policies, and
-            guidelines directly to your AI agent.
-          </p>
+    <div className="flex h-full flex-col font-body">
+      {/* Compact single-line title — matches the rest of the admin shell;
+          the breadcrumb above already names this page. */}
+      <header className="flex flex-none items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] px-6 py-3">
+        <div className="flex items-center gap-2">
+          <Database className="h-4 w-4 text-[var(--color-accent-cyan)]" />
+          <span className="text-[13px] font-semibold text-[var(--color-text-primary)]">Hospital Information & Policies</span>
         </div>
         <button
           onClick={() => fetchDocuments(true)}
-          className="flex items-center gap-2 px-4 py-2.5 text-[13px] font-semibold rounded-xl bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-active)] hover:text-[var(--color-text-primary)] transition-all w-fit shrink-0 active:scale-95"
+          className="flex flex-none items-center gap-1.5 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)] px-3.5 py-1.5 text-[12.5px] font-semibold text-[var(--color-text-secondary)] transition-all hover:border-[var(--color-border-active)] hover:text-[var(--color-text-primary)] active:scale-95"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loadingDocs ? "animate-spin" : ""}`} />
           Refresh
         </button>
       </header>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto p-6 xl:grid-cols-3 xl:overflow-hidden">
         {/* Upload Panel */}
-        <div className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
+        <div className="bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-2xl p-6 xl:overflow-y-auto">
           <h2 className="text-[12px] font-bold uppercase tracking-widest text-[var(--color-text-secondary)] mb-5">
             Upload Document
           </h2>
@@ -217,7 +213,7 @@ export default function KnowledgeBasePage() {
                 className={`flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed py-9 px-6 cursor-pointer transition-colors text-center ${
                   dragOver
                     ? "border-[var(--color-accent-cyan)] bg-[var(--color-bg-base)]"
-                    : "border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] hover:border-[var(--color-border-active)]"
+                    : "border-[var(--color-border-subtle)] bg-[var(--color-bg-base)] hover:border-[var(--color-border-active)]"
                 }`}
               >
                 <UploadCloud className="w-9 h-9 text-[var(--color-text-muted)]" />
@@ -279,8 +275,8 @@ export default function KnowledgeBasePage() {
         </div>
 
         {/* Ingested Documents Table */}
-        <div className="xl:col-span-2 bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 shadow-[0_4px_30px_rgba(0,0,0,0.5)] flex flex-col min-h-[480px]">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-5">
+        <div className="flex min-h-[420px] flex-col rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] p-6 xl:col-span-2 xl:min-h-0">
+          <div className="flex flex-none flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-5">
             <div>
               <h2 className="text-[12px] font-bold uppercase tracking-widest text-[var(--color-text-secondary)]">
                 Documents Manager
@@ -299,7 +295,7 @@ export default function KnowledgeBasePage() {
                   setCurrentPage(1); // Reset page to 1
                 }}
                 placeholder="Search filenames…"
-                className="w-full pl-8 pr-8 py-2 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg text-[12.5px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-violet)] transition-colors"
+                className="w-full pl-8 pr-8 py-2 bg-[var(--color-bg-base)] border border-[var(--color-border-subtle)] rounded-lg text-[12.5px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-violet)] transition-colors"
               />
               {searchQuery && (
                 <button
@@ -313,14 +309,14 @@ export default function KnowledgeBasePage() {
           </div>
 
           {/* Table Container */}
-          <div className="flex-1 overflow-x-auto">
+          <div className="min-h-0 flex-1 overflow-auto">
             {loadingDocs ? (
               <div className="flex flex-col items-center justify-center h-48 gap-3">
                 <RefreshCw className="w-6 h-6 text-[var(--color-accent-cyan)] animate-spin" />
                 <p className="text-[var(--color-text-muted)] text-[13px]">Loading documents…</p>
               </div>
             ) : documents.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-48 border border-dashed border-[var(--color-border-subtle)] rounded-xl bg-[var(--color-bg-surface)]">
+              <div className="flex flex-col items-center justify-center h-48 border border-dashed border-[var(--color-border-subtle)] rounded-xl bg-[var(--color-bg-base)]">
                 <FileText className="w-7 h-7 text-[var(--color-text-muted)] mb-2" />
                 <p className="text-[var(--color-text-muted)] text-[13px]">
                   {searchQuery ? "No documents match your search query." : "No knowledge documents yet."}
@@ -347,7 +343,7 @@ export default function KnowledgeBasePage() {
                     });
 
                     return (
-                      <tr key={doc.id} className="text-[13px] hover:bg-[var(--color-bg-surface)] transition-colors">
+                      <tr key={doc.id} className="text-[13px] hover:bg-[var(--color-bg-elevated)] transition-colors">
                         <td className="py-3.5 pl-1 font-medium text-[var(--color-text-primary)]">
                           <div className="flex items-center gap-2 max-w-[200px] sm:max-w-xs md:max-w-md truncate" title={doc.filename}>
                             <FileText className="w-4 h-4 text-[var(--color-accent-violet)] shrink-0" />
@@ -381,7 +377,7 @@ export default function KnowledgeBasePage() {
 
           {/* Pagination Footer */}
           {!loadingDocs && totalCount > limit && (
-            <div className="flex items-center justify-between border-t border-[var(--color-border-subtle)] pt-4 mt-6">
+            <div className="flex flex-none items-center justify-between border-t border-[var(--color-border-subtle)] pt-4 mt-4">
               <span className="text-[12px] text-[var(--color-text-secondary)] font-mono">
                 Page {currentPage} of {totalPages}
               </span>
@@ -389,14 +385,14 @@ export default function KnowledgeBasePage() {
                 <button
                   onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
                   disabled={currentPage === 1}
-                  className="p-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-active)] hover:text-[var(--color-text-primary)] transition-all disabled:opacity-30 disabled:hover:border-[var(--color-border-subtle)] disabled:cursor-not-allowed"
+                  className="p-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-active)] hover:text-[var(--color-text-primary)] transition-all disabled:opacity-30 disabled:hover:border-[var(--color-border-subtle)] disabled:cursor-not-allowed"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
                 <button
                   onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
                   disabled={currentPage === totalPages}
-                  className="p-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-active)] hover:text-[var(--color-text-primary)] transition-all disabled:opacity-30 disabled:hover:border-[var(--color-border-subtle)] disabled:cursor-not-allowed"
+                  className="p-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-active)] hover:text-[var(--color-text-primary)] transition-all disabled:opacity-30 disabled:hover:border-[var(--color-border-subtle)] disabled:cursor-not-allowed"
                 >
                   <ChevronRight className="w-4 h-4" />
                 </button>
@@ -514,13 +510,13 @@ function StatusBadge({
       );
     case "superseded":
       return (
-        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-semibold bg-[var(--color-bg-surface)] text-[var(--color-text-muted)] border border-[var(--color-border-subtle)]">
+        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-semibold bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] border border-[var(--color-border-subtle)]">
           Superseded
         </span>
       );
     default:
       return (
-        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-semibold bg-[var(--color-bg-surface)] text-[var(--color-text-muted)] border border-[var(--color-border-subtle)]">
+        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-semibold bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] border border-[var(--color-border-subtle)]">
           Unknown
         </span>
       );

@@ -210,32 +210,29 @@ export default function AgentBuilderPage() {
   const isNewAgent = selectedId === "new";
 
   return (
-    <div className="p-6 md:p-10 font-body min-h-screen">
-      <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="font-display text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)] flex items-center gap-3">
-            <Bot className="w-8 h-8 text-[var(--color-accent-cyan)]" />
-            Agent Builder
-          </h1>
-          <p className="text-[15px] text-[var(--color-text-secondary)] mt-2 max-w-xl">
-            Create custom voice agents with their own instructions and persona — each one can be picked for
-            live testing or an outbound call from the public demo.
-          </p>
+    <div className="flex h-full flex-col font-body">
+      {/* Compact single-line title — matches the rest of the admin shell;
+          the breadcrumb above already names this page. */}
+      <header className="flex flex-none items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] px-6 py-3">
+        <div className="flex items-center gap-2">
+          <Bot className="h-4 w-4 text-[var(--color-accent-cyan)]" />
+          <span className="text-[13px] font-semibold text-[var(--color-text-primary)]">Agent Builder</span>
         </div>
         <button
           onClick={() => setShowCreateDialog(true)}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl btn-gradient text-white text-[14px] font-semibold shadow-[0_0_15px_var(--color-accent-glow)] transition-all hover:scale-[1.02] flex-none"
+          className="flex flex-none items-center gap-1.5 rounded-lg btn-gradient px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-all hover:scale-[1.02]"
         >
-          <Plus className="w-4 h-4" /> New Agent
+          <Plus className="h-3.5 w-3.5" /> New Agent
         </button>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-6">
-        {/* Agent list */}
-        <div className="flex flex-col gap-3">
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[280px_1fr]">
+        {/* Agent list — its own scroll region, independent of the editor
+            panel, so neither pushes the page itself into scrolling. */}
+        <div className="flex min-h-0 flex-col border-r border-[var(--color-border-subtle)]">
           {agents !== null && agents.length > 3 && (
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)]" />
+            <div className="relative flex-none p-3 pb-0">
+              <Search className="w-3.5 h-3.5 absolute left-6 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)]" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -245,7 +242,7 @@ export default function AgentBuilderPage() {
             </div>
           )}
 
-          <div className="flex flex-col gap-2">
+          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
             {agents === null && (
               <div className="flex items-center gap-2 text-[13px] text-[var(--color-text-secondary)] px-2 py-4">
                 <Loader2 className="w-4 h-4 animate-spin" /> Loading agents…
@@ -264,7 +261,7 @@ export default function AgentBuilderPage() {
                 key={a.id}
                 className={`group relative rounded-xl border transition-all ${
                   selectedId === a.id
-                    ? "border-[var(--color-border-active)] bg-[var(--color-bg-elevated)] shadow-[0_0_15px_var(--color-accent-glow)]"
+                    ? "border-[var(--color-border-active)] bg-[var(--color-bg-elevated)]"
                     : "border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] hover:border-[var(--color-border-active)]"
                 }`}
               >
@@ -301,9 +298,9 @@ export default function AgentBuilderPage() {
         </div>
 
         {/* Editor */}
-        <div>
+        <div className="flex min-h-0 flex-col">
           {!isEditing ? (
-            <div className="flex flex-col items-center justify-center text-center gap-3 rounded-2xl border border-dashed border-[var(--color-border-subtle)] py-20 px-6">
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
               <Bot className="w-8 h-8 text-[var(--color-text-muted)]" />
               <p className="text-[14px] text-[var(--color-text-secondary)] max-w-sm">
                 Select an agent to edit it, or create a new one — describe it and let AI draft it, or
@@ -311,15 +308,15 @@ export default function AgentBuilderPage() {
               </p>
             </div>
           ) : (
-            <div className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl shadow-[0_4px_30px_rgba(0,0,0,0.5)] overflow-hidden">
-              {/* Sticky header: name + quick actions */}
-              <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-6 py-4 border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)]/50">
+            <>
+              {/* Pinned header: name + quick actions */}
+              <div className="flex flex-none flex-col sm:flex-row sm:items-center gap-3 px-6 py-3 border-b border-[var(--color-border-subtle)]">
                 <input
                   type="text"
                   value={draft.name}
                   onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
                   placeholder="Untitled Agent"
-                  className="flex-1 min-w-0 bg-transparent border-0 focus:outline-none text-[18px] font-display font-bold text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)]"
+                  className="flex-1 min-w-0 bg-transparent border-0 focus:outline-none text-[16px] font-semibold text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)]"
                 />
                 <div className="flex items-center gap-2 flex-none">
                   {!isNewAgent && (
@@ -344,7 +341,7 @@ export default function AgentBuilderPage() {
               </div>
 
               {/* Tabs */}
-              <div className="flex items-center gap-1 px-6 pt-3 border-b border-[var(--color-border-subtle)]">
+              <div className="flex flex-none items-center gap-1 px-6 pt-2 border-b border-[var(--color-border-subtle)]">
                 {(["persona", "prompt", "knowledge"] as Tab[]).map((t) => (
                   <button
                     key={t}
@@ -360,7 +357,7 @@ export default function AgentBuilderPage() {
                 ))}
               </div>
 
-              <div className="p-6 md:p-8 flex flex-col gap-6">
+              <div className="min-h-0 flex-1 overflow-y-auto p-6 flex flex-col gap-6">
                 {tab === "persona" && (
                   <>
                     <div>
@@ -505,7 +502,7 @@ export default function AgentBuilderPage() {
                   )}
                 </div>
               </div>
-            </div>
+            </>
           )}
         </div>
       </div>
