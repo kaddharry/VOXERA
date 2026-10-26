@@ -18,6 +18,10 @@ export interface PlaceOutboundCallOptions {
    * update this specific campaign_calls row once the call finishes — see
    * app/api/telephony/status/route.ts. */
   campaignCallId?: number;
+  /** Set when dispatched by the follow-up scheduler. Stored on call_logs and
+   * also put on the status callback URL, so the callback can find the task
+   * even if it arrives before the call_logs row is written. */
+  followUpTaskId?: string;
 }
 
 /**
@@ -36,6 +40,7 @@ export async function placeOutboundCall(opts: PlaceOutboundCallOptions): Promise
 
   const statusParams = new URLSearchParams();
   if (opts.campaignCallId) statusParams.set("campaignCallId", String(opts.campaignCallId));
+  if (opts.followUpTaskId) statusParams.set("followUpTaskId", opts.followUpTaskId);
   const statusCallback = `${opts.baseUrl}/api/telephony/status${statusParams.toString() ? `?${statusParams}` : ""}`;
 
   const { callSid, status } = await initiateOutboundCall({ to: opts.to, webhookUrl, statusCallback });
@@ -47,6 +52,7 @@ export async function placeOutboundCall(opts: PlaceOutboundCallOptions): Promise
     status: "outbound_initiated",
     startedAt: Date.now(),
     patientId: opts.patientId ?? null,
+    ...(opts.followUpTaskId && { followUpTaskId: opts.followUpTaskId }),
   }]);
 
   return { callSid, status };

@@ -101,18 +101,20 @@ async function dispatchOne(
     return;
   }
 
+  // followUpTaskId goes into the call_logs insert and the Twilio status
+  // callback URL itself, so the outcome can always be tied back to this
+  // task — even when a call fails so fast that Twilio's callback arrives
+  // before the call_logs row exists (the old follow-up update here ran
+  // after the call was placed, too late for that case).
   const { callSid } = await placeOutboundCall({
     to: patient.phone,
     clientId: task.clientId,
     agentId,
     patientId: task.patientId,
+    followUpTaskId: task.id,
     baseUrl,
   });
-
-  await supabase
-    .from("call_logs")
-    .update({ followUpTaskId: task.id })
-    .eq("id", callSid);
+  console.log(`[Scheduler] Placed follow-up call ${callSid} for task ${task.id}.`);
 
   await supabase
     .from("follow_up_tasks")
