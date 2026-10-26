@@ -21,16 +21,59 @@ import { EventEmitter } from "events";
  * of deployment, this file is where a real shared store (Redis or
  * otherwise) needs to come back — not every call site that uses `redis`/
  * `redisSub`.
+ *
+ * "One process" is not the same as "one copy of this module", though. The
+ * custom server (custom-server.ts, run by tsx) imports this file through
+ * the telephony stream handler, while Next.js compiles its own separate
+ * copy into the route-handler bundles (e.g. the live SSE route). Two module
+ * copies meant two sets of static fields — two emitters — so a live call's
+ * events were published on one and the dashboard listened on the other,
+ * and nothing streamed. The shared state therefore lives on `globalThis`
+ * under a Symbol.for() key, which every copy in the process resolves to
+ * the same object.
  */
-class LocalStore extends EventEmitter {
-  private static store: Record<string, string> = {};
-  private static hashes: Record<string, Record<string, string>> = {};
-  private static zsets: Record<string, Array<{ member: string; score: number }>> = {};
-  private static globalEmitter = (() => {
+interface SharedLocalState {
+  store: Record<string, string>;
+  hashes: Record<string, Record<string, string>>;
+  zsets: Record<string, Array<{ member: string; score: number }>>;
+  emitter: EventEmitter;
+}
+
+const SHARED_KEY = Symbol.for("voxera.localStore.shared");
+
+function sharedState(): SharedLocalState {
+  const g = globalThis as typeof globalThis & { [SHARED_KEY]?: SharedLocalState };
+  if (!g[SHARED_KEY]) {
     const emitter = new EventEmitter();
-    emitter.setMaxListeners(100);
-    return emitter;
-  })();
+    // One listener per subscribed LocalStore instance (not per channel), so
+    // this only grows with open SSE connections; 0 = no warning cap.
+    emitter.setMaxListeners(0);
+    g[SHARED_KEY] = { store: {}, hashes: {}, zsets: {}, emitter };
+  }
+  return g[SHARED_KEY];
+}
+
+class LocalStore extends EventEmitter {
+  private static get store() {
+    return sharedState().store;
+  }
+  private static get hashes() {
+    return sharedState().hashes;
+  }
+  private static get zsets() {
+    return sharedState().zsets;
+  }
+  private static get globalEmitter() {
+    return sharedState().emitter;
+  }
+
+  /** Channels this instance is subscribed to. */
+  private channels = new Set<string>();
+  /** This instance's single forwarder on the shared emitter, attached only
+   * while it has at least one channel. */
+  private forwarder = (channel: string, message: string) => {
+    if (this.channels.has(channel)) this.emit("message", channel, message);
+  };
 
   constructor() {
     super();
@@ -120,19 +163,35 @@ class LocalStore extends EventEmitter {
     return 1;
   }
 
+  // Subscribing to the same channel twice is a no-op, like real Redis.
+  // Previously every subscribe() call added another permanent forwarder, so
+  // a channel subscribed twice (e.g. the dashboard reconnecting its SSE
+  // stream) delivered every message twice — and none were ever removed.
   async subscribe(channel: string): Promise<void> {
-    LocalStore.globalEmitter.on("message", (ch, msg) => {
-      if (ch === channel) {
-        this.emit("message", ch, msg);
-      }
-    });
+    this.channels.add(channel);
+    const emitter = LocalStore.globalEmitter;
+    if (!emitter.listeners("message").includes(this.forwarder)) {
+      emitter.on("message", this.forwarder);
+    }
+  }
+
+  /** Unsubscribes from one channel, or from every channel when called with
+   * no argument. Detaches this instance from the shared emitter once it has
+   * no channels left, so a closed SSE connection leaves nothing behind. */
+  async unsubscribe(channel?: string): Promise<void> {
+    if (channel === undefined) this.channels.clear();
+    else this.channels.delete(channel);
+    if (this.channels.size === 0) {
+      LocalStore.globalEmitter.removeListener("message", this.forwarder);
+    }
   }
 
   public static reset() {
-    LocalStore.store = {};
-    LocalStore.hashes = {};
-    LocalStore.zsets = {};
-    LocalStore.globalEmitter.removeAllListeners();
+    const state = sharedState();
+    state.store = {};
+    state.hashes = {};
+    state.zsets = {};
+    state.emitter.removeAllListeners();
   }
 }
 

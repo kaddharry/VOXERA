@@ -1,14 +1,15 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Radio, PhoneCall, ShieldAlert, Zap, Database, HelpCircle, History, Circle, LayoutGrid, Maximize2 } from "lucide-react";
+import { Radio, PhoneCall, ShieldAlert, Zap, Database, HelpCircle, History, Circle, LayoutGrid, Maximize2, Trash2, RotateCcw } from "lucide-react";
 import { EngineDiagnosticPanel, type DiagnosticEmotionResult } from "../../_components/EngineDashboard";
 
 interface ActiveCall {
   id: string;
   sessionId?: string;
   callerNumber: string;
+  patientId?: string | null;
   startedAt: number;
 }
 
@@ -16,6 +17,7 @@ interface RecentCall {
   id: string;
   sessionId?: string;
   callerNumber: string;
+  patientId?: string | null;
   status: string;
   startedAt: number;
   endedAt: number | null;
@@ -67,6 +69,69 @@ const EMOTION_HUE: Record<string, string> = {
   calm: "#38BDF8",
   neutral: "#A78BFA",
 };
+
+interface PatientInfo {
+  id: string;
+  name: string;
+  phone: string | null;
+}
+
+/** Browser-local marker for "Clear history": past calls that started at or
+ * before this instant are hidden from the Live Calls bar. Hiding, not
+ * deleting — call_logs also back Calls & Insights and each patient's
+ * history, which must keep them. */
+const HISTORY_CLEARED_KEY = "voxera.liveCalls.historyClearedAt";
+
+function readHistoryClearedAt(): number {
+  try {
+    return Number(window.localStorage.getItem(HISTORY_CLEARED_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeHistoryClearedAt(value: number) {
+  try {
+    if (value) window.localStorage.setItem(HISTORY_CLEARED_KEY, String(value));
+    else window.localStorage.removeItem(HISTORY_CLEARED_KEY);
+  } catch {
+    // Storage unavailable (private window, blocked site data) — the clear
+    // still applies for this page visit, it just won't be remembered.
+  }
+}
+
+const digitsOnly = (phone: string | null | undefined) => (phone ?? "").replace(/\D/g, "");
+
+/** The patient/client a call belongs to: by the call's patientId, else by
+ * matching the caller's number against a patient's phone (an inbound call
+ * from a known patient isn't tagged with patientId), else "Unknown caller".
+ * Never falls back to showing the raw phone number. */
+function callerName(
+  call: { patientId?: string | null; callerNumber: string } | null | undefined,
+  patients: Record<string, PatientInfo>,
+  patientsByPhone: Record<string, PatientInfo>,
+): string {
+  if (!call) return "Call";
+  if (call.patientId && patients[call.patientId]) return patients[call.patientId].name;
+  const digits = digitsOnly(call.callerNumber);
+  // Compare the last 10 digits so "+91 98765 43210" matches "9876543210".
+  const byPhone = digits ? patientsByPhone[digits.slice(-10)] : undefined;
+  return byPhone?.name ?? "Unknown caller";
+}
+
+/** "Today, 5:30 pm" / "Yesterday, 11:02 am" / "24 Oct, 9:15 am". */
+function formatCallTime(ms: number): string {
+  const date = new Date(ms);
+  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const dayMs = 24 * 60 * 60 * 1000;
+  if (ms >= startOfToday.getTime()) return `Today, ${time}`;
+  if (ms >= startOfToday.getTime() - dayMs) return `Yesterday, ${time}`;
+  const sameYear = date.getFullYear() === startOfToday.getFullYear();
+  const day = date.toLocaleDateString(undefined, { day: "numeric", month: "short", ...(sameYear ? {} : { year: "numeric" }) });
+  return `${day}, ${time}`;
+}
 
 function emptyLiveState(sessionId: string): LiveState {
   return {
@@ -177,6 +242,23 @@ function LiveDashboardInner() {
   const [replayCallMeta, setReplayCallMeta] = useState<RecentCall | null>(null);
   const transcriptContainerRef = useRef<HTMLDivElement | null>(null);
   const eventSourcesRef = useRef<Record<string, EventSource>>({});
+  // Patient names for the call bar/headers, keyed by id and by the last 10
+  // digits of their phone number.
+  const [patients, setPatients] = useState<Record<string, PatientInfo>>({});
+  const patientsByPhone = useMemo(() => {
+    const map: Record<string, PatientInfo> = {};
+    for (const p of Object.values(patients)) {
+      const digits = digitsOnly(p.phone);
+      if (digits) map[digits.slice(-10)] = p;
+    }
+    return map;
+  }, [patients]);
+  // Read after mount (not in the initializer) so server and client render
+  // the same first frame.
+  const [historyClearedAt, setHistoryClearedAt] = useState(0);
+  useEffect(() => {
+    setHistoryClearedAt(readHistoryClearedAt());
+  }, []);
 
   const isLive = activeCalls.some((c) => (c.sessionId || c.id) === sessionId);
 
@@ -223,8 +305,50 @@ function LiveDashboardInner() {
     return () => clearInterval(interval);
   }, []);
 
+  // Patient list — refreshed every minute so a patient added mid-session
+  // gets their name on the bar without a page reload.
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetch("/api/admin/patients");
+        const data = await res.json();
+        const byId: Record<string, PatientInfo> = {};
+        for (const p of data.patients ?? []) byId[p.id] = { id: p.id, name: p.name, phone: p.phone ?? null };
+        setPatients(byId);
+      } catch {
+        // keep last known names on a transient failure
+      }
+    }
+    load();
+    const interval = setInterval(load, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
   function selectCall(id: string) {
     setSessionId(id);
+  }
+
+  // Newest first. Past calls hidden by "Clear history" are filtered out
+  // here; live calls are never hidden.
+  const sortedActiveCalls = useMemo(() => [...activeCalls].sort((a, b) => b.startedAt - a.startedAt), [activeCalls]);
+  const visibleRecentCalls = useMemo(
+    () => recentCalls.filter((c) => c.startedAt > historyClearedAt).sort((a, b) => b.startedAt - a.startedAt),
+    [recentCalls, historyClearedAt],
+  );
+  const hiddenRecentCount = recentCalls.length - visibleRecentCalls.length;
+
+  function clearHistory() {
+    if (!window.confirm("Clear past calls from this bar? They stay saved in Calls & Insights and each patient's history.")) return;
+    const now = Date.now();
+    setHistoryClearedAt(now);
+    writeHistoryClearedAt(now);
+    // Drop the focus if it was on a past call that just got hidden.
+    setSessionId((current) => (current && activeCalls.some((c) => (c.sessionId || c.id) === current) ? current : null));
+  }
+
+  function restoreHistory() {
+    setHistoryClearedAt(0);
+    writeHistoryClearedAt(0);
   }
 
   // One persistent SSE connection PER active call, opened/closed to track
@@ -254,6 +378,24 @@ function LiveDashboardInner() {
         }
       };
       eventSourcesRef.current[id] = es;
+
+      // The stream only carries what happens from now on. If the call was
+      // already underway when this page opened (or the page was refreshed
+      // mid-call), load everything said so far from the persisted log so
+      // the transcript doesn't start blank. Skipped if live turns already
+      // arrived in the meantime, so nothing is shown twice.
+      fetch(`/api/session/${id}/replay`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          const snapshot = data?.liveState as LiveState | undefined;
+          if (!snapshot || !eventSourcesRef.current[id]) return;
+          setLiveStates((prev) => {
+            const existing = prev[id];
+            if (snapshot.transcript.length === 0 || (existing && existing.transcript.length > 0)) return prev;
+            return { ...prev, [id]: { ...snapshot, sessionId: id } };
+          });
+        })
+        .catch(() => {});
     }
 
     for (const id of openIds) {
@@ -297,6 +439,7 @@ function LiveDashboardInner() {
             id: data.call.id,
             sessionId,
             callerNumber: data.call.callerNumber,
+            patientId: data.call.patientId ?? null,
             status: data.call.status,
             startedAt: data.call.startedAt,
             endedAt: data.call.endedAt,
@@ -319,67 +462,97 @@ function LiveDashboardInner() {
   // down, eventually scrolling the header/nav off-screen entirely on a
   // long call. Setting scrollTop directly on the transcript's own
   // container touches only that element.
+  // Also keyed on the last bubble's text, so the view keeps following a
+  // reply as it streams in word by word, not only when a new bubble starts.
+  const turnCount = focusedLiveState?.transcript.length ?? 0;
+  const lastTurnText = focusedLiveState?.transcript[turnCount - 1]?.text;
   useEffect(() => {
     const el = transcriptContainerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [focusedLiveState?.transcript.length]);
+  }, [turnCount, lastTurnText]);
 
   const activeCall = activeCalls.find((c) => (c.sessionId || c.id) === sessionId);
   const recentCall = recentCalls.find((c) => (c.sessionId || c.id) === sessionId) ?? replayCallMeta;
-  const hasMultipleCalls = activeCalls.length + recentCalls.length > 1;
+  const hasAnyCalls = sortedActiveCalls.length + visibleRecentCalls.length > 0;
+  const focusedCall = activeCall ?? recentCall;
   const hue = focusedLiveState ? EMOTION_HUE[focusedLiveState.emotionLabel] ?? EMOTION_HUE.neutral : "#7679A0";
+
+  const chipClass = (selected: boolean, accent: "cyan" | "violet") =>
+    `flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1 text-[11.5px] transition-colors ${
+      selected
+        ? accent === "cyan"
+          ? "bg-[var(--console-cyan)]/20 border border-[var(--console-cyan)]/50 text-[var(--console-cyan)]"
+          : "bg-[var(--console-violet)]/20 border border-[var(--console-violet)]/50 text-[var(--console-violet)]"
+        : "bg-[var(--console-surface)]/60 border border-[var(--console-border)] text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
+    }`;
 
   return (
     <div className="flex h-full flex-col voxera-console">
       {/* Page header row — title, call switcher (single scrollable line,
           never wraps into extra rows) and the grid/focus toggle, all in one
-          compact strip instead of a tall centered hero. */}
+          compact strip instead of a tall centered hero. Each chip is the
+          patient's name plus when the call started, newest first: live
+          calls, then past ones. */}
       <div className="flex flex-none items-center gap-3 border-b border-[var(--console-border)] px-6 py-3">
         <div className="flex flex-none items-center gap-2">
           <Radio className="h-4 w-4 text-[var(--console-cyan)]" />
           <span className="text-[13px] font-semibold text-[var(--console-text)]">Live Calls</span>
         </div>
 
-        {hasMultipleCalls && (
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
-            {activeCalls.map((c) => {
-              const id = c.sessionId || c.id;
-              const selected = id === sessionId;
-              return (
-                <button
-                  key={id}
-                  onClick={() => selectCall(id)}
-                  className={`flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1 text-[11.5px] font-mono transition-colors ${
-                    selected && viewMode === "focus"
-                      ? "bg-[var(--console-cyan)]/20 border border-[var(--console-cyan)]/50 text-[var(--console-cyan)]"
-                      : "bg-[var(--console-surface)]/60 border border-[var(--console-border)] text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
-                  }`}
-                >
-                  <Circle className="h-2 w-2 fill-current animate-pulse" />
-                  {c.callerNumber || "Live call"}
-                </button>
-              );
-            })}
-            {recentCalls.map((c) => {
-              const id = c.sessionId || c.id;
-              const selected = id === sessionId;
-              return (
-                <button
-                  key={id}
-                  onClick={() => selectCall(id)}
-                  className={`flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1 text-[11.5px] font-mono transition-colors ${
-                    selected && viewMode === "focus"
-                      ? "bg-[var(--console-violet)]/20 border border-[var(--console-violet)]/50 text-[var(--console-violet)]"
-                      : "bg-[var(--console-surface)]/60 border border-[var(--console-border)] text-[var(--console-text-dim)] hover:text-[var(--console-text)]"
-                  }`}
-                >
-                  <History className="h-3 w-3" />
-                  {c.callerNumber || "Call"}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
+          {sortedActiveCalls.map((c) => {
+            const id = c.sessionId || c.id;
+            return (
+              <button
+                key={id}
+                onClick={() => selectCall(id)}
+                title={`Live · started ${formatCallTime(c.startedAt)}`}
+                className={chipClass(id === sessionId && viewMode === "focus", "cyan")}
+              >
+                <Circle className="h-2 w-2 fill-current animate-pulse" />
+                <span className="font-semibold">{callerName(c, patients, patientsByPhone)}</span>
+                <span className="opacity-70">· Live</span>
+              </button>
+            );
+          })}
+          {visibleRecentCalls.map((c) => {
+            const id = c.sessionId || c.id;
+            return (
+              <button
+                key={id}
+                onClick={() => selectCall(id)}
+                className={chipClass(id === sessionId && viewMode === "focus", "violet")}
+              >
+                <History className="h-3 w-3" />
+                <span className="font-semibold">{callerName(c, patients, patientsByPhone)}</span>
+                <span className="opacity-70">· {formatCallTime(c.startedAt)}</span>
+              </button>
+            );
+          })}
+          {!hasAnyCalls && hiddenRecentCount > 0 && (
+            <span className="text-[11.5px] italic text-[var(--console-text-dim)]">History cleared</span>
+          )}
+        </div>
+
+        {visibleRecentCalls.length > 0 ? (
+          <button
+            onClick={clearHistory}
+            title="Hide past calls from this bar (they stay in Calls & Insights)"
+            className="flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--console-border)] bg-[var(--console-surface)]/60 px-3 py-1 text-[11.5px] text-[var(--console-text-dim)] transition-colors hover:border-red-500/50 hover:text-red-400"
+          >
+            <Trash2 className="h-3 w-3" />
+            Clear history
+          </button>
+        ) : hiddenRecentCount > 0 ? (
+          <button
+            onClick={restoreHistory}
+            title="Show the past calls you cleared again"
+            className="flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--console-border)] bg-[var(--console-surface)]/60 px-3 py-1 text-[11.5px] text-[var(--console-text-dim)] transition-colors hover:text-[var(--console-text)]"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Show cleared ({hiddenRecentCount})
+          </button>
+        ) : null}
 
         {/* Watching 2+ live callers at once needs a side-by-side grid, not
             just fast switching between single-focus views — this toggle is
@@ -403,7 +576,7 @@ function LiveDashboardInner() {
       <div className="min-h-0 flex-1 p-4">
         {viewMode === "grid" ? (
           <div className="grid h-full grid-cols-1 gap-4 overflow-y-auto md:grid-cols-2">
-            {activeCalls.map((c) => {
+            {sortedActiveCalls.map((c) => {
               const id = c.sessionId || c.id;
               const state = liveStates[id];
               const cardHue = state ? EMOTION_HUE[state.emotionLabel] ?? EMOTION_HUE.neutral : "#7679A0";
@@ -420,7 +593,7 @@ function LiveDashboardInner() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="h-2 w-2 rounded-full animate-pulse" style={{ background: cardHue }} />
-                      <span className="text-[13.5px] font-bold text-[var(--console-text)]">{c.callerNumber || "Live call"}</span>
+                      <span className="text-[13.5px] font-bold text-[var(--console-text)]">{callerName(c, patients, patientsByPhone)}</span>
                     </div>
                     <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--console-text-dim)] capitalize">
                       {state?.emotionLabel ?? "neutral"}
@@ -478,17 +651,19 @@ function LiveDashboardInner() {
                 <span className="h-2.5 w-2.5 flex-none rounded-full animate-pulse" style={{ background: hue }} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[13.5px] font-bold text-[var(--console-text)]">
-                    {activeCall?.callerNumber || recentCall?.callerNumber || "Call"}
+                    {callerName(focusedCall, patients, patientsByPhone)}
                   </div>
                   <div className="flex items-center gap-1.5 text-[10.5px] font-mono uppercase tracking-widest text-[var(--console-text-dim)]">
                     {activeCall ? (
                       <>
                         <span className="text-[var(--console-cyan)]">On call</span>
+                        <span>· {formatCallTime(activeCall.startedAt)}</span>
                         {focusedLiveState && <span className="capitalize">· {focusedLiveState.emotionLabel}</span>}
                       </>
                     ) : (
                       <>
                         <History className="h-3 w-3" />
+                        {recentCall?.startedAt ? `${formatCallTime(recentCall.startedAt)} · ` : ""}
                         Ended{recentCall?.durationMs ? ` · ${Math.round(recentCall.durationMs / 1000)}s` : ""}
                         {recentCall?.status === "failed" && <span className="text-red-400">· failed</span>}
                       </>

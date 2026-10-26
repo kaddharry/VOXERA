@@ -35,7 +35,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
   const { data: call } = await supabase
     .from("call_logs")
-    .select("id, callerNumber, status, startedAt, endedAt, durationMs")
+    .select('id, "callerNumber", "patientId", status, "startedAt", "endedAt", "durationMs"')
     .eq("sessionId", sessionId)
     .eq("clientId", user.id)
     .maybeSingle();
@@ -141,6 +141,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     call: {
       id: call.id,
       callerNumber: call.callerNumber,
+      patientId: call.patientId ?? null,
       status: call.status,
       startedAt: call.startedAt,
       endedAt: call.endedAt,
