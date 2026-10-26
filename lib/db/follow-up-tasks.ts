@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { resolveWithinWindow } from "../scheduler/policy";
 import { nanoid } from "nanoid";
 
 /**
@@ -99,7 +100,14 @@ export async function createFollowUpTask(
       patientId: fields.patientId,
       agentId: fields.agentId ?? null,
       status: "scheduled",
-      nextAttemptAt: fields.scheduledAt,
+      // The first attempt obeys the calling window too, not just retries —
+      // otherwise a call scheduled for 11pm with a 10:00–18:00 window went
+      // out at 11pm.
+      nextAttemptAt: resolveWithinWindow(fields.scheduledAt, {
+        windowStartMinute: fields.windowStartMinute,
+        windowEndMinute: fields.windowEndMinute,
+        timezone: fields.timezone ?? "UTC",
+      }),
       timezone: fields.timezone ?? "UTC",
       windowStartMinute: fields.windowStartMinute ?? null,
       windowEndMinute: fields.windowEndMinute ?? null,
@@ -152,7 +160,11 @@ export async function createFollowUpRange(
     patientId: fields.patientId,
     agentId: fields.agentId ?? null,
     status: "scheduled" as const,
-    nextAttemptAt: scheduledAt,
+    nextAttemptAt: resolveWithinWindow(scheduledAt, {
+      windowStartMinute: fields.windowStartMinute,
+      windowEndMinute: fields.windowEndMinute,
+      timezone: fields.timezone ?? "UTC",
+    }),
     timezone: fields.timezone ?? "UTC",
     windowStartMinute: fields.windowStartMinute ?? null,
     windowEndMinute: fields.windowEndMinute ?? null,
@@ -181,12 +193,30 @@ export async function setFollowUpTaskStatus(
   action: "pause" | "resume" | "cancel",
   resumeAt?: number,
 ): Promise<FollowUpTaskRecord | null> {
-  const updates: Record<string, unknown> =
-    action === "pause"
-      ? { status: "paused", pausedAt: Date.now() }
-      : action === "cancel"
-        ? { status: "cancelled", cancelledAt: Date.now() }
-        : { status: "scheduled", pausedAt: null, nextAttemptAt: resumeAt ?? Date.now() };
+  let updates: Record<string, unknown>;
+  if (action === "pause") {
+    updates = { status: "paused", pausedAt: Date.now() };
+  } else if (action === "cancel") {
+    updates = { status: "cancelled", cancelledAt: Date.now() };
+  } else {
+    // Resuming re-applies the task's own calling window, so "resume now"
+    // at night waits for the window instead of calling immediately.
+    const { data: current } = await db
+      .from("follow_up_tasks")
+      .select('timezone, "windowStartMinute", "windowEndMinute"')
+      .eq("id", taskId)
+      .eq("clientId", clientId)
+      .maybeSingle();
+    const candidate = Math.max(resumeAt ?? Date.now(), Date.now());
+    const nextAttemptAt = current
+      ? resolveWithinWindow(candidate, {
+          windowStartMinute: current.windowStartMinute,
+          windowEndMinute: current.windowEndMinute,
+          timezone: current.timezone,
+        })
+      : candidate;
+    updates = { status: "scheduled", pausedAt: null, nextAttemptAt };
+  }
 
   const { data, error } = await db
     .from("follow_up_tasks")
