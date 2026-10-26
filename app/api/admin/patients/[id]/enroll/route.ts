@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "../../../../../../lib/db/server";
 import { getPatient } from "../../../../../../lib/db/patients";
 import { enrollPatientInProgramme } from "../../../../../../lib/db/follow-up-programmes";
+import { isValidTimeZone } from "../../../../../../lib/scheduler/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const { id } = await params;
   const patient = await getPatient(supabase, id, user.id);
   if (!patient) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (patient.doNotContact) return NextResponse.json({ error: "This patient is marked Do Not Contact." }, { status: 400 });
 
   const body = await request.json().catch(() => null);
   if (!body?.programmeId || typeof body.programmeId !== "string") {
@@ -29,6 +31,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // patient has an agent, every step the dispatcher ever tries just bails
   // out with a silent "No agent assigned" alert instead of calling — catch
   // it at enrollment time instead.
+  const timezone = body.timezone ?? "UTC";
+  if (!isValidTimeZone(timezone)) {
+    return NextResponse.json({ error: `Unknown timezone "${timezone}".` }, { status: 400 });
+  }
+
   const { data: programmeRow } = await supabase
     .from("follow_up_programmes")
     .select('"agentId"')
@@ -44,7 +51,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     programmeId: body.programmeId,
     patientId: id,
     startAt: body.startAt,
-    timezone: typeof body.timezone === "string" ? body.timezone : "UTC",
+    timezone,
     patientAssignedAgentId: resolvedAgentId,
   });
   if (tasks.length === 0) {

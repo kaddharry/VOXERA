@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "../../../../../../lib/db/server";
 import { getPatient } from "../../../../../../lib/db/patients";
 import { createFollowUpRange } from "../../../../../../lib/db/follow-up-tasks";
+import { resolveWithinWindow } from "../../../../../../lib/scheduler/policy";
+import { isValidTimeZone, localDateKey, validateCallingWindow } from "../../../../../../lib/scheduler/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -40,10 +42,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!dailyAttemptTimes.every((t: unknown) => typeof t === "number" && Number.isFinite(t))) {
     return NextResponse.json({ error: "dailyAttemptTimes must all be unix-ms numbers." }, { status: 400 });
   }
+  // A range that includes today at a time that's already gone by (e.g.
+  // "10am daily from today" scheduled at 5pm) used to be rejected outright
+  // with "every date must be today or later", which read as if the dates
+  // were wrong. Today's call is skipped instead and the rest are kept.
   const earliestAllowed = Date.now() - 60_000;
-  if (dailyAttemptTimes.some((t: number) => t < earliestAllowed)) {
-    return NextResponse.json({ error: "Every date in the range must be today or later." }, { status: 400 });
+  const upcomingTimes = (dailyAttemptTimes as number[]).filter((t) => t >= earliestAllowed);
+  if (upcomingTimes.length === 0) {
+    return NextResponse.json(
+      { error: "That time has already passed for every selected day. Pick a later time or later dates." },
+      { status: 400 },
+    );
   }
+  const skippedPastDays = dailyAttemptTimes.length - upcomingTimes.length;
 
   const maxAttemptsPerDay = Number(body.maxAttemptsPerDay ?? 3);
   const retryDelayMinutes = Number(body.retryDelayMinutes ?? 30);
@@ -66,16 +77,39 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "This patient has no assigned agent — pick one before scheduling." }, { status: 400 });
   }
 
+  const timezone = body.timezone ?? "UTC";
+  if (!isValidTimeZone(timezone)) {
+    return NextResponse.json({ error: `Unknown timezone "${timezone}".` }, { status: 400 });
+  }
+  const windowError = validateCallingWindow(body.windowStartMinute, body.windowEndMinute);
+  if (windowError) return NextResponse.json({ error: windowError }, { status: 400 });
+
+  // Each day's first attempt is moved into the calling window when it's
+  // created. A time before the window just moves later the same day, but
+  // one after the window closes would move onto the next day, where that
+  // day already has its own task — two calls on one day and none on the
+  // last. Ask for a time inside the window instead.
+  const window = { windowStartMinute: body.windowStartMinute, windowEndMinute: body.windowEndMinute, timezone };
+  const spillsOver = upcomingTimes.some(
+    (t) => localDateKey(resolveWithinWindow(t, window), timezone) !== localDateKey(t, timezone),
+  );
+  if (spillsOver) {
+    return NextResponse.json(
+      { error: "The daily call time is after the calling window closes. Pick a time inside the calling window." },
+      { status: 400 },
+    );
+  }
+
   const tasks = await createFollowUpRange(supabase, user.id, {
     patientId: id,
     agentId,
-    dailyAttemptTimes,
-    timezone: typeof body.timezone === "string" ? body.timezone : "UTC",
+    dailyAttemptTimes: upcomingTimes,
+    timezone,
     windowStartMinute: typeof body.windowStartMinute === "number" ? body.windowStartMinute : null,
     windowEndMinute: typeof body.windowEndMinute === "number" ? body.windowEndMinute : null,
     maxAttemptsPerDay,
     retryDelayMinutes,
   });
   if (tasks.length === 0) return NextResponse.json({ error: "Failed to schedule the range." }, { status: 500 });
-  return NextResponse.json({ tasks }, { status: 201 });
+  return NextResponse.json({ tasks, skippedPastDays }, { status: 201 });
 }
