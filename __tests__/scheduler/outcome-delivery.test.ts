@@ -31,6 +31,7 @@ vi.mock("../../lib/telephony/twilio", () => ({
 vi.mock("../../lib/scheduler/dispatcher", () => ({
   handleFollowUpCallOutcome: vi.fn(async () => {}),
   applyDoNotContactRequest: vi.fn(async () => {}),
+  readAnsweredBy: vi.fn(async () => undefined),
 }));
 vi.mock("../../lib/agent/call-summary", () => ({ generateCallSummary: vi.fn() }));
 vi.mock("../../lib/db/demo-requests", () => ({ updateDemoRequestStatusByCallSid: vi.fn(async () => {}) }));
