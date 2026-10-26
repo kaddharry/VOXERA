@@ -2,6 +2,7 @@ import { supabase } from "../db/supabase";
 import { placeOutboundCall, isLocalBaseUrl } from "../telephony/outbound";
 import { getPatientById } from "../db/patients";
 import { decideNextStep, resolveWithinWindow, type RetryDecisionInput } from "./policy";
+import { reconcileStuckCall, STUCK_CALL_TIMEOUT_MS } from "./stuck-calls";
 import type { FollowUpStatus } from "../db/follow-up-tasks";
 
 const DISPATCH_LEASE_MS = 2 * 60 * 1000; // a claimed-but-undispatched task is reclaimable after this
@@ -24,12 +25,20 @@ export async function runDispatchCycle(baseUrl: string): Promise<{ dispatched: n
   const now = Date.now();
   const staleLeaseCutoff = now - DISPATCH_LEASE_MS;
 
+  // Claims due "scheduled" tasks, plus "dispatching" tasks whose lease went
+  // stale — a worker that crashed or restarted between claiming a task and
+  // placing its call. Previously only "scheduled" rows were matched, so the
+  // stale-lease recovery never actually ran and such a task stayed in
+  // "dispatching" forever (and the UI won't let staff edit a task in that
+  // state either).
   const { data: claimed, error } = await supabase
     .from("follow_up_tasks")
     .update({ status: "dispatching", claimedAt: now, claimedBy: WORKER_ID })
-    .in("status", ["scheduled"])
     .lte("nextAttemptAt", now)
-    .or(`claimedAt.is.null,claimedAt.lt.${staleLeaseCutoff}`)
+    .or(
+      `and(status.eq.scheduled,or(claimedAt.is.null,claimedAt.lt.${staleLeaseCutoff})),` +
+        `and(status.eq.dispatching,claimedAt.lt.${staleLeaseCutoff})`,
+    )
     .select('id, "patientId", "clientId", "agentId", "attemptCount"')
     .limit(25);
 
@@ -107,8 +116,18 @@ async function dispatchOne(
 
   await supabase
     .from("follow_up_tasks")
-    .update({ status: "calling", attemptCount: task.attemptCount + 1, claimedAt: null, claimedBy: null })
-    .eq("id", task.id);
+    .update({
+      status: "calling",
+      attemptCount: task.attemptCount + 1,
+      // While "calling", claimedAt is when the call started and claimedBy
+      // which call it is, so a call whose outcome never arrives can be
+      // found later (reconcileStuckCalls). Only a task still "dispatching"
+      // moves: an outcome that already arrived wins.
+      claimedAt: Date.now(),
+      claimedBy: `call:${callSid}`,
+    })
+    .eq("id", task.id)
+    .eq("status", "dispatching");
 }
 
 async function markNeedsReview(
@@ -146,16 +165,24 @@ export async function handleFollowUpCallOutcome(input: {
   const { data: task } = await supabase
     .from("follow_up_tasks")
     .select(
-      'id, "clientId", "patientId", timezone, "windowStartMinute", "windowEndMinute", "retryDelayMinutes", "finalAction", "attemptCount", "maxAttempts"',
+      'id, "clientId", "patientId", status, timezone, "windowStartMinute", "windowEndMinute", "retryDelayMinutes", "finalAction", "attemptCount", "maxAttempts"',
     )
     .eq("id", input.taskId)
     .maybeSingle();
   if (!task) return;
+  // Only a call in flight has an outcome to apply. Anything else means it
+  // was already handled (a duplicate callback, or the stuck-call sweep got
+  // there first) or staff changed it, and must not be moved again — e.g.
+  // a retry flipping a cancelled task back to "scheduled".
+  if (task.status !== "calling" && task.status !== "dispatching") return;
+  // A callback can land before dispatchOne finished bumping attemptCount
+  // (a call that failed within milliseconds); count that attempt here.
+  const attemptCount = task.status === "dispatching" ? task.attemptCount + 1 : task.attemptCount;
 
   const decision = decideNextStep({
     twilioStatus: input.twilioStatus,
     followUpOutcome: input.followUpOutcome,
-    attemptCount: task.attemptCount,
+    attemptCount,
     maxAttempts: task.maxAttempts,
   });
   const terminalStatus: Record<string, FollowUpStatus> = {
@@ -172,8 +199,16 @@ export async function handleFollowUpCallOutcome(input: {
     });
     await supabase
       .from("follow_up_tasks")
-      .update({ status: "scheduled", nextAttemptAt, lastOutcome: input.followUpOutcome ?? input.twilioStatus })
-      .eq("id", task.id);
+      .update({
+        status: "scheduled",
+        nextAttemptAt,
+        attemptCount,
+        lastOutcome: input.followUpOutcome ?? input.twilioStatus,
+        claimedAt: null,
+        claimedBy: null,
+      })
+      .eq("id", task.id)
+      .eq("status", task.status);
     return;
   }
 
@@ -201,10 +236,14 @@ export async function handleFollowUpCallOutcome(input: {
     .from("follow_up_tasks")
     .update({
       status: finalStatus,
+      attemptCount,
       completedAt: finalStatus === "completed" ? Date.now() : null,
       lastOutcome: input.followUpOutcome ?? input.twilioStatus,
+      claimedAt: null,
+      claimedBy: null,
     })
-    .eq("id", task.id);
+    .eq("id", task.id)
+    .eq("status", task.status);
 
   if (finalStatus === "exhausted" && task.finalAction === "needs_review") {
     await markNeedsReview(task.id, task.clientId, task.patientId, "All scheduled attempts exhausted without reaching the patient.", callRef);
@@ -233,6 +272,51 @@ export async function applyDoNotContactRequest(clientId: string, patientId: stri
     .in("status", ["scheduled", "paused"]);
 }
 
+/**
+ * Finds follow-up tasks stuck in "calling" — their call started more than
+ * STUCK_CALL_TIMEOUT_MS ago and no outcome ever arrived — and settles each
+ * from its call_logs row: retry/complete like a normal outcome when the
+ * call's end is on record, otherwise hand it to a human. Without this, a
+ * single lost Twilio callback left the patient's follow-up "calling"
+ * forever, with no retry and no alert.
+ */
+export async function reconcileStuckCalls(): Promise<number> {
+  const cutoff = Date.now() - STUCK_CALL_TIMEOUT_MS;
+  const { data: stuck, error } = await supabase
+    .from("follow_up_tasks")
+    .select('id, "clientId", "patientId"')
+    .eq("status", "calling")
+    .or(`claimedAt.is.null,claimedAt.lt.${cutoff}`)
+    .limit(25);
+  if (error || !stuck) return 0;
+
+  for (const task of stuck) {
+    try {
+      const { data: call } = await supabase
+        .from("call_logs")
+        .select('id, "sessionId", status, summary, "startedAt"')
+        .eq("followUpTaskId", task.id)
+        .order("startedAt", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      // Tasks moved to "calling" before claimedAt was stamped have no start
+      // time on the task itself; go by the call's own start instead, so a
+      // call that's genuinely still running isn't cut off.
+      if (call?.startedAt && call.startedAt > cutoff) continue;
+
+      const verdict = reconcileStuckCall(call ?? null);
+      if ("needsReview" in verdict) {
+        await markNeedsReview(task.id, task.clientId, task.patientId, verdict.needsReview, call ? { callId: call.id, sessionId: call.sessionId } : undefined);
+      } else {
+        await handleFollowUpCallOutcome({ taskId: task.id, ...verdict });
+      }
+    } catch (err) {
+      console.error(`[Scheduler] Failed to reconcile stuck task ${task.id}:`, err);
+    }
+  }
+  return stuck.length;
+}
+
 /** Starts the polling loop. Call once from custom-server.ts. */
 export function startSchedulerPolling(intervalMs = 30_000) {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "";
@@ -240,8 +324,31 @@ export function startSchedulerPolling(intervalMs = 30_000) {
     console.warn("[Scheduler] NEXT_PUBLIC_BASE_URL not set — follow-up dispatch loop will not run.");
     return;
   }
-  setInterval(() => {
-    runDispatchCycle(baseUrl).catch((err) => console.error("[Scheduler] Dispatch cycle failed:", err));
+  if (isLocalBaseUrl(baseUrl)) {
+    // Twilio can't reach localhost, so every due task would be claimed,
+    // fail and be released again every cycle. Leave them scheduled.
+    console.warn(
+      `[Scheduler] NEXT_PUBLIC_BASE_URL is ${baseUrl}, which Twilio can't reach — follow-up dispatch loop will not run. Use a public URL (e.g. ngrok) to test scheduled calls.`,
+    );
+    return;
+  }
+
+  // One cycle at a time: a slow cycle (25 calls, each a Twilio API round
+  // trip) must not overlap the next tick.
+  let running = false;
+  let ticks = 0;
+  setInterval(async () => {
+    if (running) return;
+    running = true;
+    try {
+      await runDispatchCycle(baseUrl);
+      // Sweeping for lost callbacks doesn't need to run every 30s.
+      if (ticks++ % 10 === 0) await reconcileStuckCalls();
+    } catch (err) {
+      console.error("[Scheduler] Dispatch cycle failed:", err);
+    } finally {
+      running = false;
+    }
   }, intervalMs);
   console.log(`[Scheduler] Follow-up dispatch loop started (every ${intervalMs / 1000}s).`);
 }
