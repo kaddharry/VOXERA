@@ -60,36 +60,54 @@ export function decideNextStep(input: RetryDecisionInput): RetryDecision {
 
 export interface CallingWindow {
   /** Minutes since local midnight, e.g. 600 = 10:00. Both undefined means
-   * no window restriction. */
-  windowStartMinute?: number;
-  windowEndMinute?: number;
+   * no window restriction. A start later than the end is an overnight
+   * window (e.g. 20:00–02:00). */
+  windowStartMinute?: number | null;
+  windowEndMinute?: number | null;
   timezone: string;
+}
+
+function isInsideWindow(minute: number, start: number, end: number): boolean {
+  return start < end ? minute >= start && minute < end : minute >= start || minute < end;
 }
 
 /**
  * Given a candidate instant and a local calling window, returns the actual
- * instant to dispatch at: unchanged if already inside the window, or
- * pushed forward to the window's start (same day if the candidate is
- * before the window, next day if after it ends) — never backward, and
- * never outside the window. Spec §10.3: "If the delay lands outside the
- * window, move it to the next allowed time."
+ * instant to dispatch at: unchanged if already inside the window, otherwise
+ * the next time the window opens — never backward. Spec §10.3: "If the
+ * delay lands outside the window, move it to the next allowed time."
+ *
+ * Handles overnight windows (start > end, e.g. 20:00–02:00), and computes
+ * "tomorrow" from the local calendar rather than adding 24h, so the result
+ * stays on the window start across DST changes.
  */
 export function resolveWithinWindow(candidateMs: number, window: CallingWindow): number {
-  if (window.windowStartMinute == null || window.windowEndMinute == null) return candidateMs;
+  const { windowStartMinute: start, windowEndMinute: end, timezone } = window;
+  if (start == null || end == null || start === end) return candidateMs;
 
-  const minutesInDay = getLocalMinuteOfDay(candidateMs, window.timezone);
-  if (minutesInDay >= window.windowStartMinute && minutesInDay < window.windowEndMinute) {
-    return candidateMs;
-  }
+  const minutesInDay = getLocalMinuteOfDay(candidateMs, timezone);
+  if (isInsideWindow(minutesInDay, start, end)) return candidateMs;
 
-  const dayStartMs = getLocalMidnightMs(candidateMs, window.timezone);
-  const windowStartTodayMs = dayStartMs + window.windowStartMinute * 60_000;
+  // Outside the window. For a same-day window (start < end) that's either
+  // before today's opening or after today's close; for an overnight window
+  // it can only be the daytime gap before tonight's opening.
+  const opensToday = minutesInDay < start;
+  const dayStartMs = getLocalMidnightMs(candidateMs, timezone);
+  const targetDayStartMs = opensToday
+    ? dayStartMs
+    : // Midnight of the next local calendar day. +36h always lands inside
+      // tomorrow, even on a 23h or 25h DST day.
+      getLocalMidnightMs(dayStartMs + 36 * 60 * 60_000, timezone);
+  return localTimeToMs(targetDayStartMs, start, timezone);
+}
 
-  if (minutesInDay < window.windowStartMinute) {
-    return windowStartTodayMs;
-  }
-  // Past the end of today's window — push to tomorrow's window start.
-  return windowStartTodayMs + 24 * 60 * 60_000;
+/** The instant a local wall-clock time (minutes since midnight) occurs on
+ * the local day starting at `dayStartMs`, correcting for a DST change
+ * between midnight and that time. */
+function localTimeToMs(dayStartMs: number, minuteOfDay: number, timeZone: string): number {
+  const guess = dayStartMs + minuteOfDay * 60_000;
+  const drift = getTimezoneOffsetMinutes(guess, timeZone) - getTimezoneOffsetMinutes(dayStartMs, timeZone);
+  return guess - drift * 60_000;
 }
 
 function getLocalMinuteOfDay(ms: number, timeZone: string): number {
