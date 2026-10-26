@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { redisSub } from "../../../../../lib/redis/client";
+import { LocalStore } from "../../../../../lib/redis/client";
 import { createClient } from "../../../../../lib/db/server";
 
 export const dynamic = "force-dynamic";
@@ -46,36 +46,57 @@ export async function GET(
   }
 
   const encoder = new TextEncoder();
+  // A subscriber of its own per connection rather than the shared redisSub:
+  // it can be fully unsubscribed when this viewer leaves, and one viewer
+  // reconnecting can never make another viewer receive messages twice.
+  const subscriber = new LocalStore();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    subscriber.removeAllListeners("message");
+    void subscriber.unsubscribe();
+  };
 
   const stream = new ReadableStream({
     async start(controller) {
-      // Send initial connection event
-      controller.enqueue(
-        encoder.encode(`data: ${JSON.stringify({ type: "connected", sessionId })}\n\n`)
-      );
-
-      const messageHandler = (ch: string, message: string) => {
-        if (ch === channel) {
-          try {
-            controller.enqueue(encoder.encode(`data: ${message}\n\n`));
-          } catch (err) {
-            console.error(`[SSE Stream] Error enqueuing message for ${sessionId}:`, err);
-          }
+      const send = (chunk: string) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch {
+          // The client went away between the check above and this write.
+          cleanup();
         }
       };
 
-      try {
-        await redisSub.subscribe(channel);
-        redisSub.on("message", messageHandler);
-      } catch (err) {
-        console.error(`[SSE Stream] Redis subscribe error for ${sessionId}:`, err);
-      }
+      // Send initial connection event
+      send(`data: ${JSON.stringify({ type: "connected", sessionId })}\n\n`);
+
+      subscriber.on("message", (ch: string, message: string) => {
+        if (ch === channel) send(`data: ${message}\n\n`);
+      });
+      await subscriber.subscribe(channel);
+
+      // SSE comment line every 15s. Silences between turns (the agent
+      // thinking, the caller pausing) can outlast a proxy or load
+      // balancer's idle timeout; without traffic it would cut the
+      // connection mid-call and any events during the reconnect gap would
+      // be lost.
+      heartbeat = setInterval(() => send(`: ping\n\n`), 15_000);
 
       req.signal.addEventListener("abort", () => {
+        cleanup();
         try {
-          redisSub.removeListener("message", messageHandler);
+          controller.close();
         } catch {}
       });
+    },
+    cancel() {
+      cleanup();
     },
   });
 
@@ -84,6 +105,8 @@ export async function GET(
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      // Stops nginx-style proxies from buffering the stream into batches.
+      "X-Accel-Buffering": "no",
     },
   });
 }
