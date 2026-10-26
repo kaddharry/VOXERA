@@ -26,6 +26,14 @@ export interface RetryDecisionInput {
    * place; undefined means unknown.
    */
   patientSpoke?: boolean;
+  /**
+   * Twilio Answering Machine Detection verdict (AnsweredBy), when the call
+   * used it: "human", "machine_start", "machine_end_*", "fax" or "unknown".
+   * A machine answer means nobody was reached, even if the voicemail
+   * greeting was transcribed as speech. "human" and "unknown" don't decide
+   * anything on their own — a human can answer and hang up at once.
+   */
+  answeredBy?: string | null;
   /** The patient asked not to be called (on this call or previously). */
   doNotContact?: boolean;
   attemptCount: number;
@@ -35,6 +43,7 @@ export interface RetryDecisionInput {
 /** Why a day is being retried or has run out of attempts; stored as the task's lastOutcome. */
 export type AttemptResult =
   | TwilioCallStatus
+  | "voicemail"
   | "no_conversation"
   | "call_back_requested"
   | "outcome_unclear";
@@ -50,8 +59,9 @@ export type RetryDecision =
  *
  * - The patient asked not to be called: stop now (cancelled), never retry.
  * - Never connected (busy / no-answer / failed / canceled): retry.
- * - Connected but the patient never spoke (voicemail, immediate hang-up,
- *   audio never started): retry — nobody was actually reached.
+ * - Answered by a machine (Twilio AMD): retry — nobody was reached.
+ * - Connected but the patient never spoke (voicemail without AMD,
+ *   immediate hang-up, audio never started): retry — nobody was reached.
  * - Connected, and the summary says the follow-up was completed
  *   ("resolved"): completed; no more attempts that day.
  * - Connected, and the summary says call back / inconclusive, OR the
@@ -78,6 +88,7 @@ export function decideNextStep(input: RetryDecisionInput): RetryDecision {
   if (RETRYABLE_TWILIO_STATUSES.has(input.twilioStatus)) return retryOrExhaust(input.twilioStatus);
 
   // Connected ("completed" from Twilio's side).
+  if (input.answeredBy && isMachineAnswer(input.answeredBy)) return retryOrExhaust("voicemail");
   if (input.patientSpoke === false) return retryOrExhaust("no_conversation");
   switch (input.followUpOutcome) {
     case "resolved":
@@ -87,6 +98,10 @@ export function decideNextStep(input: RetryDecisionInput): RetryDecision {
     default:
       return retryOrExhaust("outcome_unclear");
   }
+}
+
+export function isMachineAnswer(answeredBy: string): boolean {
+  return answeredBy === "fax" || answeredBy.startsWith("machine_");
 }
 
 /** Human-readable text for a retry/exhaustion result, for alerts and the UI. */
@@ -100,6 +115,8 @@ export function describeAttemptResult(result: AttemptResult | string): string {
       return "call failed to connect";
     case "canceled":
       return "call cancelled before connecting";
+    case "voicemail":
+      return "answered by voicemail";
     case "no_conversation":
       return "call connected but the patient didn't speak (voicemail or hang-up)";
     case "call_back_requested":

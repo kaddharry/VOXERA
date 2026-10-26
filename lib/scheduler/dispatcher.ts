@@ -108,15 +108,17 @@ async function dispatchOne(
   // task — even when a call fails so fast that Twilio's callback arrives
   // before the call_logs row exists (the old follow-up update here ran
   // after the call was placed, too late for that case).
+  const attempt = task.attemptCount + 1;
   const { callSid } = await placeOutboundCall({
     to: patient.phone,
     clientId: task.clientId,
     agentId,
     patientId: task.patientId,
     followUpTaskId: task.id,
+    followUpAttempt: attempt,
     baseUrl,
   });
-  console.log(`[Scheduler] Placed follow-up call ${callSid} for task ${task.id}.`);
+  console.log(`[Scheduler] Placed follow-up call ${callSid} — task ${task.id}, attempt ${attempt}.`);
 
   await supabase
     .from("follow_up_tasks")
@@ -181,11 +183,19 @@ export async function handleFollowUpCallOutcome(input: {
   doNotContactRequested?: boolean;
   /** When the call ended (ms). Defaults to now. */
   endedAt?: number;
+  /** Twilio AMD verdict (AnsweredBy), when the call used it. */
+  answeredBy?: string | null;
+  /** The call this outcome is about, and which attempt of the task it was
+   * (from the callback URL). Used to ignore a late callback from an
+   * earlier attempt once a newer attempt is under way. Absent for calls
+   * placed before attempt numbers were sent. */
+  callSid?: string;
+  attempt?: number;
 }): Promise<void> {
   const { data: task } = await supabase
     .from("follow_up_tasks")
     .select(
-      'id, "clientId", "patientId", status, timezone, "windowStartMinute", "windowEndMinute", "retryDelayMinutes", "finalAction", "attemptCount", "maxAttempts"',
+      'id, "clientId", "patientId", status, timezone, "windowStartMinute", "windowEndMinute", "retryDelayMinutes", "finalAction", "attemptCount", "maxAttempts", "claimedBy"',
     )
     .eq("id", input.taskId)
     .maybeSingle();
@@ -193,11 +203,24 @@ export async function handleFollowUpCallOutcome(input: {
   // Only a call in flight has an outcome to apply. Anything else means it
   // was already handled (a duplicate callback, or the stuck-call sweep got
   // there first) or staff changed it, and must not be moved again — e.g.
-  // a retry flipping a cancelled task back to "scheduled".
-  if (task.status !== "calling" && task.status !== "dispatching") return;
+  // a retry flipping a cancelled or completed task back to "scheduled".
+  if (task.status !== "calling" && task.status !== "dispatching") {
+    console.log(`[Scheduler] Ignoring outcome for task ${task.id}: it's already "${task.status}" (duplicate or late callback).`);
+    return;
+  }
   // A callback can land before dispatchOne finished bumping attemptCount
   // (a call that failed within milliseconds); count that attempt here.
   const attemptCount = task.status === "dispatching" ? task.attemptCount + 1 : task.attemptCount;
+  // Per-attempt identity: the outcome must be for the attempt in flight.
+  const callingClaim = typeof task.claimedBy === "string" && task.claimedBy.startsWith("call:") ? task.claimedBy : null;
+  const staleAttempt = input.attempt !== undefined && input.attempt !== attemptCount;
+  const staleCall = task.status === "calling" && input.callSid && callingClaim && callingClaim !== `call:${input.callSid}`;
+  if (staleAttempt || staleCall) {
+    console.log(
+      `[Scheduler] Ignoring outcome for task ${task.id}: it's for attempt ${input.attempt ?? "?"} / call ${input.callSid ?? "?"}, but attempt ${attemptCount} is in flight.`,
+    );
+    return;
+  }
 
   // Do-not-contact can also have been set by staff, or on another call.
   let doNotContact = input.doNotContactRequested === true;
@@ -210,18 +233,29 @@ export async function handleFollowUpCallOutcome(input: {
     twilioStatus: input.twilioStatus,
     followUpOutcome: input.followUpOutcome,
     patientSpoke: input.patientSpoke,
+    answeredBy: input.answeredBy,
     doNotContact,
     attemptCount,
     maxAttempts: task.maxAttempts,
   });
-  const inFlight = task.status;
+  const label = `task ${task.id} attempt ${attemptCount}/${task.maxAttempts}`;
+
+  /**
+   * Every write below is a single conditional UPDATE: it only applies if
+   * the task is still on exactly this attempt (same status, attempt count
+   * and, once calling, the same call). Postgres evaluates that per row
+   * atomically, so two workers or callbacks racing on the same task can't
+   * both apply an outcome — the second one simply matches no row.
+   */
+  const updateThisAttempt = (values: Record<string, unknown>) => {
+    let q = supabase.from("follow_up_tasks").update(values).eq("id", task.id).eq("status", task.status).eq("attemptCount", task.attemptCount);
+    if (task.status === "calling" && callingClaim) q = q.eq("claimedBy", callingClaim);
+    return q.select("id");
+  };
 
   if (decision.action === "cancelled") {
-    await supabase
-      .from("follow_up_tasks")
-      .update({ status: "cancelled", cancelledAt: Date.now(), attemptCount, lastOutcome: "do_not_contact", claimedAt: null, claimedBy: null })
-      .eq("id", task.id)
-      .eq("status", inFlight);
+    await updateThisAttempt({ status: "cancelled", cancelledAt: Date.now(), attemptCount, lastOutcome: "do_not_contact", claimedAt: null, claimedBy: null });
+    console.log(`[Scheduler] ${label}: patient asked not to be called — cancelled, no more calls.`);
     return;
   }
 
@@ -232,49 +266,42 @@ export async function handleFollowUpCallOutcome(input: {
       windowEndMinute: task.windowEndMinute ?? undefined,
       timezone: task.timezone,
     });
-    const { data: moved } = await supabase
-      .from("follow_up_tasks")
-      .update({
-        status: "scheduled",
-        nextAttemptAt,
-        attemptCount,
-        lastOutcome: decision.result,
-        claimedAt: null,
-        claimedBy: null,
-      })
-      .eq("id", task.id)
-      .eq("status", inFlight)
-      .select("id");
-    if (moved?.length) requestSchedulerWake(nextAttemptAt);
+    const { data: moved } = await updateThisAttempt({
+      status: "scheduled",
+      nextAttemptAt,
+      attemptCount,
+      lastOutcome: decision.result,
+      claimedAt: null,
+      claimedBy: null,
+    });
+    if (moved?.length) {
+      console.log(
+        `[Scheduler] ${label} ended (${decision.result}) → retry ${attemptCount + 1}/${task.maxAttempts} at ${new Date(nextAttemptAt).toISOString()} (${Math.round((nextAttemptAt - Date.now()) / 1000)}s from now).`,
+      );
+      requestSchedulerWake(nextAttemptAt);
+    }
     return;
   }
 
   if (decision.action === "completed") {
-    await supabase
-      .from("follow_up_tasks")
-      .update({ status: "completed", attemptCount, completedAt: Date.now(), lastOutcome: "resolved", claimedAt: null, claimedBy: null })
-      .eq("id", task.id)
-      .eq("status", inFlight);
+    await updateThisAttempt({ status: "completed", attemptCount, completedAt: Date.now(), lastOutcome: "resolved", claimedAt: null, claimedBy: null });
+    console.log(`[Scheduler] ${label}: follow-up completed — no more calls today.`);
     return;
   }
 
   // Exhausted: no attempts left today. Apply the task's final action.
   const finalStatus: FollowUpStatus =
     task.finalAction === "completed" ? "completed" : task.finalAction === "cancelled" ? "cancelled" : "exhausted";
-  const { data: closed } = await supabase
-    .from("follow_up_tasks")
-    .update({
-      status: finalStatus,
-      attemptCount,
-      completedAt: finalStatus === "completed" ? Date.now() : null,
-      cancelledAt: finalStatus === "cancelled" ? Date.now() : null,
-      lastOutcome: decision.result,
-      claimedAt: null,
-      claimedBy: null,
-    })
-    .eq("id", task.id)
-    .eq("status", inFlight)
-    .select("id");
+  const { data: closed } = await updateThisAttempt({
+    status: finalStatus,
+    attemptCount,
+    completedAt: finalStatus === "completed" ? Date.now() : null,
+    cancelledAt: finalStatus === "cancelled" ? Date.now() : null,
+    lastOutcome: decision.result,
+    claimedAt: null,
+    claimedBy: null,
+  });
+  if (closed?.length) console.log(`[Scheduler] ${label} ended (${decision.result}) — no attempts left; final action: ${task.finalAction}.`);
 
   if (closed?.length && task.finalAction === "needs_review") {
     // The call that just ended is the one this is about — linked so the
@@ -331,7 +358,7 @@ export async function reconcileStuckCalls(): Promise<number> {
   const now = Date.now();
   const { data: stuck, error } = await supabase
     .from("follow_up_tasks")
-    .select('id, "clientId", "patientId", "claimedAt", "claimedBy"')
+    .select('id, "clientId", "patientId", "claimedAt", "claimedBy", "attemptCount"')
     .eq("status", "calling")
     .or(`claimedAt.is.null,claimedAt.lt.${now - CALL_CHECK_AFTER_MS}`)
     .limit(25);
@@ -375,7 +402,10 @@ export async function reconcileStuckCalls(): Promise<number> {
           twilioStatus: verdict.twilioStatus,
           followUpOutcome: verdict.followUpOutcome,
           patientSpoke,
+          answeredBy: call ? await readAnsweredBy(call.id) : undefined,
           endedAt: verdict.endedAt,
+          attempt: task.attemptCount,
+          ...(call && { callSid: call.id }),
         });
         settled++;
       } else if (verdict.kind === "needs_review") {
@@ -387,6 +417,13 @@ export async function reconcileStuckCalls(): Promise<number> {
     }
   }
   return settled;
+}
+
+/** The AMD verdict stored on a call (migration_v24), or undefined if none / the column doesn't exist yet. */
+export async function readAnsweredBy(callSid: string): Promise<string | undefined> {
+  const { data, error } = await supabase.from("call_logs").select('"answeredBy"').eq("id", callSid).maybeSingle();
+  if (error) return undefined;
+  return (data?.answeredBy as string | null | undefined) ?? undefined;
 }
 
 /* ------------------------------------------------------------------ */
@@ -508,6 +545,12 @@ export function __resetSchedulerForTests(): void {
   const state = schedulerState();
   if (state?.wakeTimer) clearTimeout(state.wakeTimer);
   delete (globalThis as Record<symbol, SchedulerState | undefined>)[STATE_KEY];
+}
+
+/** Test helper: run one dispatch cycle as the poll would (e.g. right after a restart). */
+export async function __runCycleForTests(): Promise<void> {
+  const state = schedulerState();
+  if (state) await runCycle(state);
 }
 
 /** Test helper: install scheduler state without starting the interval. */

@@ -117,6 +117,10 @@ export function buildEnqueueTwiml(queueName: string): string {
 // padding every missed call with 40 unnecessary seconds of ringing.
 const OUTBOUND_RING_TIMEOUT_SECONDS = 20;
 
+/** Best-effort AMD: a verdict within 10s, otherwise "unknown" (the
+ * transcript then decides). Twilio allows 3–59, default 30. */
+const AMD_TIMEOUT_SECONDS = 10;
+
 export async function initiateOutboundCall(opts: {
   to: string;
   from?: string;
@@ -130,6 +134,16 @@ export async function initiateOutboundCall(opts: {
   /** Seconds to ring before Twilio gives up and reports "no-answer" —
    * defaults to OUTBOUND_RING_TIMEOUT_SECONDS, not Twilio's own 60s default. */
   ringTimeoutSeconds?: number;
+  /**
+   * Turns on Twilio Answering Machine Detection in its asynchronous mode
+   * (MachineDetection=Enable, AsyncAmd=true): the call connects to our
+   * TwiML straight away — a human never waits through a detection pause —
+   * and Twilio POSTs its verdict (AnsweredBy: human | machine_start | fax |
+   * unknown) to `callbackUrl` a few seconds in. "unknown" is returned when
+   * detection times out (AMD_TIMEOUT_SECONDS). Async AMD uses one of the
+   * call's four forked audio streams, alongside our one Media Stream.
+   */
+  answeringMachineDetection?: { callbackUrl: string };
 }): Promise<{ callSid: string; status: string }> {
   const client = getTwilioClient();
   const fromNumber = opts.from || process.env.TWILIO_PHONE_NUMBER;
@@ -147,6 +161,13 @@ export async function initiateOutboundCall(opts: {
       statusCallback: opts.statusCallback,
       statusCallbackEvent: ["completed"],
       statusCallbackMethod: "POST",
+    }),
+    ...(opts.answeringMachineDetection && {
+      machineDetection: "Enable",
+      asyncAmd: "true",
+      asyncAmdStatusCallback: opts.answeringMachineDetection.callbackUrl,
+      asyncAmdStatusCallbackMethod: "POST",
+      machineDetectionTimeout: AMD_TIMEOUT_SECONDS,
     }),
   });
 
@@ -170,5 +191,16 @@ export async function fetchCallStatus(callSid: string): Promise<{ status: string
   } catch (err) {
     console.warn(`[Twilio] Couldn't fetch status for call ${callSid}:`, err instanceof Error ? err.message : err);
     return null;
+  }
+}
+
+/** Ends an in-progress call (used when voicemail answers a follow-up call). */
+export async function hangUpCall(callSid: string): Promise<boolean> {
+  try {
+    await getTwilioClient().calls(callSid).update({ status: "completed" });
+    return true;
+  } catch (err) {
+    console.warn(`[Twilio] Couldn't hang up call ${callSid}:`, err instanceof Error ? err.message : err);
+    return false;
   }
 }

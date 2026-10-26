@@ -25,13 +25,20 @@ vi.mock("../../lib/telephony/outbound", () => ({
   placeOutboundCall: vi.fn(async () => ({ callSid: `CA_next_${Math.random().toString(36).slice(2, 6)}`, status: "queued" })),
   isLocalBaseUrl: () => false,
 }));
-vi.mock("../../lib/telephony/twilio", () => ({ fetchCallStatus: vi.fn(async () => null) }));
+vi.mock("../../lib/telephony/twilio", () => ({
+  fetchCallStatus: vi.fn(async () => null),
+  hangUpCall: vi.fn(async () => true),
+  validateTwilioSignature: vi.fn(() => true),
+}));
 
 const { POST: statusCallback } = await import("../../app/api/telephony/status/route");
 const dispatcher = await import("../../lib/scheduler/dispatcher");
 const { generateCallSummary } = await import("../../lib/agent/call-summary");
 const { placeOutboundCall } = await import("../../lib/telephony/outbound");
-const { fetchCallStatus } = await import("../../lib/telephony/twilio");
+const { fetchCallStatus, hangUpCall } = await import("../../lib/telephony/twilio");
+const { POST: amdCallback } = await import("../../app/api/telephony/amd/route");
+const { planScheduleEdit, isClearable } = await import("../../lib/scheduler/schedules");
+const { isValidTimeZone } = await import("../../lib/scheduler/validation");
 
 const TZ = "Asia/Kolkata";
 const ist = (date: string, hh: number, mm = 0) => zonedDateTimeToMs(date, hh * 60 + mm, TZ);
@@ -102,10 +109,11 @@ const task = (id = "today") => db.tables.follow_up_tasks.find((t) => t.id === id
 const patientSaid = (text: string) =>
   db.tables.session_logs.push({ id: `u${db.tables.session_logs.length}`, sessionId: "S1", type: "utterance", payload: { role: "user", text } });
 
-async function callEnds(callStatus: string, opts: { callSid?: string; duration?: number } = {}) {
+async function callEnds(callStatus: string, opts: { callSid?: string; duration?: number; attempt?: number } = {}) {
   const body = new URLSearchParams({ CallSid: opts.callSid ?? "CA1", CallStatus: callStatus, ...(opts.duration != null && { CallDuration: String(opts.duration) }) });
+  const query = `followUpTaskId=today${opts.attempt ? `&followUpAttempt=${opts.attempt}` : ""}`;
   const res = await statusCallback(
-    new NextRequest("https://example.test/api/telephony/status?followUpTaskId=today", {
+    new NextRequest(`https://example.test/api/telephony/status?${query}`, {
       method: "POST",
       body: body.toString(),
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -347,5 +355,184 @@ describe("missing status callbacks", () => {
     await dispatcher.reconcileStuckCalls();
     expect(fetchCallStatus).not.toHaveBeenCalled();
     expect(task().status).toBe("calling");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Voicemail detection, per-attempt identity, restarts                 */
+/* ------------------------------------------------------------------ */
+
+async function amdSays(answeredBy: string, callSid = "CA1") {
+  return amdCallback(
+    new NextRequest("https://example.test/api/telephony/amd?followUpTaskId=today&followUpAttempt=1", {
+      method: "POST",
+      body: new URLSearchParams({ CallSid: callSid, AccountSid: "AC1", AnsweredBy: answeredBy, MachineDetectionDuration: "3100" }).toString(),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    }),
+  );
+}
+
+describe("voicemail detection (Twilio AMD)", () => {
+  it("hangs up on a machine and retries — even if the voicemail greeting was transcribed as speech", async () => {
+    patientSaid("Hi, you've reached Kavya, leave a message after the tone."); // the greeting, picked up by speech-to-text
+    expect((await amdSays("machine_start")).status).toBe(200);
+    expect(db.tables.call_logs[0].answeredBy).toBe("machine_start");
+    expect(hangUpCall).toHaveBeenCalledWith("CA1");
+
+    await callEnds("completed", { duration: 6, attempt: 1 });
+    expect(task()).toMatchObject({ status: "scheduled", lastOutcome: "voicemail" });
+    expect(generateCallSummary).not.toHaveBeenCalled();
+  });
+
+  it("treats fax the same as voicemail", async () => {
+    await amdSays("fax");
+    await callEnds("completed", { duration: 4, attempt: 1 });
+    expect(task().lastOutcome).toBe("voicemail");
+  });
+
+  it("only records a human answer: a human who hangs up straight away is still retried", async () => {
+    await amdSays("human");
+    expect(hangUpCall).not.toHaveBeenCalled();
+    await callEnds("completed", { duration: 3, attempt: 1 });
+    expect(task()).toMatchObject({ status: "scheduled", lastOutcome: "no_conversation" });
+  });
+
+  it("doesn't let a human answer alone count as success — the conversation decides", async () => {
+    await amdSays("human");
+    patientSaid("I'm fine, thanks, the wound is healing well.");
+    vi.mocked(generateCallSummary).mockResolvedValue(summary("resolved") as never);
+    await callEnds("completed", { duration: 120, attempt: 1 });
+    expect(task().status).toBe("completed");
+  });
+
+  it("falls back to the transcript when detection is unsure ('unknown')", async () => {
+    await amdSays("unknown");
+    patientSaid("Hello?");
+    vi.mocked(generateCallSummary).mockResolvedValue(summary("needs_review") as never);
+    await callEnds("completed", { duration: 8, attempt: 1 });
+    expect(task()).toMatchObject({ status: "scheduled", lastOutcome: "outcome_unclear" });
+  });
+});
+
+describe("full day: exactly 3 calls, then stop", () => {
+  it("places attempt 1, 2 and 3 about a minute apart and never a 4th", async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(START);
+    seed({ status: "scheduled", attemptCount: 0, claimedAt: null, claimedBy: null, nextAttemptAt: START });
+    db.tables.call_logs = [];
+    dispatcher.__installSchedulerForTests("https://example.test");
+
+    const placedAt: number[] = [];
+    vi.mocked(placeOutboundCall).mockImplementation(async (o: { followUpAttempt?: number }) => {
+      placedAt.push(Date.now());
+      return { callSid: `CA_attempt_${o.followUpAttempt}`, status: "queued" };
+    });
+
+    const endedAt: number[] = [];
+    await dispatcher.__runCycleForTests(); // attempt 1 at the scheduled time
+    expect(placedAt[0]).toBe(START);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      expect(task()).toMatchObject({ status: "calling", attemptCount: attempt, claimedBy: `call:CA_attempt_${attempt}` });
+      await vi.advanceTimersByTimeAsync(20_000); // the call rings for 20s, nobody answers
+      endedAt.push(Date.now());
+      await callEnds("no-answer", { callSid: `CA_attempt_${attempt}`, attempt });
+      await vi.advanceTimersByTimeAsync(62_000); // retry delay + wake margin
+    }
+
+    await vi.advanceTimersByTimeAsync(10 * MIN);
+    expect(placeOutboundCall).toHaveBeenCalledTimes(3);
+    // Each retry goes out 60s after the previous call ended (+ the 250ms wake margin), not at the next 30s poll.
+    for (const n of [1, 2]) {
+      const gap = placedAt[n] - endedAt[n - 1];
+      expect(gap).toBeGreaterThanOrEqual(MIN);
+      expect(gap).toBeLessThanOrEqual(MIN + 1_000);
+    }
+    expect(task()).toMatchObject({ status: "needs_review", attemptCount: 3 });
+    expect(db.tables.alerts).toHaveLength(1);
+    expect(task("tomorrow")).toMatchObject({ status: "scheduled", attemptCount: 0 });
+  });
+});
+
+describe("late and out-of-order callbacks", () => {
+  it("ignores a late callback from attempt 1 once attempt 2 is calling", async () => {
+    await callEnds("no-answer", { callSid: "CA1", attempt: 1 });
+    // Attempt 2 goes out.
+    db.tables.follow_up_tasks[0] = { ...task(), status: "calling", attemptCount: 2, claimedBy: "call:CA2", claimedAt: Date.now() };
+    const before = JSON.stringify(task());
+    await callEnds("no-answer", { callSid: "CA1", attempt: 1 });
+    expect(JSON.stringify(task())).toBe(before);
+  });
+
+  it("ignores a callback for a different call even without an attempt number", async () => {
+    db.tables.follow_up_tasks[0] = { ...task(), attemptCount: 2, claimedBy: "call:CA2" };
+    const before = JSON.stringify(task());
+    await callEnds("busy", { callSid: "CA1" });
+    expect(JSON.stringify(task())).toBe(before);
+  });
+
+  it("never reopens a completed day", async () => {
+    db.tables.follow_up_tasks[0] = { ...task(), status: "completed" };
+    await callEnds("no-answer", { attempt: 1 });
+    expect(task().status).toBe("completed");
+  });
+
+  it("ignores a summary that finishes after staff already changed the task", async () => {
+    patientSaid("Yes, all good.");
+    let finish!: (v: unknown) => void;
+    vi.mocked(generateCallSummary).mockImplementation(() => new Promise((r) => (finish = r)) as never);
+    const pending = statusCallback(
+      new NextRequest("https://example.test/api/telephony/status?followUpTaskId=today&followUpAttempt=1", {
+        method: "POST",
+        body: "CallSid=CA1&CallStatus=completed&CallDuration=60",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      }),
+    );
+    await pending;
+    await vi.waitFor(() => expect(generateCallSummary).toHaveBeenCalled());
+    db.tables.follow_up_tasks[0] = { ...task(), status: "cancelled" }; // staff cancelled meanwhile
+    finish(summary("needs_retry"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(task().status).toBe("cancelled");
+  });
+});
+
+describe("server restart", () => {
+  it("picks up a retry that came due while the server was down, from the database alone", async () => {
+    // Persisted state: attempt 1 failed, retry was due 5 minutes ago.
+    seed({ status: "scheduled", attemptCount: 1, claimedAt: null, claimedBy: null, nextAttemptAt: Date.now() - 5 * MIN, lastOutcome: "no-answer" });
+    dispatcher.__resetSchedulerForTests(); // nothing in memory survives
+    dispatcher.__installSchedulerForTests("https://example.test");
+    await dispatcher.__runCycleForTests(); // the first poll after start-up
+    expect(placeOutboundCall).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(placeOutboundCall).mock.calls[0][0]).toMatchObject({ followUpTaskId: "today", followUpAttempt: 2 });
+    expect(task()).toMatchObject({ status: "calling", attemptCount: 2 });
+  });
+
+  it("re-claims a task left mid-dispatch by a crash, after its 2-minute lease", async () => {
+    seed({ status: "dispatching", attemptCount: 1, claimedAt: Date.now() - 3 * MIN, claimedBy: "worker-dead", nextAttemptAt: Date.now() - 4 * MIN });
+    dispatcher.__installSchedulerForTests("https://example.test");
+    await dispatcher.__runCycleForTests();
+    expect(placeOutboundCall).toHaveBeenCalledTimes(1);
+    expect(task()).toMatchObject({ status: "calling", attemptCount: 2 });
+  });
+});
+
+describe("schedule editing and clearing (PR #99) can't touch an active retry", () => {
+  const asTask = (t: Record<string, unknown>) => t as never;
+  it("an edit leaves a retrying day alone", () => {
+    seed({ status: "scheduled", attemptCount: 1, scheduledDate: "2026-10-28", nextAttemptAt: ist("2026-10-28", 9) });
+    const plan = planScheduleEdit({ kind: "range", tasks: [asTask(task()), asTask(task("tomorrow"))] }, { minute: 700 }, Date.now(), isValidTimeZone);
+    if (plan.ok) {
+      expect(plan.update.map((u) => u.taskId)).not.toContain("today");
+      expect(plan.cancel).not.toContain("today");
+    }
+  });
+
+  it("clearing never includes a retrying or calling day", () => {
+    for (const status of ["scheduled", "calling", "dispatching"]) {
+      seed({ status, attemptCount: 1 });
+      expect(isClearable([asTask(task())], Date.now())).toBe(false);
+    }
   });
 });

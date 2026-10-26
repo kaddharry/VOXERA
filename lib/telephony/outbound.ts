@@ -22,6 +22,16 @@ export interface PlaceOutboundCallOptions {
    * also put on the status callback URL, so the callback can find the task
    * even if it arrives before the call_logs row is written. */
   followUpTaskId?: string;
+  /** Which attempt of that task this call is (1 = first). Sent back on the
+   * status and voicemail-detection callbacks, so a late callback from an
+   * earlier attempt can never be applied to a newer one. */
+  followUpAttempt?: number;
+}
+
+/** Voicemail detection is on for scheduled follow-up calls unless
+ * FOLLOWUP_AMD=off (it's a paid Twilio feature, billed per call). */
+export function followUpAmdEnabled(): boolean {
+  return (process.env.FOLLOWUP_AMD ?? "on").toLowerCase() !== "off";
 }
 
 /**
@@ -41,9 +51,15 @@ export async function placeOutboundCall(opts: PlaceOutboundCallOptions): Promise
   const statusParams = new URLSearchParams();
   if (opts.campaignCallId) statusParams.set("campaignCallId", String(opts.campaignCallId));
   if (opts.followUpTaskId) statusParams.set("followUpTaskId", opts.followUpTaskId);
+  if (opts.followUpTaskId && opts.followUpAttempt) statusParams.set("followUpAttempt", String(opts.followUpAttempt));
   const statusCallback = `${opts.baseUrl}/api/telephony/status${statusParams.toString() ? `?${statusParams}` : ""}`;
 
-  const { callSid, status } = await initiateOutboundCall({ to: opts.to, webhookUrl, statusCallback });
+  const amd =
+    opts.followUpTaskId && followUpAmdEnabled()
+      ? { callbackUrl: `${opts.baseUrl}/api/telephony/amd${statusParams.toString() ? `?${statusParams}` : ""}` }
+      : undefined;
+
+  const { callSid, status } = await initiateOutboundCall({ to: opts.to, webhookUrl, statusCallback, answeringMachineDetection: amd });
 
   await supabase.from("call_logs").insert([{
     id: callSid,

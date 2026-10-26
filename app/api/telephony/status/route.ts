@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/db/supabase";
 import { generateCallSummary } from "../../../../lib/agent/call-summary";
 import { hasPatientSpoken } from "../../../../lib/logging/session-logger";
-import { handleFollowUpCallOutcome, applyDoNotContactRequest } from "../../../../lib/scheduler/dispatcher";
+import { handleFollowUpCallOutcome, applyDoNotContactRequest, readAnsweredBy } from "../../../../lib/scheduler/dispatcher";
 import type { TwilioCallStatus } from "../../../../lib/scheduler/policy";
 import { updateDemoRequestStatusByCallSid } from "../../../../lib/db/demo-requests";
 
@@ -67,6 +67,17 @@ export async function POST(req: NextRequest) {
     // it, and that failure used to be dropped here, leaving the follow-up
     // stuck in "calling" with no retry.
     const followUpTaskId = updatedCall?.followUpTaskId ?? req.nextUrl.searchParams.get("followUpTaskId");
+    // Which attempt this call was (sent on the callback URL by the
+    // dispatcher), so a late callback from an earlier attempt can't be
+    // applied to a newer one.
+    const attemptParam = Number(req.nextUrl.searchParams.get("followUpAttempt"));
+    const identity = {
+      callSid,
+      ...(Number.isInteger(attemptParam) && attemptParam > 0 && { attempt: attemptParam }),
+    };
+    // Voicemail detection verdict, recorded by /api/telephony/amd before
+    // it hung up on a machine (Twilio may also include it here).
+    const answeredBy = followUpTaskId ? (params.AnsweredBy || (await readAnsweredBy(callSid))) : undefined;
 
     if (error || !updatedCall) {
       if (error) console.error("[Telephony/Status] DB update failed:", error);
@@ -77,7 +88,9 @@ export async function POST(req: NextRequest) {
           taskId: followUpTaskId,
           twilioStatus: callStatus as TwilioCallStatus,
           patientSpoke: callStatus === "completed" ? false : undefined,
+          answeredBy,
           endedAt,
+          ...identity,
         }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err));
       } else if (error && !req.nextUrl.searchParams.get("campaignCallId")) {
         return NextResponse.json({ error: "DB update failed" }, { status: 500 });
@@ -108,7 +121,11 @@ export async function POST(req: NextRequest) {
       // recorded, not waiting on an LLM call — and the call has already
       // ended by this point, so there's no live turn this could ever add
       // latency to.
-      const summarise = connected && updatedCall?.sessionId && updatedCall?.patientId && !(followUpTaskId && patientSpoke === false);
+      // A machine (voicemail/fax) answer or no patient speech means no
+      // conversation happened, so there's nothing for the summary to judge.
+      const machineAnswered = !!answeredBy && (answeredBy === "fax" || answeredBy.startsWith("machine_"));
+      const summarise =
+        connected && updatedCall?.sessionId && updatedCall?.patientId && !(followUpTaskId && (patientSpoke === false || machineAnswered));
       if (summarise) {
         const settleFollowUp = (outcome: { followUpOutcome?: "resolved" | "needs_retry" | "needs_review"; doNotContactRequested?: boolean }) =>
           followUpTaskId
@@ -116,7 +133,9 @@ export async function POST(req: NextRequest) {
                 taskId: followUpTaskId,
                 twilioStatus: callStatus as TwilioCallStatus,
                 patientSpoke,
+                answeredBy,
                 endedAt,
+                ...identity,
                 ...outcome,
               })
             : Promise.resolve();
@@ -154,7 +173,9 @@ export async function POST(req: NextRequest) {
           taskId: followUpTaskId,
           twilioStatus: callStatus as TwilioCallStatus,
           patientSpoke,
+          answeredBy,
           endedAt,
+          ...identity,
         }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err));
       }
     }
