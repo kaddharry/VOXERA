@@ -53,69 +53,94 @@ export async function POST(req: NextRequest) {
       .update(updates)
       .eq("id", callSid)
       .select('sessionId, clientId, patientId, "followUpTaskId"')
-      .single();
+      .maybeSingle();
 
-    if (error) {
-      console.error("[Telephony/Status] DB update failed:", error);
-      return NextResponse.json({ error: "DB update failed" }, { status: 500 });
-    }
+    // Scheduled follow-up calls carry their task id on this callback's URL
+    // (lib/telephony/outbound.ts). That's what lets the outcome still reach
+    // the task when there's no call_logs row yet — a call that failed
+    // within milliseconds can finish before placeOutboundCall has written
+    // it, and that failure used to be dropped here, leaving the follow-up
+    // stuck in "calling" with no retry.
+    const followUpTaskId = updatedCall?.followUpTaskId ?? req.nextUrl.searchParams.get("followUpTaskId");
 
-    // Public Book-a-Demo calls (spec §5) always carry clientId "demo" — see
-    // app/api/demo-requests/[id]/call/route.ts. Keep its status in sync so
-    // /book-demo/confirm's poll can show the right next step.
-    if (updatedCall?.clientId === "demo") {
-      updateDemoRequestStatusByCallSid(supabase, callSid, updates.status === "completed" ? "completed" : "failed").catch((err) =>
-        console.error(`[Telephony/Status] Demo request sync failed for ${callSid}:`, err),
-      );
-    }
+    if (error || !updatedCall) {
+      if (error) console.error("[Telephony/Status] DB update failed:", error);
+      if (followUpTaskId) {
+        await handleFollowUpCallOutcome({ taskId: followUpTaskId, twilioStatus: callStatus as TwilioCallStatus }).catch((err) =>
+          console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err),
+        );
+      } else if (error && !req.nextUrl.searchParams.get("campaignCallId")) {
+        return NextResponse.json({ error: "DB update failed" }, { status: 500 });
+      }
+      // Fall through: a campaign call's own row still gets its outcome below.
+    } else {
+      // Public Book-a-Demo calls (spec §5) always carry clientId "demo" — see
+      // app/api/demo-requests/[id]/call/route.ts. Keep its status in sync so
+      // /book-demo/confirm's poll can show the right next step.
+      if (updatedCall?.clientId === "demo") {
+        updateDemoRequestStatusByCallSid(supabase, callSid, updates.status === "completed" ? "completed" : "failed").catch((err) =>
+          console.error(`[Telephony/Status] Demo request sync failed for ${callSid}:`, err),
+        );
+      }
 
-    // Post-call LLM-judge summary for the doctor to review — only for calls
-    // that actually completed with a real transcript (not busy/no-answer/
-    // failed), and only ones placed against a roster patient. Fire-and-
-    // forget: this webhook's job is confirming Twilio's status update was
-    // recorded, not waiting on an LLM call — and the call has already
-    // ended by this point, so there's no live turn this could ever add
-    // latency to.
-    if (updates.status === "completed" && updatedCall?.sessionId && updatedCall?.patientId) {
-      generateCallSummary(updatedCall.sessionId, updatedCall.clientId)
-        .then(async (summary) => {
-          if (!summary) {
-            // No transcript / summary failed — the scheduler still needs a
-            // decision, so it falls through to the conservative
-            // "needs_review" default rather than silently never resolving
-            // this follow-up task at all.
-            if (updatedCall.followUpTaskId) {
+      // Post-call LLM-judge summary for the doctor to review — only for calls
+      // that actually completed with a real transcript (not busy/no-answer/
+      // failed), and only ones placed against a roster patient. Fire-and-
+      // forget: this webhook's job is confirming Twilio's status update was
+      // recorded, not waiting on an LLM call — and the call has already
+      // ended by this point, so there's no live turn this could ever add
+      // latency to.
+      if (updates.status === "completed" && updatedCall?.sessionId && updatedCall?.patientId) {
+        generateCallSummary(updatedCall.sessionId, updatedCall.clientId)
+          .then(async (summary) => {
+            if (!summary) {
+              // No transcript / summary failed — the scheduler still needs a
+              // decision, so it falls through to the conservative
+              // "needs_review" default rather than silently never resolving
+              // this follow-up task at all.
+              if (followUpTaskId) {
+                await handleFollowUpCallOutcome({
+                  taskId: followUpTaskId,
+                  twilioStatus: callStatus as TwilioCallStatus,
+                });
+              }
+              return;
+            }
+            await supabase.from("call_logs").update({ summary }).eq("id", callSid);
+            if (summary.requestedDoNotContact && updatedCall.patientId) {
+              await applyDoNotContactRequest(
+                updatedCall.clientId,
+                updatedCall.patientId,
+                "Patient asked to stop being called (detected from call transcript).",
+              );
+            }
+            if (followUpTaskId) {
               await handleFollowUpCallOutcome({
-                taskId: updatedCall.followUpTaskId,
+                taskId: followUpTaskId,
                 twilioStatus: callStatus as TwilioCallStatus,
+                followUpOutcome: summary.followUpOutcome,
               });
             }
-            return;
-          }
-          await supabase.from("call_logs").update({ summary }).eq("id", callSid);
-          if (summary.requestedDoNotContact && updatedCall.patientId) {
-            await applyDoNotContactRequest(
-              updatedCall.clientId,
-              updatedCall.patientId,
-              "Patient asked to stop being called (detected from call transcript).",
-            );
-          }
-          if (updatedCall.followUpTaskId) {
-            await handleFollowUpCallOutcome({
-              taskId: updatedCall.followUpTaskId,
-              twilioStatus: callStatus as TwilioCallStatus,
-              followUpOutcome: summary.followUpOutcome,
-            });
-          }
-        })
-        .catch((err) => console.error(`[Telephony/Status] Call summary failed for ${callSid}:`, err));
-    } else if (updatedCall?.followUpTaskId) {
-      // Never connected (busy/no-answer/failed/canceled) — retryability is
-      // known immediately from the Twilio status alone, no summary needed.
-      handleFollowUpCallOutcome({
-        taskId: updatedCall.followUpTaskId,
-        twilioStatus: callStatus as TwilioCallStatus,
-      }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err));
+          })
+          .catch(async (err) => {
+            console.error(`[Telephony/Status] Call summary failed for ${callSid}:`, err);
+            // The follow-up still needs a decision when the summary step
+            // throws (LLM down, bad response). With no outcome it falls to
+            // the conservative "needs_review" instead of staying "calling".
+            if (followUpTaskId) {
+              await handleFollowUpCallOutcome({ taskId: followUpTaskId, twilioStatus: callStatus as TwilioCallStatus }).catch((e) =>
+                console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, e),
+              );
+            }
+          });
+      } else if (followUpTaskId) {
+        // Never connected (busy/no-answer/failed/canceled) — retryability is
+        // known immediately from the Twilio status alone, no summary needed.
+        handleFollowUpCallOutcome({
+          taskId: followUpTaskId,
+          twilioStatus: callStatus as TwilioCallStatus,
+        }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err));
+      }
     }
 
     // If this call was placed by a campaign, roll its outcome up into
