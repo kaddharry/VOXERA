@@ -77,19 +77,21 @@ describe("status callback", () => {
     callLogRow = null; // the fast failure beat the call_logs insert
     const res = await POST(statusCallback("?followUpTaskId=task1", "CallSid=CA1&CallStatus=failed"));
     expect(res.status).toBe(200);
-    expect(handleFollowUpCallOutcome).toHaveBeenCalledWith({ taskId: "task1", twilioStatus: "failed" });
+    expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "failed" }));
   });
 
   it("still settles the follow-up when the post-call summary throws", async () => {
     callLogRow = { sessionId: "s1", clientId: "c1", patientId: "p1", followUpTaskId: "task1" };
     vi.mocked(generateCallSummary).mockRejectedValue(new Error("LLM down"));
     await POST(statusCallback("", "CallSid=CA1&CallStatus=completed&CallDuration=42"));
-    await vi.waitFor(() => expect(handleFollowUpCallOutcome).toHaveBeenCalledWith({ taskId: "task1", twilioStatus: "completed" }));
+    await vi.waitFor(() =>
+      expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "completed" })),
+    );
   });
 
   it("retries a never-connected call straight away", async () => {
     callLogRow = { sessionId: null, clientId: "c1", patientId: "p1", followUpTaskId: "task1" };
     await POST(statusCallback("", "CallSid=CA1&CallStatus=no-answer"));
-    expect(handleFollowUpCallOutcome).toHaveBeenCalledWith({ taskId: "task1", twilioStatus: "no-answer" });
+    expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "no-answer" }));
   });
 });

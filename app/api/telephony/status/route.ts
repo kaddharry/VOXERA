@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/db/supabase";
 import { generateCallSummary } from "../../../../lib/agent/call-summary";
+import { hasPatientSpoken } from "../../../../lib/logging/session-logger";
 import { handleFollowUpCallOutcome, applyDoNotContactRequest } from "../../../../lib/scheduler/dispatcher";
 import type { TwilioCallStatus } from "../../../../lib/scheduler/policy";
 import { updateDemoRequestStatusByCallSid } from "../../../../lib/db/demo-requests";
@@ -39,9 +40,13 @@ export async function POST(req: NextRequest) {
       canceled: "failed",
     };
 
+    // When the call ended: Twilio sends this callback the moment it does.
+    // Follow-up retries are timed from here, not from whenever the
+    // post-call summary below finishes.
+    const endedAt = Date.now();
     const updates: Record<string, unknown> = {
       status: statusMap[callStatus] || "completed",
-      endedAt: Date.now(),
+      endedAt,
     };
 
     if (callDuration) {
@@ -66,9 +71,14 @@ export async function POST(req: NextRequest) {
     if (error || !updatedCall) {
       if (error) console.error("[Telephony/Status] DB update failed:", error);
       if (followUpTaskId) {
-        await handleFollowUpCallOutcome({ taskId: followUpTaskId, twilioStatus: callStatus as TwilioCallStatus }).catch((err) =>
-          console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err),
-        );
+        // No call record yet means the call never got as far as the audio
+        // stream, so nobody spoke even if Twilio says "completed".
+        await handleFollowUpCallOutcome({
+          taskId: followUpTaskId,
+          twilioStatus: callStatus as TwilioCallStatus,
+          patientSpoke: callStatus === "completed" ? false : undefined,
+          endedAt,
+        }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err));
       } else if (error && !req.nextUrl.searchParams.get("campaignCallId")) {
         return NextResponse.json({ error: "DB update failed" }, { status: 500 });
       }
@@ -83,27 +93,41 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      // Twilio reports "completed" for ANY call that connected — voicemail,
+      // a patient hanging up straight away, or a call whose audio stream
+      // never started included. Whether the patient actually spoke (from the
+      // saved transcript) is what separates a real conversation from those.
+      const connected = updates.status === "completed";
+      const patientSpoke = connected ? (updatedCall?.sessionId ? await hasPatientSpoken(updatedCall.sessionId) : false) : undefined;
+
       // Post-call LLM-judge summary for the doctor to review — only for calls
       // that actually completed with a real transcript (not busy/no-answer/
-      // failed), and only ones placed against a roster patient. Fire-and-
-      // forget: this webhook's job is confirming Twilio's status update was
+      // failed, and not a follow-up call where the patient never spoke),
+      // and only ones placed against a roster patient. Fire-and-forget:
+      // this webhook's job is confirming Twilio's status update was
       // recorded, not waiting on an LLM call — and the call has already
       // ended by this point, so there's no live turn this could ever add
       // latency to.
-      if (updates.status === "completed" && updatedCall?.sessionId && updatedCall?.patientId) {
+      const summarise = connected && updatedCall?.sessionId && updatedCall?.patientId && !(followUpTaskId && patientSpoke === false);
+      if (summarise) {
+        const settleFollowUp = (outcome: { followUpOutcome?: "resolved" | "needs_retry" | "needs_review"; doNotContactRequested?: boolean }) =>
+          followUpTaskId
+            ? handleFollowUpCallOutcome({
+                taskId: followUpTaskId,
+                twilioStatus: callStatus as TwilioCallStatus,
+                patientSpoke,
+                endedAt,
+                ...outcome,
+              })
+            : Promise.resolve();
+
         generateCallSummary(updatedCall.sessionId, updatedCall.clientId)
           .then(async (summary) => {
             if (!summary) {
-              // No transcript / summary failed — the scheduler still needs a
-              // decision, so it falls through to the conservative
-              // "needs_review" default rather than silently never resolving
-              // this follow-up task at all.
-              if (followUpTaskId) {
-                await handleFollowUpCallOutcome({
-                  taskId: followUpTaskId,
-                  twilioStatus: callStatus as TwilioCallStatus,
-                });
-              }
+              // No transcript / summary failed: the outcome is unclear. The
+              // scheduler retries while attempts remain (never counting this
+              // as a success, never leaving the day stuck).
+              await settleFollowUp({});
               return;
             }
             await supabase.from("call_logs").update({ summary }).eq("id", callSid);
@@ -114,31 +138,23 @@ export async function POST(req: NextRequest) {
                 "Patient asked to stop being called (detected from call transcript).",
               );
             }
-            if (followUpTaskId) {
-              await handleFollowUpCallOutcome({
-                taskId: followUpTaskId,
-                twilioStatus: callStatus as TwilioCallStatus,
-                followUpOutcome: summary.followUpOutcome,
-              });
-            }
+            await settleFollowUp({ followUpOutcome: summary.followUpOutcome, doNotContactRequested: summary.requestedDoNotContact });
           })
           .catch(async (err) => {
             console.error(`[Telephony/Status] Call summary failed for ${callSid}:`, err);
-            // The follow-up still needs a decision when the summary step
-            // throws (LLM down, bad response). With no outcome it falls to
-            // the conservative "needs_review" instead of staying "calling".
-            if (followUpTaskId) {
-              await handleFollowUpCallOutcome({ taskId: followUpTaskId, twilioStatus: callStatus as TwilioCallStatus }).catch((e) =>
-                console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, e),
-              );
-            }
+            await settleFollowUp({}).catch((e) =>
+              console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, e),
+            );
           });
       } else if (followUpTaskId) {
-        // Never connected (busy/no-answer/failed/canceled) — retryability is
-        // known immediately from the Twilio status alone, no summary needed.
+        // Never connected (busy/no-answer/failed/canceled), or connected
+        // without the patient ever speaking: known straight away from the
+        // call itself, no summary needed — so a retry is scheduled at once.
         handleFollowUpCallOutcome({
           taskId: followUpTaskId,
           twilioStatus: callStatus as TwilioCallStatus,
+          patientSpoke,
+          endedAt,
         }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err));
       }
     }

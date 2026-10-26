@@ -2,65 +2,66 @@ import { describe, it, expect } from "vitest";
 import { decideNextStep, resolveWithinWindow } from "../../lib/scheduler/policy";
 
 describe("decideNextStep", () => {
-  it("retries a provider-level failure (no-answer) while attempts remain", () => {
-    const decision = decideNextStep({ twilioStatus: "no-answer", attemptCount: 1, maxAttempts: 3 });
-    expect(decision).toEqual({ action: "retry" });
-  });
+  const base = { attemptCount: 1, maxAttempts: 3 };
 
-  it("exhausts a provider-level failure once max attempts are used", () => {
-    const decision = decideNextStep({ twilioStatus: "busy", attemptCount: 3, maxAttempts: 3 });
-    expect(decision).toEqual({ action: "exhausted" });
-  });
-
-  it("treats every retryable Twilio status the same way", () => {
+  it("retries a call that never connected (busy, no-answer, failed, canceled) while attempts remain", () => {
     for (const status of ["busy", "no-answer", "failed", "canceled"] as const) {
-      expect(decideNextStep({ twilioStatus: status, attemptCount: 0, maxAttempts: 3 })).toEqual({ action: "retry" });
+      expect(decideNextStep({ ...base, twilioStatus: status })).toEqual({ action: "retry", result: status });
     }
   });
 
-  it("marks a connected call completed only when the summary says resolved", () => {
-    const decision = decideNextStep({
-      twilioStatus: "completed",
-      followUpOutcome: "resolved",
-      attemptCount: 1,
-      maxAttempts: 3,
-    });
-    expect(decision).toEqual({ action: "completed" });
+  it("stops at the final attempt and reports why", () => {
+    expect(decideNextStep({ twilioStatus: "busy", attemptCount: 3, maxAttempts: 3 })).toEqual({ action: "exhausted", result: "busy" });
   });
 
-  it("retries a connected-but-inconclusive call while attempts remain", () => {
-    const decision = decideNextStep({
-      twilioStatus: "completed",
-      followUpOutcome: "needs_retry",
-      attemptCount: 1,
-      maxAttempts: 3,
-    });
-    expect(decision).toEqual({ action: "retry" });
+  it("retries a connected call where the patient never spoke (voicemail / immediate hang-up)", () => {
+    expect(decideNextStep({ ...base, twilioStatus: "completed", patientSpoke: false })).toEqual({ action: "retry", result: "no_conversation" });
   });
 
-  it("exhausts a connected-but-inconclusive call once attempts run out, rather than retrying forever", () => {
-    const decision = decideNextStep({
-      twilioStatus: "completed",
-      followUpOutcome: "needs_retry",
-      attemptCount: 3,
-      maxAttempts: 3,
-    });
-    expect(decision).toEqual({ action: "exhausted" });
+  it("never treats Twilio's 'completed' alone as a successful follow-up", () => {
+    expect(decideNextStep({ ...base, twilioStatus: "completed" }).action).not.toBe("completed");
+    expect(decideNextStep({ ...base, twilioStatus: "completed", patientSpoke: true }).action).not.toBe("completed");
   });
 
-  it("never silently marks a connected call completed when the outcome is unknown — defaults to needs_review", () => {
-    const decision = decideNextStep({ twilioStatus: "completed", attemptCount: 1, maxAttempts: 3 });
-    expect(decision.action).toBe("needs_review");
+  it("completes the day only when the conversation is confirmed resolved", () => {
+    expect(decideNextStep({ ...base, twilioStatus: "completed", patientSpoke: true, followUpOutcome: "resolved" })).toEqual({ action: "completed" });
   });
 
-  it("sends an explicit needs_review summary verdict to needs_review, not completed", () => {
-    const decision = decideNextStep({
-      twilioStatus: "completed",
-      followUpOutcome: "needs_review",
-      attemptCount: 1,
-      maxAttempts: 3,
+  it("completes a resolved call even on the last attempt", () => {
+    expect(decideNextStep({ twilioStatus: "completed", followUpOutcome: "resolved", attemptCount: 3, maxAttempts: 3 })).toEqual({ action: "completed" });
+  });
+
+  it("retries when the patient asked to be called back or the call was cut short", () => {
+    expect(decideNextStep({ ...base, twilioStatus: "completed", patientSpoke: true, followUpOutcome: "needs_retry" })).toEqual({
+      action: "retry",
+      result: "call_back_requested",
     });
-    expect(decision.action).toBe("needs_review");
+  });
+
+  it("retries an unclear outcome (summary unsure, missing or failed) instead of leaving it for review straight away", () => {
+    expect(decideNextStep({ ...base, twilioStatus: "completed", patientSpoke: true, followUpOutcome: "needs_review" })).toEqual({
+      action: "retry",
+      result: "outcome_unclear",
+    });
+    expect(decideNextStep({ ...base, twilioStatus: "completed", patientSpoke: true })).toEqual({ action: "retry", result: "outcome_unclear" });
+  });
+
+  it("exhausts an unclear outcome once attempts run out, rather than retrying forever", () => {
+    expect(decideNextStep({ twilioStatus: "completed", followUpOutcome: "needs_review", attemptCount: 3, maxAttempts: 3 })).toEqual({
+      action: "exhausted",
+      result: "outcome_unclear",
+    });
+  });
+
+  it("never retries after a do-not-contact request, whatever happened on the call", () => {
+    for (const twilioStatus of ["completed", "no-answer", "busy"] as const) {
+      expect(decideNextStep({ ...base, twilioStatus, doNotContact: true })).toEqual({ action: "cancelled", reason: "do_not_contact" });
+    }
+    expect(decideNextStep({ ...base, twilioStatus: "completed", followUpOutcome: "resolved", doNotContact: true }).action).toBe("cancelled");
+  });
+
+  it("allows a single-attempt day: no retry after the only attempt", () => {
+    expect(decideNextStep({ twilioStatus: "no-answer", attemptCount: 1, maxAttempts: 1 })).toEqual({ action: "exhausted", result: "no-answer" });
   });
 });
 

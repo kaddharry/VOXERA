@@ -1,9 +1,11 @@
 import { supabase } from "../db/supabase";
 import { placeOutboundCall, isLocalBaseUrl } from "../telephony/outbound";
 import { getPatientById } from "../db/patients";
-import { decideNextStep, resolveWithinWindow, type RetryDecisionInput } from "./policy";
-import { reconcileStuckCall, STUCK_CALL_TIMEOUT_MS } from "./stuck-calls";
 import type { FollowUpStatus } from "../db/follow-up-tasks";
+import { decideNextStep, describeAttemptResult, resolveWithinWindow, type RetryDecisionInput } from "./policy";
+import { CALL_CHECK_AFTER_MS, reconcileStuckCall } from "./stuck-calls";
+import { hasPatientSpoken } from "../logging/session-logger";
+import { fetchCallStatus } from "../telephony/twilio";
 
 const DISPATCH_LEASE_MS = 2 * 60 * 1000; // a claimed-but-undispatched task is reclaimable after this
 const WORKER_ID = `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -154,16 +156,32 @@ async function markNeedsReview(
 }
 
 /**
- * Called from app/api/telephony/status/route.ts once a call tied to a
- * follow-up task has ended AND (for a connected call) its post-call summary
- * has resolved — so the retry/completion decision always has the best
- * signal available, never just "the call ended."
+ * Applies the outcome of a follow-up call to its task. Called from
+ * app/api/telephony/status/route.ts when a call ends (after the post-call
+ * summary for a real conversation), and from the stuck-call sweep.
+ *
+ * Retries are timed from when the call actually ENDED (endedAt), not from
+ * when this runs — the post-call summary can take a while, and a "retry
+ * after 1 minute" means one minute after the call ended. The scheduler is
+ * then woken for that exact time (requestSchedulerWake), so the retry
+ * doesn't wait for the next 30-second poll.
+ *
+ * Idempotent: only a task still in flight ("calling", or "dispatching" if
+ * the outcome beat the dispatcher's own update) is changed, and every
+ * write re-checks that status, so a duplicate Twilio callback or a sweep
+ * racing a late callback can't apply an outcome twice or use up an extra
+ * attempt.
  */
 export async function handleFollowUpCallOutcome(input: {
   taskId: string;
   twilioStatus: RetryDecisionInput["twilioStatus"];
   followUpOutcome?: RetryDecisionInput["followUpOutcome"];
-}) {
+  patientSpoke?: boolean;
+  /** The patient asked on this call not to be called again. */
+  doNotContactRequested?: boolean;
+  /** When the call ended (ms). Defaults to now. */
+  endedAt?: number;
+}): Promise<void> {
   const { data: task } = await supabase
     .from("follow_up_tasks")
     .select(
@@ -181,74 +199,100 @@ export async function handleFollowUpCallOutcome(input: {
   // (a call that failed within milliseconds); count that attempt here.
   const attemptCount = task.status === "dispatching" ? task.attemptCount + 1 : task.attemptCount;
 
+  // Do-not-contact can also have been set by staff, or on another call.
+  let doNotContact = input.doNotContactRequested === true;
+  if (!doNotContact) {
+    const { data: patient } = await supabase.from("patients").select('"doNotContact"').eq("id", task.patientId).maybeSingle();
+    doNotContact = patient?.doNotContact === true;
+  }
+
   const decision = decideNextStep({
     twilioStatus: input.twilioStatus,
     followUpOutcome: input.followUpOutcome,
+    patientSpoke: input.patientSpoke,
+    doNotContact,
     attemptCount,
     maxAttempts: task.maxAttempts,
   });
-  const terminalStatus: Record<string, FollowUpStatus> = {
-    completed: "completed",
-    exhausted: task.finalAction === "completed" ? "completed" : task.finalAction === "cancelled" ? "cancelled" : "exhausted",
-  };
+  const inFlight = task.status;
+
+  if (decision.action === "cancelled") {
+    await supabase
+      .from("follow_up_tasks")
+      .update({ status: "cancelled", cancelledAt: Date.now(), attemptCount, lastOutcome: "do_not_contact", claimedAt: null, claimedBy: null })
+      .eq("id", task.id)
+      .eq("status", inFlight);
+    return;
+  }
 
   if (decision.action === "retry") {
-    const candidateAt = Date.now() + task.retryDelayMinutes * 60_000;
-    const nextAttemptAt = resolveWithinWindow(candidateAt, {
+    const endedAt = input.endedAt ?? Date.now();
+    const nextAttemptAt = resolveWithinWindow(endedAt + task.retryDelayMinutes * 60_000, {
       windowStartMinute: task.windowStartMinute ?? undefined,
       windowEndMinute: task.windowEndMinute ?? undefined,
       timezone: task.timezone,
     });
-    await supabase
+    const { data: moved } = await supabase
       .from("follow_up_tasks")
       .update({
         status: "scheduled",
         nextAttemptAt,
         attemptCount,
-        lastOutcome: input.followUpOutcome ?? input.twilioStatus,
+        lastOutcome: decision.result,
         claimedAt: null,
         claimedBy: null,
       })
       .eq("id", task.id)
-      .eq("status", task.status);
+      .eq("status", inFlight)
+      .select("id");
+    if (moved?.length) requestSchedulerWake(nextAttemptAt);
     return;
   }
 
-  // The call that just ended is the one this review/exhaustion decision is
-  // about — looked up once here (by followUpTaskId, set in dispatchOne) so
-  // both "needs_review" branches below can link the alert straight to its
-  // transcript instead of only the patient it belongs to.
-  const { data: latestCall } = await supabase
-    .from("call_logs")
-    .select("id, sessionId")
-    .eq("followUpTaskId", task.id)
-    .order("startedAt", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const callRef = latestCall ? { callId: latestCall.id, sessionId: latestCall.sessionId } : undefined;
-
-  if (decision.action === "needs_review") {
-    await markNeedsReview(task.id, task.clientId, task.patientId, decision.reason, callRef);
+  if (decision.action === "completed") {
+    await supabase
+      .from("follow_up_tasks")
+      .update({ status: "completed", attemptCount, completedAt: Date.now(), lastOutcome: "resolved", claimedAt: null, claimedBy: null })
+      .eq("id", task.id)
+      .eq("status", inFlight);
     return;
   }
 
-  // "completed" or "exhausted" — both terminal, no further attempts.
-  const finalStatus = terminalStatus[decision.action];
-  await supabase
+  // Exhausted: no attempts left today. Apply the task's final action.
+  const finalStatus: FollowUpStatus =
+    task.finalAction === "completed" ? "completed" : task.finalAction === "cancelled" ? "cancelled" : "exhausted";
+  const { data: closed } = await supabase
     .from("follow_up_tasks")
     .update({
       status: finalStatus,
       attemptCount,
       completedAt: finalStatus === "completed" ? Date.now() : null,
-      lastOutcome: input.followUpOutcome ?? input.twilioStatus,
+      cancelledAt: finalStatus === "cancelled" ? Date.now() : null,
+      lastOutcome: decision.result,
       claimedAt: null,
       claimedBy: null,
     })
     .eq("id", task.id)
-    .eq("status", task.status);
+    .eq("status", inFlight)
+    .select("id");
 
-  if (finalStatus === "exhausted" && task.finalAction === "needs_review") {
-    await markNeedsReview(task.id, task.clientId, task.patientId, "All scheduled attempts exhausted without reaching the patient.", callRef);
+  if (closed?.length && task.finalAction === "needs_review") {
+    // The call that just ended is the one this is about — linked so the
+    // alert opens its transcript, not just the patient.
+    const { data: latestCall } = await supabase
+      .from("call_logs")
+      .select("id, sessionId")
+      .eq("followUpTaskId", task.id)
+      .order("startedAt", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    await markNeedsReview(
+      task.id,
+      task.clientId,
+      task.patientId,
+      `All ${task.maxAttempts} attempt${task.maxAttempts === 1 ? "" : "s"} for the day were used without completing the follow-up (last result: ${describeAttemptResult(decision.result)}).`,
+      latestCall ? { callId: latestCall.id, sessionId: latestCall.sessionId } : undefined,
+    );
   }
 }
 
@@ -275,48 +319,164 @@ export async function applyDoNotContactRequest(clientId: string, patientId: stri
 }
 
 /**
- * Finds follow-up tasks stuck in "calling" — their call started more than
- * STUCK_CALL_TIMEOUT_MS ago and no outcome ever arrived — and settles each
- * from its call_logs row: retry/complete like a normal outcome when the
- * call's end is on record, otherwise hand it to a human. Without this, a
- * single lost Twilio callback left the patient's follow-up "calling"
- * forever, with no retry and no alert.
+ * Finds follow-up tasks still "calling" after their call should have ended
+ * and settles them (see lib/scheduler/stuck-calls.ts):
+ * - the call's end is recorded but the task wasn't moved on → apply it;
+ * - no end recorded → ask Twilio how the call actually went, and apply that;
+ * - no way to find out after 2 hours → hand it to a human with an alert.
+ * Runs about once a minute, so a lost status callback delays a retry by
+ * minutes, not hours.
  */
 export async function reconcileStuckCalls(): Promise<number> {
-  const cutoff = Date.now() - STUCK_CALL_TIMEOUT_MS;
+  const now = Date.now();
   const { data: stuck, error } = await supabase
     .from("follow_up_tasks")
-    .select('id, "clientId", "patientId"')
+    .select('id, "clientId", "patientId", "claimedAt", "claimedBy"')
     .eq("status", "calling")
-    .or(`claimedAt.is.null,claimedAt.lt.${cutoff}`)
+    .or(`claimedAt.is.null,claimedAt.lt.${now - CALL_CHECK_AFTER_MS}`)
     .limit(25);
   if (error || !stuck) return 0;
 
+  let settled = 0;
   for (const task of stuck) {
     try {
       const { data: call } = await supabase
         .from("call_logs")
-        .select('id, "sessionId", status, summary, "startedAt"')
+        .select('id, "sessionId", status, summary, "startedAt", "endedAt"')
         .eq("followUpTaskId", task.id)
         .order("startedAt", { ascending: false })
         .limit(1)
         .maybeSingle();
-      // Tasks moved to "calling" before claimedAt was stamped have no start
-      // time on the task itself; go by the call's own start instead, so a
-      // call that's genuinely still running isn't cut off.
-      if (call?.startedAt && call.startedAt > cutoff) continue;
 
-      const verdict = reconcileStuckCall(call ?? null);
-      if ("needsReview" in verdict) {
-        await markNeedsReview(task.id, task.clientId, task.patientId, verdict.needsReview, call ? { callId: call.id, sessionId: call.sessionId } : undefined);
-      } else {
-        await handleFollowUpCallOutcome({ taskId: task.id, ...verdict });
+      const base = { now, claimedAt: task.claimedAt ?? null, call: call ?? null };
+      let verdict = reconcileStuckCall(base);
+      if (verdict.kind === "ask_twilio") {
+        const callSid = call?.id ?? (typeof task.claimedBy === "string" && task.claimedBy.startsWith("call:") ? task.claimedBy.slice(5) : null);
+        const twilio = callSid ? await fetchCallStatus(callSid) : null;
+        if (twilio && call && ["completed", "busy", "no-answer", "failed", "canceled"].includes(twilio.status)) {
+          // Record what Twilio told us, as the lost callback would have.
+          await supabase
+            .from("call_logs")
+            .update({
+              status: twilio.status === "completed" ? "completed" : "failed",
+              endedAt: twilio.endedAt ?? now,
+              ...(twilio.durationSec != null && { durationMs: twilio.durationSec * 1000 }),
+            })
+            .eq("id", call.id);
+        }
+        verdict = reconcileStuckCall({ ...base, twilio: twilio ? { status: twilio.status, endedAt: twilio.endedAt } : null });
+      }
+
+      if (verdict.kind === "outcome") {
+        const patientSpoke =
+          verdict.twilioStatus === "completed" ? (call?.sessionId ? await hasPatientSpoken(call.sessionId) : false) : undefined;
+        await handleFollowUpCallOutcome({
+          taskId: task.id,
+          twilioStatus: verdict.twilioStatus,
+          followUpOutcome: verdict.followUpOutcome,
+          patientSpoke,
+          endedAt: verdict.endedAt,
+        });
+        settled++;
+      } else if (verdict.kind === "needs_review") {
+        await markNeedsReview(task.id, task.clientId, task.patientId, verdict.reason, call ? { callId: call.id, sessionId: call.sessionId } : undefined);
+        settled++;
       }
     } catch (err) {
       console.error(`[Scheduler] Failed to reconcile stuck task ${task.id}:`, err);
     }
   }
-  return stuck.length;
+  return settled;
+}
+
+/* ------------------------------------------------------------------ */
+/* Polling and on-time wake-ups                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Shared scheduler state. Kept on globalThis because the status-callback
+ * route runs from Next.js's own bundled copy of this module, while the
+ * loop is started from custom-server.ts's copy — both must reach the same
+ * timer. One timer for the whole process (the next due task), never one
+ * per patient; the database stays the source of truth, so nothing is lost
+ * on restart: the poll picks everything up again.
+ */
+interface SchedulerState {
+  baseUrl: string;
+  intervalMs: number;
+  running: boolean;
+  rerun: boolean;
+  wakeTimer: ReturnType<typeof setTimeout> | null;
+  wakeAt: number | null;
+  cycles: number;
+}
+
+const STATE_KEY = Symbol.for("voxera.scheduler.state");
+
+function schedulerState(): SchedulerState | undefined {
+  return (globalThis as Record<symbol, SchedulerState | undefined>)[STATE_KEY];
+}
+
+/** Runs one dispatch cycle unless one is already running (then runs again right after). */
+async function runCycle(state: SchedulerState): Promise<void> {
+  if (state.running) {
+    state.rerun = true;
+    return;
+  }
+  state.running = true;
+  try {
+    do {
+      state.rerun = false;
+      await runDispatchCycle(state.baseUrl);
+      // The stuck-call sweep runs about once a minute.
+      if (state.cycles++ % 2 === 0) await reconcileStuckCalls();
+      await scheduleNextWake(state);
+    } while (state.rerun);
+  } catch (err) {
+    console.error("[Scheduler] Dispatch cycle failed:", err);
+  } finally {
+    state.running = false;
+  }
+}
+
+/** Arms the wake timer for the earliest scheduled task (initial calls as well as retries). */
+async function scheduleNextWake(state: SchedulerState): Promise<void> {
+  const { data } = await supabase
+    .from("follow_up_tasks")
+    .select('"nextAttemptAt"')
+    .eq("status", "scheduled")
+    .gt("nextAttemptAt", Date.now())
+    .order("nextAttemptAt", { ascending: true })
+    .limit(1);
+  const next = data?.[0]?.nextAttemptAt as number | undefined;
+  if (next) armWake(state, next);
+}
+
+/** Wake-ups further out than this are left to the regular poll, which re-arms them as they get close. */
+const MAX_WAKE_AHEAD_MS = 15 * 60 * 1000;
+
+function armWake(state: SchedulerState, at: number): void {
+  const now = Date.now();
+  if (at - now > MAX_WAKE_AHEAD_MS) return;
+  if (state.wakeTimer && state.wakeAt !== null && state.wakeAt <= at) return;
+  if (state.wakeTimer) clearTimeout(state.wakeTimer);
+  state.wakeAt = at;
+  state.wakeTimer = setTimeout(() => {
+    state.wakeTimer = null;
+    state.wakeAt = null;
+    void runCycle(state);
+  }, Math.max(0, at - now) + 250); // small margin so the task is due when the cycle reads it
+  state.wakeTimer.unref?.();
+}
+
+/**
+ * Asks the scheduler to run a dispatch cycle at `at`, so a task due before
+ * the next 30-second poll (e.g. a one-minute retry) is called on time.
+ * A no-op in a process where the scheduler isn't running (`npm run dev`).
+ */
+export function requestSchedulerWake(at: number): void {
+  const state = schedulerState();
+  if (state) armWake(state, at);
 }
 
 /** Starts the polling loop. Call once from custom-server.ts. */
@@ -334,23 +494,25 @@ export function startSchedulerPolling(intervalMs = 30_000) {
     );
     return;
   }
+  if (schedulerState()) return; // already running in this process
 
-  // One cycle at a time: a slow cycle (25 calls, each a Twilio API round
-  // trip) must not overlap the next tick.
-  let running = false;
-  let ticks = 0;
-  setInterval(async () => {
-    if (running) return;
-    running = true;
-    try {
-      await runDispatchCycle(baseUrl);
-      // Sweeping for lost callbacks doesn't need to run every 30s.
-      if (ticks++ % 10 === 0) await reconcileStuckCalls();
-    } catch (err) {
-      console.error("[Scheduler] Dispatch cycle failed:", err);
-    } finally {
-      running = false;
-    }
-  }, intervalMs);
-  console.log(`[Scheduler] Follow-up dispatch loop started (every ${intervalMs / 1000}s).`);
+  const state: SchedulerState = { baseUrl, intervalMs, running: false, rerun: false, wakeTimer: null, wakeAt: null, cycles: 0 };
+  (globalThis as Record<symbol, SchedulerState | undefined>)[STATE_KEY] = state;
+  setInterval(() => void runCycle(state), intervalMs);
+  void runCycle(state);
+  console.log(`[Scheduler] Follow-up dispatch loop started (every ${intervalMs / 1000}s, plus on-time wake-ups for tasks due sooner).`);
+}
+
+/** Test helper: forget the shared scheduler state. */
+export function __resetSchedulerForTests(): void {
+  const state = schedulerState();
+  if (state?.wakeTimer) clearTimeout(state.wakeTimer);
+  delete (globalThis as Record<symbol, SchedulerState | undefined>)[STATE_KEY];
+}
+
+/** Test helper: install scheduler state without starting the interval. */
+export function __installSchedulerForTests(baseUrl: string, intervalMs = 30_000): SchedulerState {
+  const state: SchedulerState = { baseUrl, intervalMs, running: false, rerun: false, wakeTimer: null, wakeAt: null, cycles: 0 };
+  (globalThis as Record<symbol, SchedulerState | undefined>)[STATE_KEY] = state;
+  return state;
 }
