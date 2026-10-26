@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { MessageSquare, LayoutList, Activity, Terminal, Zap, User, Bot, AlertTriangle, CheckCircle2, PhoneCall, RotateCcw, HelpCircle, ChevronRight } from "lucide-react";
+import { MessageSquare, LayoutList, Activity, Terminal, Zap, User, Bot, AlertTriangle, CheckCircle2, PhoneCall, RotateCcw, HelpCircle, ChevronRight, ArrowLeft } from "lucide-react";
 import { GlassCard } from "@/app/_components/GlassCard";
 import { ValenceTimeline, type ValencePoint } from "@/components/admin/ValenceTimeline";
 
@@ -296,7 +296,14 @@ export default function SessionsPage() {
             page itself into scrolling. Grouping by patient (instead of a
             flat list of session ids) is what makes "pull up this patient's
             calls" actually fast. */}
-        <div className="flex w-[300px] flex-none flex-col border-r border-[var(--color-border-subtle)]">
+        {/* Below md there's no room for both columns side by side (the
+            detail panel was squeezed to a sliver on phones), so it's one
+            or the other: the list, or the selected call with a Back button. */}
+        <div
+          className={`w-full flex-col border-[var(--color-border-subtle)] md:flex md:w-[300px] md:flex-none md:border-r ${
+            selectedSession ? "hidden" : "flex"
+          }`}
+        >
           <h2 className="flex-none px-4 pt-4 text-[11px] font-mono font-bold text-[var(--color-text-secondary)] uppercase tracking-widest">
             Patients
           </h2>
@@ -366,7 +373,7 @@ export default function SessionsPage() {
         </div>
 
         {/* Right panel */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className={`min-h-0 min-w-0 flex-1 flex-col md:flex ${selectedSession ? "flex" : "hidden"}`}>
           {!selectedSession ? (
             <div className="flex flex-1 items-center justify-center text-[14px] text-[var(--color-text-muted)]">
               Select a call to view its details
@@ -378,7 +385,14 @@ export default function SessionsPage() {
               {/* Who this call was with — grounds the whole detail view in a
                   patient/caller instead of an opaque session id. One
                   compact line, not a stacked block. */}
-              <div className="flex flex-none items-baseline gap-2 border-b border-[var(--color-border-subtle)] px-6 py-2.5">
+              <div className="flex flex-none flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-[var(--color-border-subtle)] px-4 py-2.5 sm:px-6">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSession(null)}
+                  className="mr-1 flex items-center gap-1 self-center rounded-lg px-1.5 py-1 text-[12px] font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] md:hidden"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" /> Calls
+                </button>
                 <span className="text-[13.5px] font-semibold text-[var(--color-text-primary)]">
                   {(selectedCall?.patientId && patients[selectedCall.patientId]?.name) ??
                     (isTestCall(selectedCall?.callerNumber ?? null) ? "Test call" : "Unlinked call")}
@@ -390,7 +404,7 @@ export default function SessionsPage() {
               </div>
 
               {/* Tab bar */}
-              <div className="flex flex-none items-center gap-1.5 overflow-x-auto border-b border-[var(--color-border-subtle)] px-6 pt-2">
+              <div className="flex flex-none items-center gap-1.5 overflow-x-auto border-b border-[var(--color-border-subtle)] px-4 pt-2 sm:px-6">
                 {TABS.map((t) => (
                   <button
                     key={t.id}
@@ -407,7 +421,7 @@ export default function SessionsPage() {
                 ))}
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto p-6">
+              <div className="min-h-0 flex-1 overflow-y-auto p-4 pb-28 sm:p-6 sm:pb-28">
               {tab === "overview" && overview && (
                 <div className="space-y-6">
                   {/* Clinical Summary — the LLM-generated, transcript-grounded

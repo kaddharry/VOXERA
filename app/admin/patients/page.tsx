@@ -2,10 +2,12 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { UserCheck, Plus, Phone, Loader2, X, Upload, FileText, ChevronDown, ChevronUp, ShieldAlert, ExternalLink, History, Trash2, Files, CalendarClock, Pause, Play, XCircle } from "lucide-react";
+import { UserCheck, Plus, Phone, Loader2, X, Upload, FileText, ShieldAlert, ExternalLink, History, Trash2, Files, CalendarClock } from "lucide-react";
 import { GlassCard } from "../../_components/GlassCard";
 import { PhoneInput } from "../../_components/PhoneInput";
 import { DateRangeTimePicker, expandDailyAttemptTimes, defaultDateSelectionValue, type DateSelectionValue } from "../../../components/admin/DateRangeTimePicker";
+import { Dialog } from "../../../components/admin/Dialog";
+import { FollowUpSchedulesPanel } from "../../../components/admin/FollowUpSchedules";
 
 interface Patient {
   id: string;
@@ -210,15 +212,6 @@ export default function PatientsPage() {
     if (type === "history" && !callsByPatient[patientId]) loadCalls(patientId);
   }
 
-  async function actOnFollowUp(patientId: string, taskId: string, action: "pause" | "resume" | "cancel") {
-    const res = await fetch(`/api/follow-ups/${taskId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
-    if (res.ok) loadFollowUps(patientId);
-  }
-
   function nextFollowUp(patientId: string): FollowUpTask | undefined {
     return (followUpsByPatient[patientId] ?? [])
       .filter((t) => t.status === "scheduled")
@@ -361,7 +354,7 @@ export default function PatientsPage() {
         </button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-6 md:px-10">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-28 sm:p-6 sm:pb-28 md:px-10">
       {showAdd && (
         <GlassCard className="p-6 mb-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
@@ -452,86 +445,90 @@ export default function PatientsPage() {
             const nextTask = nextFollowUp(p.id);
             const isOpen = (type: PanelType) => openPanel?.patientId === p.id && openPanel.type === type;
             return (
-              <GlassCard key={p.id} className="p-5">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-full bg-[var(--color-accent-violet)]/15 text-[var(--color-accent-violet)] flex items-center justify-center font-semibold text-[14px] flex-none">
-                    {p.name.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <Link href={`/admin/patients/${p.id}`} className="text-[14px] font-semibold text-[var(--color-text-primary)] hover:text-[var(--color-accent-violet)] hover:underline transition-colors">
-                      {p.name}
-                    </Link>
-                    <div className="text-[11.5px] text-[var(--color-text-muted)] font-mono">{p.phone}</div>
-                    {p.notes && (
-                      <div className="text-[11px] text-[var(--color-text-muted)] truncate max-w-md mt-0.5 flex items-center gap-1">
-                        <FileText className="w-3 h-3 flex-none" /> {p.notes.slice(0, 80)}
+              <GlassCard key={p.id} className="p-4 sm:p-5">
+                {/* Below lg the actions move under the patient's details and
+                    wrap, instead of squeezing into one row and overlapping
+                    the name and phone number. */}
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-4">
+                  <div className="flex min-w-0 flex-1 items-start gap-3 sm:gap-4">
+                    <div className="w-10 h-10 rounded-full bg-[var(--color-accent-violet)]/15 text-[var(--color-accent-violet)] flex items-center justify-center font-semibold text-[14px] flex-none">
+                      {p.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <Link
+                          href={`/admin/patients/${p.id}`}
+                          className="min-w-0 break-words text-[14px] font-semibold text-[var(--color-text-primary)] hover:text-[var(--color-accent-violet)] hover:underline transition-colors"
+                        >
+                          {p.name}
+                        </Link>
+                        {p.doNotContact && (
+                          <span className="rounded-md border border-red-500/25 bg-red-500/10 px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-red-400">
+                            Do Not Contact
+                          </span>
+                        )}
                       </div>
-                    )}
-                    {/* Always visible, no click required — this is the direct fix
-                        for "I scheduled a call but can't see it anywhere." */}
-                    {nextTask && (
+                      <div className="text-[11.5px] text-[var(--color-text-muted)] font-mono break-all">{p.phone}</div>
+                      {p.notes && (
+                        <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5 flex items-start gap-1 min-w-0">
+                          <FileText className="w-3 h-3 flex-none mt-0.5" />
+                          <span className="line-clamp-1 break-all">{p.notes.slice(0, 80)}</span>
+                        </div>
+                      )}
+                      {/* Always visible, no click required — this is the direct fix
+                          for "I scheduled a call but can't see it anywhere." */}
+                      {nextTask && (
+                        <button
+                          onClick={() => togglePanel(p.id, "followups")}
+                          className="text-[11px] text-[var(--color-accent-cyan)] mt-0.5 flex items-start gap-1 text-left hover:underline"
+                        >
+                          <CalendarClock className="w-3 h-3 flex-none mt-0.5" />
+                          Next follow-up: {new Date(nextTask.nextAttemptAt).toLocaleString()}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 min-[480px]:flex min-[480px]:flex-wrap lg:flex-none lg:flex-nowrap lg:justify-end">
+                    {(
+                      [
+                        { type: "docs", label: "Documents", icon: Files },
+                        { type: "history", label: "History", icon: History },
+                        { type: "followups", label: "Follow-ups", icon: CalendarClock },
+                      ] as const
+                    ).map(({ type, label, icon: Icon }) => (
                       <button
-                        onClick={() => togglePanel(p.id, "followups")}
-                        className="text-[11px] text-[var(--color-accent-cyan)] mt-0.5 flex items-center gap-1 hover:underline"
+                        key={type}
+                        onClick={() => togglePanel(p.id, type)}
+                        aria-haspopup="dialog"
+                        className={`flex items-center justify-center gap-1.5 whitespace-nowrap px-3 py-2 rounded-lg border text-[12.5px] font-semibold transition-all ${
+                          isOpen(type)
+                            ? "bg-[var(--color-accent-violet)]/15 border-[var(--color-accent-violet)]/40 text-[var(--color-accent-violet)]"
+                            : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                        }`}
                       >
-                        <CalendarClock className="w-3 h-3 flex-none" />
-                        Next follow-up: {new Date(nextTask.nextAttemptAt).toLocaleString()}
+                        <Icon className="w-3.5 h-3.5 flex-none" /> {label}
                       </button>
+                    ))}
+                    {!p.doNotContact && (
+                      <>
+                        <button
+                          onClick={() => openScheduleModal(p)}
+                          aria-haspopup="dialog"
+                          className="flex items-center justify-center gap-1.5 whitespace-nowrap px-3 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[12.5px] font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-all"
+                        >
+                          <CalendarClock className="w-3.5 h-3.5 flex-none" /> Schedule
+                        </button>
+                        <button
+                          onClick={() => openCallModal(p)}
+                          aria-haspopup="dialog"
+                          className="col-span-2 flex items-center justify-center gap-2 whitespace-nowrap px-3.5 py-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[12.5px] font-semibold hover:bg-emerald-500/25 transition-all min-[480px]:col-span-1"
+                        >
+                          <Phone className="w-3.5 h-3.5 flex-none" /> Call
+                        </button>
+                      </>
                     )}
                   </div>
-                  <button
-                    onClick={() => togglePanel(p.id, "docs")}
-                    className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-[12.5px] font-semibold transition-all flex-none ${
-                      isOpen("docs")
-                        ? "bg-[var(--color-accent-violet)]/15 border-[var(--color-accent-violet)]/40 text-[var(--color-accent-violet)]"
-                        : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                    }`}
-                  >
-                    <Files className="w-3.5 h-3.5" /> Documents
-                    {isOpen("docs") ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  </button>
-                  <button
-                    onClick={() => togglePanel(p.id, "history")}
-                    className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-[12.5px] font-semibold transition-all flex-none ${
-                      isOpen("history")
-                        ? "bg-[var(--color-accent-violet)]/15 border-[var(--color-accent-violet)]/40 text-[var(--color-accent-violet)]"
-                        : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                    }`}
-                  >
-                    <History className="w-3.5 h-3.5" /> History
-                    {isOpen("history") ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  </button>
-                  <button
-                    onClick={() => togglePanel(p.id, "followups")}
-                    className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-[12.5px] font-semibold transition-all flex-none ${
-                      isOpen("followups")
-                        ? "bg-[var(--color-accent-violet)]/15 border-[var(--color-accent-violet)]/40 text-[var(--color-accent-violet)]"
-                        : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-                    }`}
-                  >
-                    <CalendarClock className="w-3.5 h-3.5" /> Follow-ups
-                    {isOpen("followups") ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  </button>
-                  {p.doNotContact ? (
-                    <span className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/25 text-red-400 text-[12px] font-semibold flex-none">
-                      Do Not Contact
-                    </span>
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => openScheduleModal(p)}
-                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[12.5px] font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-all flex-none"
-                      >
-                        <CalendarClock className="w-3.5 h-3.5" /> Schedule
-                      </button>
-                      <button
-                        onClick={() => openCallModal(p)}
-                        className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[12.5px] font-semibold hover:bg-emerald-500/25 transition-all flex-none"
-                      >
-                        <Phone className="w-3.5 h-3.5" /> Call
-                      </button>
-                    </>
-                  )}
                 </div>
               </GlassCard>
             );
@@ -541,49 +538,73 @@ export default function PatientsPage() {
       </div>
 
       {/* Agent-selection modal — always prompted, every time */}
-      {callTarget && (
-        <div className="fixed inset-0 z-[200] bg-black/50 flex items-center justify-center p-6">
-          <div className="p-6 w-full max-w-sm bg-[var(--color-bg-elevated)] rounded-2xl border border-[var(--color-border-subtle)] shadow-2xl">
-            <h3 className="text-[15px] font-semibold text-[var(--color-text-primary)] mb-1">Call {callTarget.name}</h3>
-            <p className="text-[12px] text-[var(--color-text-muted)] mb-4">{callTarget.phone}</p>
-            <label className="text-[11px] font-mono uppercase tracking-widest text-[var(--color-text-muted)] mb-1.5 block">Agent</label>
-            <select
-              value={callAgentId}
-              onChange={(e) => setCallAgentId(e.target.value)}
-              className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50 mb-4"
+      <Dialog
+        open={!!callTarget}
+        onClose={() => setCallTarget(null)}
+        title={`Call ${callTarget?.name ?? ""}`}
+        subtitle={callTarget?.phone}
+        size="sm"
+        footer={
+          <>
+            <button
+              onClick={() => setCallTarget(null)}
+              className="px-4 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
             >
-              <option value="">Select an agent…</option>
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
-            </select>
-            {callMessage && <p className="text-[12px] text-red-400 mb-3">{callMessage}</p>}
-            <div className="flex gap-2">
-              <button
-                onClick={() => setCallTarget(null)}
-                className="flex-1 px-4 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmCall}
-                disabled={!callAgentId || calling}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-white text-[13px] font-semibold hover:brightness-110 disabled:opacity-40 transition-all"
-              >
-                {calling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
-                Call Now
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+              Cancel
+            </button>
+            <button
+              onClick={confirmCall}
+              disabled={!callAgentId || calling}
+              className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-white text-[13px] font-semibold hover:brightness-110 disabled:opacity-40 transition-all"
+            >
+              {calling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+              Call Now
+            </button>
+          </>
+        }
+      >
+        <label htmlFor="call-agent" className="text-[11px] font-mono uppercase tracking-widest text-[var(--color-text-muted)] mb-1.5 block">Agent</label>
+        <select
+          id="call-agent"
+          value={callAgentId}
+          onChange={(e) => setCallAgentId(e.target.value)}
+          className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+        >
+          <option value="">Select an agent…</option>
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>{a.name}</option>
+          ))}
+        </select>
+        {callMessage && <p role="alert" className="text-[12px] text-red-400 mt-3">{callMessage}</p>}
+      </Dialog>
 
       {/* Schedule-a-follow-up modal */}
-      {scheduleTarget && (
-        <div className="fixed inset-0 z-[200] bg-black/50 flex items-center justify-center p-6">
-          <div className="p-6 w-full max-w-md max-h-[88vh] overflow-y-auto bg-[var(--color-bg-elevated)] rounded-2xl border border-[var(--color-border-subtle)] shadow-2xl">
-            <h3 className="text-[17px] font-semibold text-[var(--color-text-primary)] mb-1">Schedule a follow-up for {scheduleTarget.name}</h3>
-            <p className="text-[13.5px] text-[var(--color-text-muted)] mb-4">{scheduleTarget.phone}</p>
+      <Dialog
+        open={!!scheduleTarget}
+        onClose={() => setScheduleTarget(null)}
+        title={`Schedule a follow-up for ${scheduleTarget?.name ?? ""}`}
+        subtitle={scheduleTarget?.phone}
+        footer={
+          <>
+            <button
+              onClick={() => setScheduleTarget(null)}
+              className="px-4 py-2.5 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[14px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmSchedule}
+              disabled={scheduling || (scheduleMode === "programme" ? !selectedProgrammeId || rangeValue.days.length === 0 : rangeValue.days.length === 0 || !scheduleAgentId)}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[var(--color-accent-violet)] text-white text-[14px] font-semibold hover:brightness-110 disabled:opacity-40 transition-all"
+            >
+              {scheduling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CalendarClock className="w-3.5 h-3.5" />}
+              {scheduleMode === "programme" ? "Enroll" : "Schedule"}
+            </button>
+          </>
+        }
+      >
+        {scheduleTarget && (
+          <>
 
             <div className="flex gap-1.5 mb-4 p-1 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)]">
               <button
@@ -706,26 +727,10 @@ export default function PatientsPage() {
               </>
             )}
 
-            {scheduleMessage && <p className="text-[13px] text-red-400 mb-3">{scheduleMessage}</p>}
-            <div className="flex gap-2">
-              <button
-                onClick={() => setScheduleTarget(null)}
-                className="flex-1 px-4 py-2.5 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[14px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmSchedule}
-                disabled={scheduling || (scheduleMode === "programme" ? !selectedProgrammeId || rangeValue.days.length === 0 : rangeValue.days.length === 0 || !scheduleAgentId)}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[var(--color-accent-violet)] text-white text-[14px] font-semibold hover:brightness-110 disabled:opacity-40 transition-all"
-              >
-                {scheduling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CalendarClock className="w-3.5 h-3.5" />}
-                {scheduleMode === "programme" ? "Enroll" : "Schedule"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            {scheduleMessage && <p role="alert" className="text-[13px] text-red-400">{scheduleMessage}</p>}
+          </>
+        )}
+      </Dialog>
 
       {/* Documents / History / Follow-ups modal — a real centered overlay with
           a backdrop, same pattern as the Call and Schedule modals above,
@@ -738,24 +743,13 @@ export default function PatientsPage() {
         const calls = callsByPatient[patient.id];
         const panelTitle = openPanel.type === "docs" ? "Documents" : openPanel.type === "history" ? "Call History" : "Follow-ups";
         return (
-          <div className="fixed inset-0 z-[200] bg-black/50 flex items-center justify-center p-6" onClick={() => setOpenPanel(null)}>
-            <div
-              className="w-full max-w-lg max-h-[80vh] overflow-y-auto bg-[var(--color-bg-elevated)] rounded-2xl border border-[var(--color-border-subtle)] shadow-2xl p-6"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-start justify-between gap-3 mb-4">
-                <div>
-                  <h3 className="text-[15px] font-semibold text-[var(--color-text-primary)]">{panelTitle}</h3>
-                  <p className="text-[12.5px] text-[var(--color-text-muted)]">{patient.name}</p>
-                </div>
-                <button
-                  onClick={() => setOpenPanel(null)}
-                  className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)] transition-colors flex-none"
-                  aria-label="Close"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
+          <Dialog
+            open
+            onClose={() => setOpenPanel(null)}
+            title={panelTitle}
+            subtitle={patient.name}
+            size={openPanel.type === "followups" ? "lg" : "md"}
+          >
 
               {openPanel.type === "docs" && (
                 <div className="flex flex-col gap-3">
@@ -913,54 +907,14 @@ export default function PatientsPage() {
               )}
 
               {openPanel.type === "followups" && (
-                <div className="flex flex-col gap-3">
-                  {(followUpsByPatient[patient.id] ?? []).length === 0 ? (
-                    <p className="text-[12px] text-[var(--color-text-muted)] italic py-2">
-                      No follow-ups scheduled for {patient.name}. Use &ldquo;Schedule&rdquo; to set one up.
-                    </p>
-                  ) : (
-                    (followUpsByPatient[patient.id] ?? [])
-                      .slice()
-                      .sort((a, b) => b.nextAttemptAt - a.nextAttemptAt)
-                      .map((t) => (
-                        <div
-                          key={t.id}
-                          className="rounded-xl bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] p-3.5 flex items-center justify-between gap-3"
-                        >
-                          <div className="min-w-0">
-                            <p className="text-[12.5px] font-semibold text-[var(--color-text-primary)]">
-                              {new Date(t.nextAttemptAt).toLocaleString()}
-                            </p>
-                            <p className="text-[11.5px] text-[var(--color-text-muted)] mt-0.5">
-                              {t.status} · attempt {t.attemptCount} of {t.maxAttempts}
-                              {t.lastOutcome && ` · ${t.lastOutcome}`}
-                            </p>
-                          </div>
-                          {(t.status === "scheduled" || t.status === "paused") && (
-                            <div className="flex gap-1.5 flex-none">
-                              <button
-                                onClick={() => actOnFollowUp(patient.id, t.id, t.status === "scheduled" ? "pause" : "resume")}
-                                className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] transition-colors"
-                                aria-label={t.status === "scheduled" ? "Pause" : "Resume"}
-                              >
-                                {t.status === "scheduled" ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-                              </button>
-                              <button
-                                onClick={() => actOnFollowUp(patient.id, t.id, "cancel")}
-                                className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                                aria-label="Cancel"
-                              >
-                                <XCircle className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      ))
-                  )}
-                </div>
+                <FollowUpSchedulesPanel
+                  patientId={patient.id}
+                  patientName={patient.name}
+                  agents={agents}
+                  onChanged={() => loadFollowUps(patient.id)}
+                />
               )}
-            </div>
-          </div>
+          </Dialog>
         );
       })()}
     </div>

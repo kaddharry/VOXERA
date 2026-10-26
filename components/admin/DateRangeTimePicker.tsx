@@ -93,7 +93,19 @@ function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-export function DateRangeTimePicker({ value, onChange }: { value: DateSelectionValue; onChange: (v: DateSelectionValue) => void }) {
+export function DateRangeTimePicker({
+  value,
+  onChange,
+  minDateKey,
+  disabledKeys,
+}: {
+  value: DateSelectionValue;
+  onChange: (v: DateSelectionValue) => void;
+  /** Earliest selectable day ("YYYY-MM-DD"). Defaults to today in the browser's timezone. */
+  minDateKey?: string;
+  /** Days that can't be toggled even though they're after minDateKey. */
+  disabledKeys?: string[];
+}) {
   const [viewMonth, setViewMonth] = useState(() => (value.days[0] ? fromDateKey(value.days[0]) : new Date()));
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const [timeMode, setTimeMode] = useState<"keyboard" | "clock">("keyboard");
@@ -103,6 +115,9 @@ export function DateRangeTimePicker({ value, onChange }: { value: DateSelectionV
   const leadingBlanks = firstOfMonth.getDay();
   const today = startOfDay(new Date());
   const daySet = new Set(value.days);
+  const minKey = minDateKey ?? toDateKey(today);
+  const blocked = new Set(disabledKeys ?? []);
+  const isDisabled = (day: Date) => toDateKey(day) < minKey || blocked.has(toDateKey(day));
 
   const cells: Array<Date | null> = [
     ...Array(leadingBlanks).fill(null),
@@ -110,7 +125,7 @@ export function DateRangeTimePicker({ value, onChange }: { value: DateSelectionV
   ];
 
   function handleDayClick(day: Date, shiftKey: boolean) {
-    if (day.getTime() < today.getTime()) return;
+    if (isDisabled(day)) return;
     const key = toDateKey(day);
     if (shiftKey && lastClicked) {
       const anchor = fromDateKey(lastClicked);
@@ -118,7 +133,7 @@ export function DateRangeTimePicker({ value, onChange }: { value: DateSelectionV
       const next = new Set(daySet);
       const cursor = new Date(lo);
       while (cursor.getTime() <= hi.getTime()) {
-        if (cursor.getTime() >= today.getTime()) next.add(toDateKey(cursor));
+        if (!isDisabled(cursor)) next.add(toDateKey(cursor));
         cursor.setDate(cursor.getDate() + 1);
       }
       onChange({ ...value, days: Array.from(next).sort() });
@@ -165,7 +180,7 @@ export function DateRangeTimePicker({ value, onChange }: { value: DateSelectionV
           {cells.map((day, i) => {
             if (!day) return <div key={i} />;
             const key = toDateKey(day);
-            const disabled = day.getTime() < today.getTime();
+            const disabled = isDisabled(day);
             const selected = daySet.has(key);
             return (
               <button
