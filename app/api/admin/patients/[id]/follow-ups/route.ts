@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "../../../../../../lib/db/server";
 import { getPatient } from "../../../../../../lib/db/patients";
 import { createFollowUpTask, listFollowUpTasksForPatient } from "../../../../../../lib/db/follow-up-tasks";
+import { isValidTimeZone, validateCallingWindow } from "../../../../../../lib/scheduler/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const { id } = await params;
   const patient = await getPatient(supabase, id, user.id);
   if (!patient) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // Same guards the date-range and programme schedulers already apply —
+  // without them this task was accepted, then the dispatcher silently
+  // cancelled it (do-not-contact) or turned it into a needs_review alert
+  // (no agent) instead of ever calling.
+  if (patient.doNotContact) return NextResponse.json({ error: "This patient is marked Do Not Contact." }, { status: 400 });
 
   const body = await request.json().catch(() => null);
   if (!body?.scheduledAt || typeof body.scheduledAt !== "number") {
@@ -53,11 +59,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "retryDelayMinutes must be between 1 and 1440." }, { status: 400 });
   }
 
+  const agentId = body.agentId ?? patient.assignedAgentId ?? null;
+  if (!agentId) {
+    return NextResponse.json({ error: "This patient has no assigned agent — pick one before scheduling." }, { status: 400 });
+  }
+  const timezone = body.timezone ?? "UTC";
+  if (!isValidTimeZone(timezone)) {
+    return NextResponse.json({ error: `Unknown timezone "${timezone}".` }, { status: 400 });
+  }
+  const windowError = validateCallingWindow(body.windowStartMinute, body.windowEndMinute);
+  if (windowError) return NextResponse.json({ error: windowError }, { status: 400 });
+
   const task = await createFollowUpTask(supabase, user.id, {
     patientId: id,
-    agentId: body.agentId ?? patient.assignedAgentId ?? null,
+    agentId,
     scheduledAt: body.scheduledAt,
-    timezone: typeof body.timezone === "string" ? body.timezone : "UTC",
+    timezone,
     windowStartMinute: typeof body.windowStartMinute === "number" ? body.windowStartMinute : null,
     windowEndMinute: typeof body.windowEndMinute === "number" ? body.windowEndMinute : null,
     maxAttempts,

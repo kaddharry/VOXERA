@@ -24,12 +24,16 @@ export interface DateSelectionValue {
 }
 
 export function defaultDateSelectionValue(): DateSelectionValue {
-  const now = new Date();
-  const hour24 = now.getHours();
+  // Defaults to the next quarter hour at least 10 minutes out. Defaulting
+  // to the current minute meant "today" was already in the past by the
+  // time the form was submitted.
+  const start = new Date(Date.now() + 10 * 60_000);
+  start.setMinutes(Math.ceil(start.getMinutes() / 15) * 15, 0, 0);
+  const hour24 = start.getHours();
   return {
     days: [],
     hour12: hour24 % 12 === 0 ? 12 : hour24 % 12,
-    minute: now.getMinutes(),
+    minute: start.getMinutes(),
     meridiem: hour24 >= 12 ? "PM" : "AM",
   };
 }
