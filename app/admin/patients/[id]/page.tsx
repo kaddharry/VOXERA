@@ -16,6 +16,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import { GlassCard } from "@/app/_components/GlassCard";
+import { FollowUpSchedulesPanel } from "../../../../components/admin/FollowUpSchedules";
 
 /**
  * Dedicated patient profile (spec §9.3): Summary / Records & Documents /
@@ -89,6 +90,7 @@ export default function PatientProfilePage() {
   const [tasks, setTasks] = useState<FollowUpTask[] | null>(null);
   const [calls, setCalls] = useState<PatientCall[] | null>(null);
   const [alerts, setAlerts] = useState<Alert[] | null>(null);
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
 
   // Every fetch here needs its own .catch() — without one, a failed
   // request (network blip, a non-JSON error response, anything) leaves
@@ -109,6 +111,10 @@ export default function PatientProfilePage() {
         console.error("[PatientProfilePage] Failed to load documents:", e);
         setDocuments([]);
       });
+    fetch("/api/admin/agents")
+      .then((r) => r.json())
+      .then((d: { agents?: { id: string; name: string }[] }) => setAgents(d.agents ?? []))
+      .catch(() => setAgents([]));
     fetch(`/api/admin/patients/${id}/follow-ups`)
       .then((r) => r.json())
       .then((d) => setTasks(d.tasks ?? []))
@@ -150,13 +156,11 @@ export default function PatientProfilePage() {
     if (res.ok) fetch(`/api/admin/patients/${id}/documents`).then((r) => r.json()).then((d) => setDocuments(d.documents ?? []));
   }
 
-  async function actOnTask(taskId: string, action: "pause" | "resume" | "cancel") {
-    const res = await fetch(`/api/follow-ups/${taskId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
-    if (res.ok) fetch(`/api/admin/patients/${id}/follow-ups`).then((r) => r.json()).then((d) => setTasks(d.tasks ?? []));
+  function reloadTasks() {
+    fetch(`/api/admin/patients/${id}/follow-ups`)
+      .then((r) => r.json())
+      .then((d) => setTasks(d.tasks ?? []))
+      .catch(() => {});
   }
 
   async function resolveAlert(alertId: string) {
@@ -305,39 +309,13 @@ export default function PatientProfilePage() {
       )}
 
       {tab === "schedule" && (
-        <GlassCard className="p-5">
-          {tasks === null ? (
-            <Loader2 className="w-4 h-4 animate-spin text-[var(--color-text-muted)]" />
-          ) : tasks.length === 0 ? (
-            <p className="text-[15px] text-[var(--color-text-muted)] italic">
-              No follow-ups scheduled. Use the "Schedule" button on the{" "}
-              <Link href="/admin/patients" className="text-[var(--color-accent-violet)] hover:underline">Patients</Link> page.
-            </p>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {tasks.map((t) => (
-                <div key={t.id} className="flex items-center justify-between gap-3 p-3.5 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)]">
-                  <div>
-                    <p className="text-[15px] font-semibold text-[var(--color-text-primary)]">{new Date(t.nextAttemptAt).toLocaleString()}</p>
-                    <p className="text-[13.5px] text-[var(--color-text-muted)] mt-0.5">
-                      {t.status} · attempt {t.attemptCount} of {t.maxAttempts}
-                      {t.lastOutcome && ` · ${t.lastOutcome}`}
-                    </p>
-                  </div>
-                  {(t.status === "scheduled" || t.status === "paused") && (
-                    <div className="flex gap-1.5 flex-none">
-                      <button onClick={() => actOnTask(t.id, t.status === "scheduled" ? "pause" : "resume")} className="px-2.5 py-1.5 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] text-[13.5px] text-[var(--color-text-secondary)]">
-                        {t.status === "scheduled" ? "Pause" : "Resume"}
-                      </button>
-                      <button onClick={() => actOnTask(t.id, "cancel")} className="px-2.5 py-1.5 rounded-lg bg-red-500/10 border border-red-500/25 text-[13.5px] text-red-400">
-                        Cancel
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+        <GlassCard className="p-4 sm:p-5">
+          <FollowUpSchedulesPanel
+            patientId={id}
+            patientName={patient?.name ?? "this patient"}
+            agents={agents}
+            onChanged={reloadTasks}
+          />
         </GlassCard>
       )}
 

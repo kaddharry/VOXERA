@@ -3,6 +3,7 @@ import { createClient } from "../../../../../../lib/db/server";
 import { getPatient } from "../../../../../../lib/db/patients";
 import { createFollowUpTask, listFollowUpTasksForPatient } from "../../../../../../lib/db/follow-up-tasks";
 import { isValidTimeZone, validateCallingWindow } from "../../../../../../lib/scheduler/validation";
+import { groupSchedules } from "../../../../../../lib/scheduler/schedules";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,11 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   if (!patient) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const tasks = await listFollowUpTasksForPatient(supabase, id, user.id);
-  return NextResponse.json({ tasks });
+  // Grouped/classified server-side with the same rules the edit and clear
+  // endpoints enforce, so the panel never shows a day as editable that the
+  // server would refuse. `tasks` is kept for existing callers.
+  const now = Date.now();
+  return NextResponse.json({ tasks, schedules: groupSchedules(tasks, now), now });
 }
 
 /**
