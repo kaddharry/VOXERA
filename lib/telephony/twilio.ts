@@ -152,3 +152,23 @@ export async function initiateOutboundCall(opts: {
 
   return { callSid: call.sid, status: call.status };
 }
+
+/**
+ * Asks Twilio for a call's current status. Used when a call's status
+ * callback never arrived (lib/scheduler/dispatcher.ts's stuck-call sweep):
+ * Twilio still knows how the call ended even if its webhook to us was
+ * lost. Returns null if Twilio can't be reached or doesn't know the call.
+ */
+export async function fetchCallStatus(callSid: string): Promise<{ status: string; durationSec: number | null; endedAt: number | null } | null> {
+  try {
+    const call = await getTwilioClient().calls(callSid).fetch();
+    return {
+      status: call.status,
+      durationSec: call.duration != null ? Number(call.duration) : null,
+      endedAt: call.endTime ? new Date(call.endTime).getTime() : null,
+    };
+  } catch (err) {
+    console.warn(`[Twilio] Couldn't fetch status for call ${callSid}:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}

@@ -54,6 +54,30 @@ export async function logSessionEvent(event: SessionEvent): Promise<void> {
 }
 
 /**
+ * Whether the patient said anything during a call, from its saved
+ * transcript (an "utterance" event with role "user"). Used to tell a real
+ * conversation apart from a call that merely connected — voicemail, an
+ * immediate hang-up, or a call whose audio never started all reach Twilio
+ * as "completed". Returns undefined if it can't be determined (database
+ * error), so callers don't mistake "unknown" for "no".
+ */
+export async function hasPatientSpoken(sessionId: string): Promise<boolean | undefined> {
+  try {
+    const { data, error } = await supabase
+      .from("session_logs")
+      .select("id")
+      .eq("sessionId", sessionId)
+      .eq("type", "utterance")
+      .eq("payload->>role", "user")
+      .limit(1);
+    if (error) return undefined;
+    return (data?.length ?? 0) > 0;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Reads and parses all events for a given session from Supabase.
  */
 export async function getSessionLog(sessionId: string): Promise<SessionEvent[]> {

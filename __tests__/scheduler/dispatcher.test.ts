@@ -137,23 +137,42 @@ describe("reconcileStuckCalls", () => {
 });
 
 describe("reconcileStuckCall", () => {
-  it("sends a call with no record at all to human review", () => {
-    expect(reconcileStuckCall(null)).toHaveProperty("needsReview");
+  const now = 10_000_000_000;
+  const MIN = 60_000;
+
+  it("waits while a call is younger than 3 minutes", () => {
+    expect(reconcileStuckCall({ now, claimedAt: now - 2 * MIN, call: null })).toEqual({ kind: "wait" });
   });
 
-  it("retries a stuck call whose record says it failed", () => {
-    expect(reconcileStuckCall({ status: "failed" })).toEqual({ twilioStatus: "failed" });
+  it("applies a recorded end that was never acted on (after a 2-minute grace)", () => {
+    const call = { status: "failed", startedAt: now - 10 * MIN, endedAt: now - 5 * MIN };
+    expect(reconcileStuckCall({ now, claimedAt: null, call })).toEqual({ kind: "outcome", twilioStatus: "failed", followUpOutcome: undefined, endedAt: now - 5 * MIN });
+    expect(reconcileStuckCall({ now, claimedAt: null, call: { ...call, endedAt: now - MIN } })).toEqual({ kind: "wait" });
   });
 
-  it("uses the saved summary's verdict for a stuck call that completed", () => {
-    expect(reconcileStuckCall({ status: "completed", summary: { followUpOutcome: "resolved" } })).toEqual({
-      twilioStatus: "completed",
-      followUpOutcome: "resolved",
+  it("uses the saved summary's verdict for a recorded completed call", () => {
+    const call = { status: "completed", startedAt: now - 10 * MIN, endedAt: now - 5 * MIN, summary: { followUpOutcome: "resolved" as const } };
+    expect(reconcileStuckCall({ now, claimedAt: null, call })).toMatchObject({ kind: "outcome", twilioStatus: "completed", followUpOutcome: "resolved" });
+  });
+
+  it("asks Twilio when no end was recorded, and applies Twilio's answer", () => {
+    const call = { status: "outbound_initiated", startedAt: now - 5 * MIN, endedAt: null };
+    expect(reconcileStuckCall({ now, claimedAt: null, call })).toEqual({ kind: "ask_twilio" });
+    expect(reconcileStuckCall({ now, claimedAt: null, call, twilio: { status: "no-answer", endedAt: now - 4 * MIN } })).toEqual({
+      kind: "outcome",
+      twilioStatus: "no-answer",
+      endedAt: now - 4 * MIN,
     });
   });
 
-  it("sends a call that never reported an end state to human review", () => {
-    expect(reconcileStuckCall({ status: "outbound_initiated" })).toHaveProperty("needsReview");
-    expect(reconcileStuckCall({ status: "active" })).toHaveProperty("needsReview");
+  it("keeps waiting while Twilio says the call is still in progress", () => {
+    const call = { status: "active", startedAt: now - 20 * MIN, endedAt: null };
+    expect(reconcileStuckCall({ now, claimedAt: null, call, twilio: { status: "in-progress", endedAt: null } })).toEqual({ kind: "wait" });
+  });
+
+  it("hands it to a human after 2 hours with no way to find out", () => {
+    expect(reconcileStuckCall({ now, claimedAt: now - 3 * 60 * MIN, call: null, twilio: null })).toHaveProperty("kind", "needs_review");
+    const call = { status: "active", startedAt: now - 3 * 60 * MIN, endedAt: null };
+    expect(reconcileStuckCall({ now, claimedAt: null, call, twilio: null })).toHaveProperty("kind", "needs_review");
   });
 });

@@ -8,54 +8,107 @@
 export type TwilioCallStatus = "completed" | "busy" | "no-answer" | "failed" | "canceled";
 
 /** Provider-level outcomes where the call never actually connected — always
- * retryable up to maxAttempts. A "completed" call (one that connected) is
- * handled separately via the post-call summary's followUpOutcome, since a
- * connected call's actual result can't be known from Twilio's status alone
- * — spec §10.4 explicitly warns against treating every hang-up/end as
- * automatically retryable. */
+ * retryable up to maxAttempts. */
 const RETRYABLE_TWILIO_STATUSES: ReadonlySet<TwilioCallStatus> = new Set(["busy", "no-answer", "failed", "canceled"]);
 
 export interface RetryDecisionInput {
   twilioStatus: TwilioCallStatus;
-  /** Set only once the post-call LLM summary has run (app/api/telephony/
-   * status/route.ts chains the decision onto that, not the raw webhook) —
-   * undefined for a call that never connected. */
+  /** The post-call summary's verdict, when there is one (app/api/telephony/
+   * status/route.ts). Undefined when the call never connected, nobody
+   * spoke, or the summary couldn't be produced. */
   followUpOutcome?: "resolved" | "needs_retry" | "needs_review";
+  /**
+   * Whether the patient said anything on a connected call, from the saved
+   * transcript. Twilio reports "completed" for any call that connected —
+   * including voicemail, a patient hanging up straight away, or a call
+   * whose audio stream never started — so "completed" alone is not
+   * evidence the follow-up happened. false means no conversation took
+   * place; undefined means unknown.
+   */
+  patientSpoke?: boolean;
+  /** The patient asked not to be called (on this call or previously). */
+  doNotContact?: boolean;
   attemptCount: number;
   maxAttempts: number;
 }
 
+/** Why a day is being retried or has run out of attempts; stored as the task's lastOutcome. */
+export type AttemptResult =
+  | TwilioCallStatus
+  | "no_conversation"
+  | "call_back_requested"
+  | "outcome_unclear";
+
 export type RetryDecision =
-  | { action: "retry" }
+  | { action: "retry"; result: AttemptResult }
   | { action: "completed" }
-  | { action: "needs_review"; reason: string }
-  | { action: "exhausted" };
+  | { action: "exhausted"; result: AttemptResult }
+  | { action: "cancelled"; reason: "do_not_contact" };
 
-/** maxAttempts INCLUDES the initial attempt (migration_v18.sql's doc
- * comment) — attemptCount is incremented at dispatch time, so by the time
- * this runs for the Nth attempt, attemptCount already equals N. */
+/**
+ * What to do after a follow-up call ends.
+ *
+ * - The patient asked not to be called: stop now (cancelled), never retry.
+ * - Never connected (busy / no-answer / failed / canceled): retry.
+ * - Connected but the patient never spoke (voicemail, immediate hang-up,
+ *   audio never started): retry — nobody was actually reached.
+ * - Connected, and the summary says the follow-up was completed
+ *   ("resolved"): completed; no more attempts that day.
+ * - Connected, and the summary says call back / inconclusive, OR the
+ *   outcome is unclear (summary unsure, missing or failed): retry. An
+ *   ambiguous call is never counted as a success without evidence, and
+ *   never leaves the day stuck either.
+ *
+ * Every retry is bounded by maxAttempts; once they're used up the day is
+ * "exhausted" and the caller applies the task's finalAction (by default a
+ * needs_review alert). Other days' tasks are separate rows and are never
+ * affected.
+ *
+ * maxAttempts INCLUDES the initial attempt (migration_v18.sql) —
+ * attemptCount is incremented at dispatch time, so by the time this runs
+ * for the Nth attempt, attemptCount already equals N.
+ */
 export function decideNextStep(input: RetryDecisionInput): RetryDecision {
+  if (input.doNotContact) return { action: "cancelled", reason: "do_not_contact" };
+
   const attemptsRemain = input.attemptCount < input.maxAttempts;
+  const retryOrExhaust = (result: AttemptResult): RetryDecision =>
+    attemptsRemain ? { action: "retry", result } : { action: "exhausted", result };
 
-  if (!RETRYABLE_TWILIO_STATUSES.has(input.twilioStatus)) {
-    // Call connected. Never infer completion from "the call ended" alone.
-    switch (input.followUpOutcome) {
-      case "resolved":
-        return { action: "completed" };
-      case "needs_retry":
-        return attemptsRemain ? { action: "retry" } : { action: "exhausted" };
-      case "needs_review":
-      case undefined:
-      default:
-        // No clear signal (summary failed/missing, or the model couldn't
-        // tell) — conservative default is a human review, not a silent
-        // "completed", per spec §8.2's "connected ≠ completed" rule.
-        return { action: "needs_review", reason: "Call connected but the outcome could not be confirmed automatically." };
-    }
+  if (RETRYABLE_TWILIO_STATUSES.has(input.twilioStatus)) return retryOrExhaust(input.twilioStatus);
+
+  // Connected ("completed" from Twilio's side).
+  if (input.patientSpoke === false) return retryOrExhaust("no_conversation");
+  switch (input.followUpOutcome) {
+    case "resolved":
+      return { action: "completed" };
+    case "needs_retry":
+      return retryOrExhaust("call_back_requested");
+    default:
+      return retryOrExhaust("outcome_unclear");
   }
+}
 
-  // Never connected — a provider-level failure, always retryable.
-  return attemptsRemain ? { action: "retry" } : { action: "exhausted" };
+/** Human-readable text for a retry/exhaustion result, for alerts and the UI. */
+export function describeAttemptResult(result: AttemptResult | string): string {
+  switch (result) {
+    case "busy":
+      return "line busy";
+    case "no-answer":
+      return "no answer";
+    case "failed":
+      return "call failed to connect";
+    case "canceled":
+      return "call cancelled before connecting";
+    case "no_conversation":
+      return "call connected but the patient didn't speak (voicemail or hang-up)";
+    case "call_back_requested":
+      return "conversation cut short or patient asked to be called back";
+    case "outcome_unclear":
+      return "conversation outcome couldn't be confirmed";
+    default:
+      return String(result).replace(/_/g, " ");
+  }
 }
 
 export interface CallingWindow {
