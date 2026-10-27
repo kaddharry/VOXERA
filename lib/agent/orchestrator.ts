@@ -276,9 +276,17 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // still-in-flight agentInfoPromise instead of waiting behind it. This is
   // the join point: whichever of the three is slowest determines how long
   // this section takes, instead of the sum of all three.
+  // Emotion latency (objective: < 300ms per turn) is measured per stage and
+  // logged with the turn's emotion event — text detection runs alongside
+  // other work here, so its own start-to-finish time is what counts.
+  const emotionStartedAt = performance.now();
+  let textEmotionMs = 0;
   const [agentInfo, textEmoResult, queryEmbedding, patientContext] = await Promise.all([
     agentInfoPromise,
-    detectTextEmotion(input.transcript),
+    detectTextEmotion(input.transcript).then((result) => {
+      textEmotionMs = performance.now() - emotionStartedAt;
+      return result;
+    }),
     embed(input.transcript, { isQuery: true }),
     patientInfoPromise,
   ]);
@@ -300,10 +308,16 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   const inlineKb = await getInlineKnowledgeBase(input.clientId);
 
   const textEmo = textEmoResult.primary;
+  const audioStartedAt = performance.now();
   const audioEmo = input.acousticFeatures
     ? detectAudioEmotion(input.acousticFeatures, { sensitivityBias: input.sensitivityBias })
     : (input.audioEmotion ?? null);
   const fused = fuseEmotion(textEmo, audioEmo);
+  const emotionLatencyMs = {
+    text: Math.round(textEmotionMs),
+    audioAndFusion: Math.round(performance.now() - audioStartedAt),
+    total: Math.round(textEmotionMs + (performance.now() - audioStartedAt)),
+  };
 
   const userTurn: Utterance = {
     id: nanoid(8),
@@ -396,6 +410,10 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   });
 
   const emotionData = {
+    // Ties each per-turn event to its utterance — turns can overlap (a
+    // barge-in starts the next before the last finished logging), so
+    // ordering alone can pair an emotion with the wrong sentence.
+    utteranceId: userTurn.id,
     label: fused.label,
     intensity: fused.intensity,
     confidence: fused.confidence,
@@ -404,6 +422,12 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     trajectory: emotionCtx.trajectory,
     zDeviation: emotionCtx.zDeviation,
     flags: emotionCtx.flags,
+    // Each side's own verdict before fusion, so a call can be audited turn
+    // by turn (scripts/emotion-report.ts): what the words said, what the
+    // voice said, and which one the fused label followed.
+    textSignal: { label: textEmo.label, confidence: textEmo.confidence, engine: textEmoResult.selection.engine },
+    audioSignal: audioEmo ? { label: audioEmo.label, confidence: audioEmo.confidence } : null,
+    latencyMs: emotionLatencyMs,
   };
   void logSessionEvent(makeEvent(evBase, "emotion", emotionData));
   void emitSessionEvent(input.sessionId, "emotion", emotionData);
@@ -421,6 +445,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // Issue #14: Log acoustic features if available
   if (input.acousticFeatures) {
     void logSessionEvent(makeEvent(evBase, "acoustic", {
+      utteranceId: userTurn.id,
       rmsEnergy: input.acousticFeatures.rmsEnergy,
       pitchHz: input.acousticFeatures.pitchHz,
       pitchVariation: input.acousticFeatures.pitchVariation,
@@ -433,6 +458,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   }
 
   const caiData = {
+    utteranceId: userTurn.id,
     score: cai.score,
     category: cai.category,
     explanation: cai.explanation,
@@ -505,6 +531,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   }));
 
   void logSessionEvent(makeEvent(evBase, "policy", {
+    utteranceId: userTurn.id,
     acknowledgeFirst: policy.acknowledgeFirst,
     pace: policy.pace,
     allowUpsell: policy.allowUpsell,

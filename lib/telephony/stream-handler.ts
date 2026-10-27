@@ -12,7 +12,7 @@ import { callQueue } from "../queue/manager";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
 import { CONFIG } from "../config";
-import { computeRmsEnergy, computeFrameZeroCrossingRate, extractAcousticFeatures } from "../audio/acoustic";
+import { computeRmsEnergy, computeFrameZeroCrossingRate, extractAcousticFeatures, isolateLastUtterance } from "../audio/acoustic";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
@@ -435,7 +435,9 @@ export class TelephonyStreamHandler {
 
     try {
       // Issue #14: Extract acoustic features from accumulated PCM
-      const turnPcm = Buffer.concat(this.turnAudioChunks);
+      // Only the caller's own latest utterance — not the silence while the
+      // agent spoke or the line waited (see isolateLastUtterance).
+      const turnPcm = isolateLastUtterance(Buffer.concat(this.turnAudioChunks));
       const wordCount = text.split(/\s+/).filter(Boolean).length;
       const acousticFeatures = turnPcm.length > 0
         ? extractAcousticFeatures(turnPcm, wordCount)

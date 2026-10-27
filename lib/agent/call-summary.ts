@@ -1,5 +1,6 @@
 import { supabase } from "../db/supabase";
 import { generateReply } from "./llm";
+import { summarizeCallEmotion, type CallEmotion, type TurnEmotion } from "../emotion/call-emotion";
 
 export interface CallSummary {
   sentimentTrajectory: string;
@@ -22,6 +23,10 @@ export interface CallSummary {
    * cancels remaining follow-ups when this is true — grounded strictly in
    * what was actually said, same discipline as flaggedConcerns. */
   requestedDoNotContact: boolean;
+  /** How the patient felt over the whole call, computed from the per-turn
+   * emotion readings (lib/emotion/call-emotion.ts) — absent when no turn
+   * had an emotion reading. */
+  callEmotion?: CallEmotion;
 }
 
 const SUMMARY_SYSTEM_PROMPT =
@@ -107,9 +112,28 @@ export async function generateCallSummary(sessionId: string, clientId: string): 
       useTools: false,
       maxOutputTokens: 400,
     });
-    return parseSummary(reply.text);
+    const summary = parseSummary(reply.text);
+    if (!summary) return null;
+    const callEmotion = await loadCallEmotion(sessionId).catch(() => null);
+    return callEmotion ? { ...summary, callEmotion } : summary;
   } catch (err) {
     console.error(`[CallSummary] generateReply failed for session ${sessionId}:`, err);
     return null;
   }
+}
+
+/** The call-level emotion from the session's per-turn emotion events. A
+ * failed read just leaves it out — the summary itself still stands. */
+async function loadCallEmotion(sessionId: string): Promise<CallEmotion | null> {
+  const { data, error } = await supabase
+    .from("session_logs")
+    .select("payload")
+    .eq("sessionId", sessionId)
+    .eq("type", "emotion")
+    .order("ts", { ascending: true });
+  if (error || !data) return null;
+  const turns = data
+    .map((r) => r.payload as Partial<TurnEmotion>)
+    .filter((p): p is TurnEmotion => typeof p.label === "string" && typeof p.intensity === "number");
+  return summarizeCallEmotion(turns);
 }

@@ -7,7 +7,7 @@ import { DeepgramSpeakStream } from "./lib/deepgram/tts-stream";
 import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "./lib/emotion/tts-params";
 import { getAgentWithTenant } from "./lib/db/agents";
 import { supabase } from "./lib/db/supabase";
-import { extractAcousticFeatures, computeRmsEnergy } from "./lib/audio/acoustic";
+import { extractAcousticFeatures, computeRmsEnergy, isolateLastUtterance } from "./lib/audio/acoustic";
 import { int16ToFloat32Pcm } from "./lib/emotion/local-audio-detect";
 import { DEMO, ensureSeeded } from "./lib/bootstrap";
 import { CONFIG } from "./lib/config";
@@ -195,8 +195,9 @@ wss.on("connection", async (ws: WebSocket, request) => {
       console.log(`[STT] User: "${text}"`);
 
       const wordCount = text.split(/\s+/).filter(Boolean).length;
-      const acousticFeatures = turnPcm.length > 0
-        ? extractAcousticFeatures(downsample16kTo8k(turnPcm), wordCount)
+      const utterancePcm = turnPcm.length > 0 ? isolateLastUtterance(downsample16kTo8k(turnPcm)) : Buffer.alloc(0);
+      const acousticFeatures = utterancePcm.length > 0
+        ? extractAcousticFeatures(utterancePcm, wordCount)
         : undefined;
       // Raw 16kHz PCM (pre-downsampling) for the wav2vec2 acoustic ML
       // diagnostic engine — the browser mic already captures at this

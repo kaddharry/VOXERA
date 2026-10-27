@@ -444,6 +444,10 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
  *   these weighted confidences, so the priority actually changes outcomes,
  *   not just the reported number.
  */
+/** Text confidence from which a non-neutral words label always wins fusion
+ * (see fuseEmotion). The lexicon's single-keyword matches score ~0.55. */
+const TEXT_LABEL_AUTHORITY_CONFIDENCE = 0.5;
+
 export function fuseEmotion(
   text: EmotionSignal,
   audio: EmotionSignal | null
@@ -482,17 +486,22 @@ export function fuseEmotion(
     d: audio.vad.d * audioWeight + text.vad.d * textWeight,
   };
 
-  // Label selection: apply the same priority weight to each engine's
-  // confidence, then require the usual margin to override — so a low-
-  // confidence text read doesn't get to override a strong acoustic signal
-  // just by having a numerically higher raw confidence.
+  // Label selection. When the words name an emotion with at least moderate
+  // confidence, the label is the words' — the voice still shapes intensity
+  // and VAD above, but can't swap in a different emotion. Measured on a
+  // real scripted phone call, the voice-only rules read 1 of 8 sentences
+  // correctly (vs 6-7 for the words) yet out-voted the words on 7 of 10
+  // turns, turning "I'm worried", "third time!" and "great news" into
+  // "confusion". Only when the words are neutral or unsure does the
+  // weighted comparison below let the voice pick the label (e.g. a flat
+  // "okay" said in a distressed voice).
   const weightedText = text.confidence * textWeight;
   const weightedAudio = audio.confidence * audioWeight;
   let label: EmotionLabel;
-  if (weightedAudio > weightedText + fusionConfidenceMargin) {
-    label = audio.label;
-  } else if (weightedText > weightedAudio + fusionConfidenceMargin) {
+  if (text.label !== "neutral" && text.confidence >= TEXT_LABEL_AUTHORITY_CONFIDENCE) {
     label = text.label;
+  } else if (weightedAudio > weightedText + fusionConfidenceMargin) {
+    label = audio.label;
   } else {
     // Within margin: prefer text (semantic meaning is generally more reliable)
     label = text.label;

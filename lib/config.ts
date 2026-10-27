@@ -292,9 +292,11 @@ export const CONFIG = {
      * engine comparison (HF + Lexicon + Local ONNX + Acoustic) on every turn
      * and attaches it to the trace/session log. Off by default in production
      * to avoid the extra local-model inference and logging cost on every
-     * live call — enable for debugging or via scripts/test-emotion-diagnostic.ts.
+     * live call — enable for debugging or via scripts/test-emotion-diagnostic.ts,
+     * or for a measured test call with EMOTION_DIAGNOSTICS=on in .env.local
+     * (scripts/emotion-report.ts then shows every engine's verdict per turn).
      */
-    diagnosticMode: false,
+    diagnosticMode: process.env.EMOTION_DIAGNOSTICS === "on",
     /** Strict latency budget (ms) for the HuggingFace API call. */
     hfLatencyBudgetMs: 200,
     /**
