@@ -63,7 +63,13 @@ export const CONFIG = {
     // pipeline it's already waiting on) for turn-taking that actually
     // waits for the caller to finish, which matters more for how natural a
     // call feels than shaving another 300ms off response time would.
-    utteranceEndMs: 1300,
+    // Raised again to 1700ms for patient calls: on a scripted test call a
+    // patient's ordinary thinking pause ("I'm really worried that
+    // something … went wrong in the surgery") ended the turn 3 times out of
+    // 8. Someone recovering from surgery pauses more than a sales lead;
+    // stream-handler.ts also now merges a continuation that arrives before
+    // the reply starts, so this only needs to cover the common case.
+    utteranceEndMs: 1700,
   },
   deepgram: {
     sttModel: "nova-2-general",

@@ -168,11 +168,11 @@ export function buildReport(sessionId: string, call: Record<string, any> | undef
 
   if (turns.some((t) => t.diagnostic)) {
     out.push("", "## Every engine's verdict", "");
-    out.push("| # | Keyword list | Local text model | Voice heuristic | Matched keywords |");
-    out.push("| --- | --- | --- | --- | --- |");
+    out.push("| # | Keyword list | Local text model | Voice heuristic | Voice AI model | Matched keywords |");
+    out.push("| --- | --- | --- | --- | --- | --- |");
     turns.forEach((t, i) => {
       const d = t.diagnostic;
-      out.push(`| ${i + 1} | ${engine(d?.lexicon)} | ${engine(d?.localOnnx)} | ${engine(d?.acoustic)} | ${cell(d?.lexicon?.matchedKeywords?.join(", "))} |`);
+      out.push(`| ${i + 1} | ${engine(d?.lexicon)} | ${engine(d?.localOnnx)} | ${engine(d?.acoustic)} | ${engine(d?.acousticMl)} | ${cell(d?.lexicon?.matchedKeywords?.join(", "))} |`);
     });
   }
 

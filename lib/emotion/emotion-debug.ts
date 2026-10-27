@@ -107,9 +107,9 @@ function scoreSignal(
  *
  * `rawAudio16kHz` (raw mono PCM, Float32 in [-1, 1], the browser-mic
  * capture's native rate) runs the wav2vec2 acoustic ML engine (see
- * local-audio-detect.ts) alongside everything else. Omit it (e.g. for
- * telephony, which is 8kHz mulaw) and `acousticMl` comes back null — no
- * attempt to resample, that's a separate, unvalidated step.
+ * local-audio-detect.ts) alongside everything else. Phone calls pass the
+ * caller's 8kHz utterance upsampled to 16kHz (lib/audio/acoustic.ts's
+ * upsample8kTo16kFloat32); omit it and `acousticMl` comes back null.
  */
 export async function runDiagnosticEmotion(
   text: string,
