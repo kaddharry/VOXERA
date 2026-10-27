@@ -89,6 +89,22 @@ app.prepare().then(() => {
     }
   });
 
+  // Next also attaches its own 'upgrade' listener to this server the first
+  // time a request goes through getRequestHandler() (next/dist/server/
+  // next.js, setupWebSocketHandler). That listener serves dev HMR, but it
+  // also runs for /api/telephony/stream, matches the app/api/telephony/
+  // stream route and calls socket.end() on the socket upgraded above — the
+  // Twilio media stream then closed ~20ms after its 101 handshake and every
+  // real call hung up right after "Please hold". Wrap any upgrade listener
+  // registered from here on so it never sees the telephony path.
+  const addListener = server.on.bind(server);
+  server.on = ((event: string, listener: (...args: any[]) => void) => {
+    if (event !== "upgrade") return addListener(event, listener);
+    return addListener(event, (req: IncomingMessage, socket: Socket, head: Buffer) => {
+      if (parse(req.url || "/").pathname !== "/api/telephony/stream") listener(req, socket, head);
+    });
+  }) as typeof server.on;
+
   server.listen(port, () => {
     console.log(`> VOXERA ready on http://${hostname}:${port} (${dev ? "development" : "production"})`);
     // Follow-up scheduler (migration_v18.sql) — this is the only long-lived
