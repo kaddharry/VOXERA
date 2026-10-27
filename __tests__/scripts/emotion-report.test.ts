@@ -62,4 +62,14 @@ describe("emotion report", () => {
     expect(turns[0].policy).toBeUndefined();
     expect(turns[1].policy?.escalate).toBe("tier2");
   });
+
+  it("pairs an event stored just before its own sentence with that sentence", () => {
+    const turns = groupTurns([
+      ev(1, "utterance", { role: "user", utteranceId: "u1", text: "why does nobody from the hospital" }),
+      ev(2, "emotion", { utteranceId: "u2", label: "frustration", intensity: 0.5 }),
+      ev(2, "utterance", { role: "user", utteranceId: "u2", text: "answer my calls? this is the third time" }),
+      ev(3, "emotion", { utteranceId: "u1", label: "neutral", intensity: 0.1 }),
+    ]);
+    expect(turns.map((t) => t.emotion?.label)).toEqual(["neutral", "frustration"]);
+  });
 });

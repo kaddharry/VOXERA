@@ -66,13 +66,21 @@ async function loadEvents(sessionId: string): Promise<Row[]> {
 export function groupTurns(rows: Row[]): Turn[] {
   const turns: Turn[] = [];
   const diagnostics: Record<string, any>[] = [];
+  // Turn ids are collected first: an event can be stored a moment before
+  // its own sentence (both are written in the same millisecond, in no
+  // guaranteed order), and must still land on that sentence.
   const byId = new Map<string, Turn>();
+  for (const { type, payload } of rows) {
+    if (type === "utterance" && payload.role === "user" && payload.utteranceId) {
+      byId.set(payload.utteranceId, { id: payload.utteranceId, patient: String(payload.text ?? "") });
+    }
+  }
   let current: Turn | undefined;
   for (const { type, payload } of rows) {
     if (type === "utterance" && payload.role === "user") {
-      current = { id: payload.utteranceId, patient: String(payload.text ?? "") };
-      turns.push(current);
-      if (current.id) byId.set(current.id, current);
+      const turn: Turn = (payload.utteranceId && byId.get(payload.utteranceId)) || { patient: String(payload.text ?? "") };
+      current = turn;
+      turns.push(turn);
     } else if (type === "emotion_diagnostic") {
       diagnostics.push(payload); // logged when ready, possibly after later events — matched by text below
     } else {
