@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { MessageSquare, LayoutList, Activity, Terminal, Zap, User, Bot, AlertTriangle, CheckCircle2, PhoneCall, RotateCcw, HelpCircle, ChevronRight, ArrowLeft } from "lucide-react";
 import { GlassCard } from "@/app/_components/GlassCard";
 import { ValenceTimeline, type ValencePoint } from "@/components/admin/ValenceTimeline";
+import { describeCallEmotion, type CallEmotion } from "@/lib/emotion/call-emotion";
 
 /** A real, LLM-generated post-call read for a clinician — see
  * lib/agent/call-summary.ts. Grounded strictly in the transcript, never
@@ -15,6 +16,7 @@ interface CallSummary {
   recommendedAction: string;
   followUpOutcome: "resolved" | "needs_retry" | "needs_review";
   requestedDoNotContact: boolean;
+  callEmotion?: CallEmotion;
 }
 
 interface CallLogRow {
@@ -443,6 +445,12 @@ export default function SessionsPage() {
                         })()}
                       </div>
                       <p className="text-[14.5px] leading-relaxed text-[var(--color-text-primary)]">{selectedCall.summary.sentimentTrajectory}</p>
+                      {selectedCall.summary.callEmotion && (
+                        <p className="mt-2 text-[13px] text-[var(--color-text-secondary)]">
+                          <span className="font-semibold text-[var(--color-text-primary)]">Whole-call emotion:</span>{" "}
+                          {describeCallEmotion(selectedCall.summary.callEmotion)}
+                        </p>
+                      )}
 
                       {selectedCall.summary.flaggedConcerns.length > 0 && (
                         <div className="mt-4 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3.5">

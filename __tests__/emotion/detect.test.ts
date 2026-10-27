@@ -63,7 +63,7 @@ describe("Emotion Detection Lexicon & Calibration Suite (Issue #23)", () => {
   });
 
   describe("Late Fusion (fuseEmotion)", () => {
-    it("blends audio and text confidences correctly", async () => {
+    it("keeps the words' emotion when they name one, letting the voice shape only intensity", async () => {
       const textSig = (await detectTextEmotion("i am angry")).primary;
       const audioSig = {
         label: "sadness" as any,
@@ -77,7 +77,30 @@ describe("Emotion Detection Lexicon & Calibration Suite (Issue #23)", () => {
 
       const fused = fuseEmotion(textSig, audioSig);
       expect(fused.source).toBe("fused");
-      expect(fused.label).toBe("sadness"); // Takes label from higher confidence source (audio 0.8 > text 0.57)
+      // A confident voice read used to swap the label ("sadness"); measured
+      // on a real call that made the voice out-vote correct words 7 times
+      // in 10. The words now decide which emotion, the voice how strong.
+      expect(fused.label).toBe("anger");
+      expect(fused.audioSignal?.label).toBe("sadness");
+    });
+
+    it("doesn't let a confident voice 'confusion' override clear words (measured live-call failure)", () => {
+      const voice: any = {
+        label: "confusion", intensity: 0.3, confidence: 0.82,
+        confidenceCategory: { level: "high", range: [0.7, 1], explanation: "Mock" },
+        vad: { v: -0.2, a: 0.1, d: -0.2 }, source: "audio", at: Date.now(),
+      };
+      const words = (label: string, confidence: number, vad = { v: -0.5, a: 0.5, d: -0.3 }): any => ({
+        label, intensity: 0.5, confidence,
+        confidenceCategory: { level: "medium", range: [0.4, 0.7], explanation: "Mock" },
+        vad, source: "text", at: Date.now(),
+      });
+      // Confidences as the lexicon scored them on the call.
+      expect(fuseEmotion(words("fear", 0.56), voice).label).toBe("fear");
+      expect(fuseEmotion(words("frustration", 0.59), voice).label).toBe("frustration");
+      expect(fuseEmotion(words("joy", 0.69, { v: 0.7, a: 0.5, d: 0.3 }), voice).label).toBe("joy");
+      // Unsure words: the voice can still decide.
+      expect(fuseEmotion(words("neutral", 0.48, { v: 0, a: 0, d: 0 }), voice).label).toBe("confusion");
     });
 
     it("goes text-heavy (70/30) when text is confident (>0.7) — text wins even though audio has higher raw confidence", () => {
@@ -115,5 +138,26 @@ describe("Emotion Detection Lexicon & Calibration Suite (Issue #23)", () => {
       const fused = fuseEmotion(textSig, audioSig);
       expect(fused.label).toBe("distress");
     });
+  });
+});
+
+describe("Patient phrasing (scripted live-call sentences)", () => {
+  // The words-side reading of the sentences used for the measured test call.
+  const cases: Array<[string, string]> = [
+    ["Honestly, I'm in a lot of pain since yesterday.", "distress"],
+    ["I've had a headache since the surgery.", "distress"],
+    ["I'm really worried that something went wrong in the surgery.", "fear"],
+    ["Why does nobody from the hospital answer my call? This is literally the third time.", "frustration"],
+    ["I feel very low. I cannot do anything by myself.", "sadness"],
+    ["Oh, that's a good news. Thank you so much.", "joy"],
+    ["I don't understand, like, which medicine to take and when.", "confusion"],
+  ];
+  it.each(cases)("%s → %s", async (text, label) => {
+    expect((await detectTextEmotion(text)).lexicon.label).toBe(label);
+  });
+
+  it("doesn't call feeling good again frustration, or 'no pain' distress", async () => {
+    expect((await detectTextEmotion("I'm feeling good again")).lexicon.label).not.toBe("frustration");
+    expect((await detectTextEmotion("there's no pain now")).lexicon.label).not.toBe("distress");
   });
 });

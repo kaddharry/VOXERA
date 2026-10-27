@@ -47,5 +47,19 @@ describe("emotion report", () => {
     expect(md).toContain("| both agree |");
     expect(md).toContain("Turns that escalated: 1");
     expect(md).toContain("## Every engine's verdict");
+    expect(md).toContain("- Whole call: Mostly distress · 1 of 2 turns negative");
+  });
+
+  it("pairs events with their sentence by utterance id when turns overlap", () => {
+    const turns = groupTurns([
+      ev(1, "utterance", { role: "user", utteranceId: "u1", text: "Honestly," }),
+      ev(2, "utterance", { role: "user", utteranceId: "u2", text: "Honestly, I'm in a lot of pain" }),
+      ev(3, "emotion", { utteranceId: "u1", label: "neutral", intensity: 0 }),
+      ev(4, "emotion", { utteranceId: "u2", label: "distress", intensity: 0.7 }),
+      ev(5, "policy", { utteranceId: "u2", pace: "slow", escalate: "tier2" }),
+    ]);
+    expect(turns.map((t) => t.emotion?.label)).toEqual(["neutral", "distress"]);
+    expect(turns[0].policy).toBeUndefined();
+    expect(turns[1].policy?.escalate).toBe("tier2");
   });
 });

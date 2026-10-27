@@ -16,7 +16,7 @@ export const LEXICON: Array<{
   // ── Frustration ────────────────────────────────────────────────────────
   // "wait" is deliberately NOT a standalone trigger — it fires on "I can't wait
 // to start!" and "please wait". Only explicit waiting complaints count.
-{ kw: /\b(?:frustrat|fed up|tired of|sick of|again|third time|second time|still broken|painful|headache|still waiting|been waiting|waiting too long|waiting forever|waited too long|waited forever|long wait)\b/ig, label: "frustration", vad: { v: -0.6, a: 0.6, d: 0.2 }, w: 0.9 },
+{ kw: /\b(?:frustrat|fed up|tired of|sick of|yet again|again and again|third time|second time|still broken|still waiting|been waiting|waiting too long|waiting forever|waited too long|waited forever|long wait)\b/ig, label: "frustration", vad: { v: -0.6, a: 0.6, d: 0.2 }, w: 0.9 },
   { kw: /\b(?:los(?:ing|in'?) (?:work|money|business)|can't work|cost(?:ing|in'?) me)\b/ig, label: "frustration", vad: { v: -0.7, a: 0.7, d: 0.3 }, w: 1.0 },
   { kw: /\b(?:ridiculous|unacceptable|useless|pointless|waste of time)\b/ig, label: "frustration", vad: { v: -0.5, a: 0.6, d: 0.2 }, w: 0.8 },
 
@@ -28,9 +28,14 @@ export const LEXICON: Array<{
   // I'm scared" etc. still match via the other words in this list.
   { kw: /\b(?:desperate|emergency|urgent|scared|afraid)\b/ig, label: "distress", vad: { v: -0.8, a: 0.8, d: -0.3 }, w: 1.0 },
   { kw: /\b(?:suicid|harm myself|end it|die|kill myself|wanna die)\b/ig, label: "distress", vad: { v: -0.95, a: 0.9, d: -0.6 }, w: 1.5 },
+  // Physical symptoms — a patient reporting pain or a worrying symptom is in
+  // distress, not "frustrated" (where "painful"/"headache" used to sit, along
+  // with a bare "again", which tagged "I'm feeling good again" as
+  // frustration). Negation is handled by the detector ("no pain" → no match).
+  { kw: /\b(?:pain|painful|hurts?|hurting|aching|aches?|headaches?|can'?t sleep|bleeding|swollen|swelling|fever|dizzy|vomit(?:ing)?|throwing up|can'?t breathe)\b/ig, label: "distress", vad: { v: -0.7, a: 0.5, d: -0.4 }, w: 0.9 },
 
   // ── Sadness ────────────────────────────────────────────────────────────
-  { kw: /\b(?:sad|down|depressed|miserable|unhappy|heartbroken|devastated|feel(?:ing?|s|in'?)? low|breakup|broken up|dumped)\b/ig, label: "sadness", vad: { v: -0.7, a: -0.3, d: -0.2 }, w: 0.8 },
+  { kw: /\b(?:sad|down|depressed|miserable|unhappy|heartbroken|devastated|feel(?:ing?|s|in'?)? (?:very |so |really |quite |a bit )?low|breakup|broken up|dumped)\b/ig, label: "sadness", vad: { v: -0.7, a: -0.3, d: -0.2 }, w: 0.8 },
 
   // ── Disappointment ─────────────────────────────────────────────────────
   { kw: /\b(?:disappoint|let down|let me down|expected (?:better|more)|not what i (?:hoped|expected)|unpaid|work(?:ing|in'?) for free)\b/ig, label: "disappointment", vad: { v: -0.5, a: -0.1, d: -0.2 }, w: 0.8 },

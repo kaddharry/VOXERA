@@ -86,6 +86,60 @@ export function computeFrameZeroCrossingRate(pcm: Buffer): number {
   return crossings / (sampleCount - 1);
 }
 
+/** A silence longer than this separates two utterances rather than being a
+ * pause inside one — speech recognition finalises a sentence well before
+ * this much quiet. */
+const UTTERANCE_GAP_MS = 1500;
+/** Speech kept either side of the detected speech span, so word onsets and
+ * trailing consonants (low energy) aren't clipped off. */
+const SPEECH_EDGE_PADDING_MS = 100;
+
+/**
+ * The part of a turn's audio buffer that is the caller's latest utterance:
+ * from its first to its last speech window, dropping the silence before it
+ * (the agent talking, the line waiting) and anything said before a gap of
+ * more than UTTERANCE_GAP_MS. The phone stream records continuously between
+ * turns, so measuring the raw buffer counted seconds of silence as the
+ * caller's own pauses and divided the word count by them — every live turn
+ * came out at 10-50 words per minute with 4-13s of "pauses", which the
+ * voice rules read as hesitant, confused speech whatever was said.
+ * Returns an empty buffer when there is no speech at all.
+ */
+export function isolateLastUtterance(pcm: Buffer): Buffer {
+  const windowSize = 80; // 10ms at 8kHz
+  const sampleCount = Math.floor(pcm.length / 2);
+  const windows = Math.floor(sampleCount / windowSize);
+  const isSpeech = (w: number) => {
+    let sumSq = 0;
+    for (let i = 0; i < windowSize; i++) {
+      const sample = pcm.readInt16LE((w * windowSize + i) * 2);
+      sumSq += sample * sample;
+    }
+    return Math.sqrt(sumSq / windowSize) >= PAUSE_ENERGY_THRESHOLD;
+  };
+
+  let last = windows - 1;
+  while (last >= 0 && !isSpeech(last)) last--;
+  if (last < 0) return Buffer.alloc(0);
+
+  const maxGapWindows = Math.round(UTTERANCE_GAP_MS / 10);
+  let first = last;
+  let silentRun = 0;
+  for (let w = last - 1; w >= 0; w--) {
+    if (isSpeech(w)) {
+      first = w;
+      silentRun = 0;
+    } else if (++silentRun > maxGapWindows) {
+      break;
+    }
+  }
+
+  const pad = Math.round(SPEECH_EDGE_PADDING_MS / 10);
+  const startSample = Math.max(0, first - pad) * windowSize;
+  const endSample = Math.min(sampleCount, (last + 1 + pad) * windowSize);
+  return pcm.subarray(startSample * 2, endSample * 2);
+}
+
 /**
  * Extract full acoustic features from a completed speech turn's PCM buffer.
  *

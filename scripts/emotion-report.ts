@@ -16,12 +16,14 @@
  */
 import { writeFileSync } from "fs";
 import { supabase } from "../lib/db/supabase";
+import { describeCallEmotion, summarizeCallEmotion, type TurnEmotion } from "../lib/emotion/call-emotion";
 
 const LATENCY_TARGET_MS = 300;
 
 export type Row = { ts: number; type: string; payload: Record<string, any> };
 
 interface Turn {
+  id?: string;
   patient: string;
   agent?: string;
   emotion?: Record<string, any>;
@@ -64,19 +66,26 @@ async function loadEvents(sessionId: string): Promise<Row[]> {
 export function groupTurns(rows: Row[]): Turn[] {
   const turns: Turn[] = [];
   const diagnostics: Record<string, any>[] = [];
+  const byId = new Map<string, Turn>();
   let current: Turn | undefined;
   for (const { type, payload } of rows) {
     if (type === "utterance" && payload.role === "user") {
-      current = { patient: String(payload.text ?? "") };
+      current = { id: payload.utteranceId, patient: String(payload.text ?? "") };
       turns.push(current);
+      if (current.id) byId.set(current.id, current);
     } else if (type === "emotion_diagnostic") {
       diagnostics.push(payload); // logged when ready, possibly after later events — matched by text below
-    } else if (current) {
-      if (type === "utterance" && payload.role !== "user") current.agent = current.agent ? `${current.agent} ${payload.text}` : String(payload.text ?? "");
-      else if (type === "emotion") current.emotion = payload;
-      else if (type === "acoustic") current.acoustic = payload;
-      else if (type === "cai") current.cai = payload;
-      else if (type === "policy") current.policy = payload;
+    } else {
+      // Per-turn events carry their utterance's id (calls since it was
+      // added); older ones fall back to "the latest patient turn so far".
+      const turn = (payload.utteranceId && byId.get(payload.utteranceId)) || current;
+      if (!turn) continue;
+      if (type === "utterance" && payload.role !== "user") {
+        if (current) current.agent = current.agent ? `${current.agent} ${payload.text}` : String(payload.text ?? "");
+      } else if (type === "emotion") turn.emotion = payload;
+      else if (type === "acoustic") turn.acoustic = payload;
+      else if (type === "cai") turn.cai = payload;
+      else if (type === "policy") turn.policy = payload;
     }
   }
   for (const diagnostic of diagnostics) {
@@ -117,6 +126,8 @@ export function buildReport(sessionId: string, call: Record<string, any> | undef
   const agree = withVoice.filter((t) => t.emotion?.audioSignal?.label === t.emotion?.textSignal?.label).length;
 
   out.push("## Summary", "");
+  const callEmotion = summarizeCallEmotion(turns.map((t) => t.emotion).filter((e): e is TurnEmotion => !!e?.label));
+  out.push(`- Whole call: ${callEmotion ? describeCallEmotion(callEmotion) : "—"}`);
   out.push(`- Final emotions: ${[...labels].map(([l, n]) => `${l} ×${n}`).join(", ") || "—"}`);
   out.push(`- Words vs voice agreed on ${withVoice.length ? `${agree} of ${withVoice.length} turns` : "— (no voice reading recorded)"}`);
   out.push(

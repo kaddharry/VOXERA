@@ -410,6 +410,10 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   });
 
   const emotionData = {
+    // Ties each per-turn event to its utterance — turns can overlap (a
+    // barge-in starts the next before the last finished logging), so
+    // ordering alone can pair an emotion with the wrong sentence.
+    utteranceId: userTurn.id,
     label: fused.label,
     intensity: fused.intensity,
     confidence: fused.confidence,
@@ -441,6 +445,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // Issue #14: Log acoustic features if available
   if (input.acousticFeatures) {
     void logSessionEvent(makeEvent(evBase, "acoustic", {
+      utteranceId: userTurn.id,
       rmsEnergy: input.acousticFeatures.rmsEnergy,
       pitchHz: input.acousticFeatures.pitchHz,
       pitchVariation: input.acousticFeatures.pitchVariation,
@@ -453,6 +458,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   }
 
   const caiData = {
+    utteranceId: userTurn.id,
     score: cai.score,
     category: cai.category,
     explanation: cai.explanation,
@@ -525,6 +531,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   }));
 
   void logSessionEvent(makeEvent(evBase, "policy", {
+    utteranceId: userTurn.id,
     acknowledgeFirst: policy.acknowledgeFirst,
     pace: policy.pace,
     allowUpsell: policy.allowUpsell,
