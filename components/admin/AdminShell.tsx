@@ -18,6 +18,7 @@ import {
   Bell,
   Search,
   MessageSquare,
+  Lightbulb,
 } from "lucide-react";
 import { AdminMobileNav } from "./AdminMobileNav";
 
@@ -26,6 +27,7 @@ const BASE_NAV_ITEMS = [
   { href: "/admin/patients", icon: UserCheck, label: "Patients" },
   { href: "/admin/live_dashboard", icon: Radio, label: "Live Calls" },
   { href: "/admin/sessions", icon: MessageSquare, label: "Calls & Insights" },
+  { href: "/admin/learning", icon: Lightbulb, label: "Agent Learning" },
   { href: "/admin/agents", icon: Bot, label: "Agent Builder" },
   { href: "/admin/knowledge", icon: Database, label: "Hospital Information & Policies" },
   { href: "/admin/try-call", icon: PhoneCall, label: "Test Agent" },
