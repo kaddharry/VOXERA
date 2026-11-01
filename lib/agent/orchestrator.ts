@@ -682,6 +682,19 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   }
   const llmMs = Date.now() - llmStart;
 
+  // A turn cancelled mid-generation (barge-in, or folded into the caller's
+  // longer sentence by the telephony stream handler) never reached the
+  // caller. llm.ts treats the aborted request like a provider failure and
+  // returns its canned fallback ("Thanks for letting me know. To make sure
+  // I help you correctly…"), which then went into the conversation memory,
+  // the transcript and the post-call summary as if the agent had said it —
+  // seen on a live call as that line repeated after every half-sentence.
+  // Whatever WAS spoken before a barge-in is recorded separately
+  // (recordInterruptedReply).
+  if (opts?.abortSignal?.aborted) {
+    throw new DOMException("Turn cancelled before its reply was used", "AbortError");
+  }
+
   const agentTurn: Utterance = {
     id: nanoid(8),
     role: "agent",

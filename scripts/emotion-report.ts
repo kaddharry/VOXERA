@@ -24,6 +24,9 @@ export type Row = { ts: number; type: string; payload: Record<string, any> };
 
 interface Turn {
   id?: string;
+  /** Half a sentence the caller then finished — the agent answered the
+   * whole sentence in the next turn instead (lib/telephony/stream-handler.ts). */
+  continued?: boolean;
   patient: string;
   agent?: string;
   emotion?: Record<string, any>;
@@ -100,6 +103,10 @@ export function groupTurns(rows: Row[]): Turn[] {
     const turn = turns.find((t) => !t.diagnostic && t.patient === diagnostic.text);
     if (turn) turn.diagnostic = diagnostic;
   }
+  turns.forEach((t, i) => {
+    const next = turns[i + 1];
+    if (next && next.patient.length > t.patient.length && next.patient.startsWith(t.patient)) t.continued = true;
+  });
   return turns;
 }
 
@@ -124,26 +131,31 @@ export function buildReport(sessionId: string, call: Record<string, any> | undef
   const started = call?.startedAt ? new Date(Number(call.startedAt)).toLocaleString("en-IN") : "—";
   out.push(`# Emotion report — ${sessionId}`, "");
   out.push(`- Call: ${call?.id ?? "—"} · started ${started} · ${call?.durationMs ? `${Math.round(call.durationMs / 1000)}s` : "—"} · status ${call?.status ?? "—"}`);
-  out.push(`- Patient turns: ${turns.length}`);
+  const counted = turns.filter((t) => !t.continued);
+  const fragments = turns.length - counted.length;
+  out.push(`- Patient turns: ${counted.length}${fragments ? ` (plus ${fragments} half-sentence${fragments > 1 ? "s" : ""} the patient then finished, answered as one)` : ""}`);
   out.push(`- Per-engine diagnostics: ${turns.some((t) => t.diagnostic) ? "on" : "off (set EMOTION_DIAGNOSTICS=on in .env.local before the call to include them)"}`, "");
 
-  const timed = turns.map((t) => t.emotion?.latencyMs?.total).filter((n): n is number => typeof n === "number");
+  const timed = counted.map((t) => t.emotion?.latencyMs?.total).filter((n): n is number => typeof n === "number");
   const labels = new Map<string, number>();
-  for (const t of turns) if (t.emotion?.label) labels.set(t.emotion.label, (labels.get(t.emotion.label) ?? 0) + 1);
-  const withVoice = turns.filter((t) => t.emotion?.audioSignal);
+  for (const t of counted) if (t.emotion?.label) labels.set(t.emotion.label, (labels.get(t.emotion.label) ?? 0) + 1);
+  const withVoice = counted.filter((t) => t.emotion?.audioSignal);
+  const withModel = counted.filter((t) => t.diagnostic?.acousticMl?.label);
+  const modelAgree = withModel.filter((t) => t.diagnostic?.acousticMl?.label === t.emotion?.textSignal?.label).length;
   const agree = withVoice.filter((t) => t.emotion?.audioSignal?.label === t.emotion?.textSignal?.label).length;
 
   out.push("## Summary", "");
-  const callEmotion = summarizeCallEmotion(turns.map((t) => t.emotion).filter((e): e is TurnEmotion => !!e?.label));
+  const callEmotion = summarizeCallEmotion(counted.map((t) => t.emotion).filter((e): e is TurnEmotion => !!e?.label));
   out.push(`- Whole call: ${callEmotion ? describeCallEmotion(callEmotion) : "—"}`);
   out.push(`- Final emotions: ${[...labels].map(([l, n]) => `${l} ×${n}`).join(", ") || "—"}`);
   out.push(`- Words vs voice agreed on ${withVoice.length ? `${agree} of ${withVoice.length} turns` : "— (no voice reading recorded)"}`);
+  if (withModel.length) out.push(`- Words vs voice AI model agreed on ${modelAgree} of ${withModel.length} turns`);
   out.push(
     timed.length
       ? `- Emotion time per turn: average ${Math.round(timed.reduce((a, b) => a + b, 0) / timed.length)}ms, slowest ${Math.max(...timed)}ms, ${timed.filter((n) => n < LATENCY_TARGET_MS).length} of ${timed.length} under ${LATENCY_TARGET_MS}ms`
       : "- Emotion time per turn: not recorded (call was made before timing was added)"
   );
-  out.push(`- Turns that escalated: ${turns.filter((t) => t.policy?.escalate && t.policy.escalate !== "none").length}`, "");
+  out.push(`- Turns that escalated: ${counted.filter((t) => t.policy?.escalate && t.policy.escalate !== "none").length}`, "");
 
   out.push("## Turn by turn", "");
   out.push("| # | Patient said | Final emotion | Words → | Voice → | Followed | Time | Agent response style |");
@@ -155,7 +167,7 @@ export function buildReport(sessionId: string, call: Record<string, any> | undef
     const style = t.policy
       ? [t.policy.acknowledgeFirst && "acknowledge first", `pace ${t.policy.pace}`, t.policy.escalate !== "none" && `escalate ${t.policy.escalate}`].filter(Boolean).join(", ")
       : "—";
-    out.push(`| ${i + 1} | ${cell(t.patient)} | ${cell(final)} | ${cell(words)} | ${cell(verdict(e?.audioSignal))} | ${followed(e)} | ${e?.latencyMs ? `${e.latencyMs.total}ms` : "—"} | ${cell(style)} |`);
+    out.push(`| ${i + 1} | ${cell(t.patient)}${t.continued ? " _(cut off, finished in the next row)_" : ""} | ${cell(final)} | ${cell(words)} | ${cell(verdict(e?.audioSignal))} | ${followed(e)} | ${e?.latencyMs ? `${e.latencyMs.total}ms` : "—"} | ${cell(style)} |`);
   });
 
   out.push("", "## Voice measurements", "");
@@ -168,11 +180,11 @@ export function buildReport(sessionId: string, call: Record<string, any> | undef
 
   if (turns.some((t) => t.diagnostic)) {
     out.push("", "## Every engine's verdict", "");
-    out.push("| # | Keyword list | Local text model | Voice heuristic | Matched keywords |");
-    out.push("| --- | --- | --- | --- | --- |");
+    out.push("| # | Keyword list | Local text model | Voice heuristic | Voice AI model | Matched keywords |");
+    out.push("| --- | --- | --- | --- | --- | --- |");
     turns.forEach((t, i) => {
       const d = t.diagnostic;
-      out.push(`| ${i + 1} | ${engine(d?.lexicon)} | ${engine(d?.localOnnx)} | ${engine(d?.acoustic)} | ${cell(d?.lexicon?.matchedKeywords?.join(", "))} |`);
+      out.push(`| ${i + 1} | ${engine(d?.lexicon)} | ${engine(d?.localOnnx)} | ${engine(d?.acoustic)} | ${engine(d?.acousticMl)} | ${cell(d?.lexicon?.matchedKeywords?.join(", "))} |`);
     });
   }
 

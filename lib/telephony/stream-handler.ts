@@ -12,7 +12,7 @@ import { callQueue } from "../queue/manager";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
 import { CONFIG } from "../config";
-import { computeRmsEnergy, computeFrameZeroCrossingRate, extractAcousticFeatures, isolateLastUtterance } from "../audio/acoustic";
+import { computeRmsEnergy, computeFrameZeroCrossingRate, extractAcousticFeatures, isolateLastUtterance, upsample8kTo16kFloat32 } from "../audio/acoustic";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
@@ -131,6 +131,8 @@ export class TelephonyStreamHandler {
   private startedAt: number;
   private isBusy = false; // prevent overlapping LLM turns
   private isSpeaking = false; // Issue #8: track if TTS is playing for barge-in
+  /** The caller's sentence the in-flight turn is answering ("" when idle). */
+  private currentTurnText = "";
   private hasEnded = false; // prevent double-invocation of onCallEnded
   private slotTaken = false;
 
@@ -413,8 +415,25 @@ export class TelephonyStreamHandler {
   }
 
   private async onTranscript(text: string, isFinal: boolean) {
-    if (!isFinal || !text.trim() || this.isBusy) return;
+    if (!isFinal || !text.trim()) return;
+    if (this.isBusy) {
+      // Once the agent is talking, an interruption goes through barge-in
+      // (triggerBargeIn frees the turn before this transcript arrives).
+      if (this.isSpeaking || !this.currentTurnText) return;
+      // The caller kept talking after a pause while the agent was still
+      // preparing its reply, so that turn was only half a sentence ("I'm
+      // really worried that something" … "went wrong in the surgery"). This
+      // used to be dropped outright, losing the end of the sentence and
+      // answering the fragment. Cancel the half-built reply and answer the
+      // whole sentence instead.
+      const merged = `${this.currentTurnText} ${text.trim()}`;
+      console.log(`[TelephonyStream] Caller continued before the reply started (${this.callSid}) — answering the whole sentence: "${merged}"`);
+      this.generation++;
+      this.currentAbortController?.abort();
+      text = merged;
+    }
     this.isBusy = true;
+    this.currentTurnText = text;
     const myGeneration = this.generation;
 
     console.log(`[TelephonyStream] Transcript (${this.callSid}): "${text}"`);
@@ -455,6 +474,9 @@ export class TelephonyStreamHandler {
         sttConfidence: 0.9,
         audioEmotion: null,
         acousticFeatures,
+        // The same utterance for the trained voice-emotion model, which runs
+        // in the deferred diagnostics pass (never delays the reply).
+        rawAudioPcm16k: turnPcm.length > 0 ? upsample8kTo16kFloat32(turnPcm) : undefined,
         bargeInCount: this.turnInterruptionCount,
         // Powers the Live Dashboard's per-engine breakdown for real calls —
         // safe to enable here specifically because deferDiagnostics (below)
@@ -549,11 +571,16 @@ export class TelephonyStreamHandler {
         console.error(`[TelephonyStream] handleTurn error:`, err);
       }
     } finally {
-      this.isBusy = false;
-      this.currentAbortController = null;
-      // Reset turn-level accumulators for next utterance
-      this.turnAudioChunks = [];
-      this.turnInterruptionCount = 0;
+      // A superseded turn (barge-in, or merged into a longer sentence above)
+      // must not reset state the turn that replaced it is now using.
+      if (myGeneration === this.generation) {
+        this.isBusy = false;
+        this.currentTurnText = "";
+        this.currentAbortController = null;
+        // Reset turn-level accumulators for next utterance
+        this.turnAudioChunks = [];
+        this.turnInterruptionCount = 0;
+      }
     }
   }
 
@@ -641,6 +668,7 @@ export class TelephonyStreamHandler {
     // was queued/in-flight for the turn that just got interrupted.
     this.currentSpeakStream?.clear();
     this.isBusy = false;
+    this.currentTurnText = "";
 
     console.log(`[TelephonyStream] Barge-in triggered (${reason}) for ${this.callSid}`);
   }

@@ -141,6 +141,24 @@ export function isolateLastUtterance(pcm: Buffer): Buffer {
 }
 
 /**
+ * 8kHz phone PCM (Int16) → 16kHz Float32 in [-1, 1], the input the trained
+ * voice-emotion model expects (lib/emotion/local-audio-detect.ts). Linear
+ * interpolation: it adds no information above the phone line's 4kHz
+ * bandwidth, it only gives the model samples at the rate it was built for.
+ */
+export function upsample8kTo16kFloat32(pcm8k: Buffer): Float32Array {
+  const n = Math.floor(pcm8k.length / 2);
+  const out = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) {
+    const a = pcm8k.readInt16LE(i * 2) / 32768;
+    const b = i + 1 < n ? pcm8k.readInt16LE((i + 1) * 2) / 32768 : a;
+    out[i * 2] = a;
+    out[i * 2 + 1] = (a + b) / 2;
+  }
+  return out;
+}
+
+/**
  * Extract full acoustic features from a completed speech turn's PCM buffer.
  *
  * @param pcm - Concatenated linear16 PCM buffer for the entire turn
