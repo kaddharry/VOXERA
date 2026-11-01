@@ -43,11 +43,9 @@ vi.mock("../../lib/deepgram/tts", () => ({
 }));
 
 let capturedOnTranscript: ((text: string, isFinal: boolean) => void) | null = null;
-let capturedOnSpeechStarted: (() => void) | null = null;
 vi.mock("../../lib/deepgram/live", () => ({
   DeepgramLiveWrapper: vi.fn().mockImplementation(function (this: any, onTranscript: any, opts: any) {
     capturedOnTranscript = onTranscript;
-    capturedOnSpeechStarted = opts?.onSpeechStarted ?? null;
     this.connect = vi.fn().mockResolvedValue(undefined);
     this.sendAudio = vi.fn();
     this.close = vi.fn();
@@ -214,18 +212,14 @@ describe("TelephonyStreamHandler — barge-in cancels the in-flight turn", () =>
     vi.clearAllMocks();
     speakStreamInstances.length = 0;
     capturedOnTranscript = null;
-    capturedOnSpeechStarted = null;
   });
 
-  it("triggers the same barge-in path off Deepgram's own SpeechStarted VAD signal, independent of RMS", async () => {
+  it("stops the agent as soon as the caller's words come through, even mid-word (interim transcript)", async () => {
     let capturedAbortSignal: AbortSignal | undefined;
-    let resolveHandleTurn!: (v: any) => void;
     handleTurnMock.mockImplementation((_input: any, opts: any) => {
       capturedAbortSignal = opts.abortSignal;
       opts.onReplyChunk("Starting a long reply");
-      return new Promise((resolve) => {
-        resolveHandleTurn = resolve;
-      });
+      return new Promise(() => {});
     });
 
     const mockWs = makeMockWs();
@@ -233,34 +227,61 @@ describe("TelephonyStreamHandler — barge-in cancels the in-flight turn", () =>
 
     capturedOnTranscript!("tell me a long story", true);
     await new Promise((r) => setTimeout(r, 10));
-
-    expect(speakStreamInstances).toHaveLength(1);
     const stream = speakStreamInstances[0];
 
-    // Deepgram's VAD onset fires with no RMS-threshold audio frame involved
-    // at all — this must still cancel the in-flight turn and clear the
-    // speak stream, same as the RMS path.
-    expect(capturedOnSpeechStarted).not.toBeNull();
-    capturedOnSpeechStarted!();
+    capturedOnTranscript!("wait", false);
 
     expect(capturedAbortSignal?.aborted).toBe(true);
     expect(stream.clear).toHaveBeenCalled();
     expect(sentEventTypes(mockWs)).toContain("clear");
-
-    resolveHandleTurn({ reply: "stale", trace: { emotion: { current: { label: "neutral" } }, agent: undefined } });
-    await new Promise((r) => setTimeout(r, 5));
   });
 
-  it("ignores SpeechStarted when the agent isn't currently speaking (no reply in flight)", async () => {
+  it("doesn't react to the caller talking when the agent is silent (no reply in flight or playing)", async () => {
     const mockWs = makeMockWs();
     await startCall(mockWs);
 
-    // No turn has started, so isSpeaking is false — firing the VAD signal
-    // must be a no-op, not an accidental generation bump / clear() on
-    // nothing.
-    expect(capturedOnSpeechStarted).not.toBeNull();
-    expect(() => capturedOnSpeechStarted!()).not.toThrow();
+    capturedOnTranscript!("so the thing is", false);
+
     expect(sentEventTypes(mockWs)).not.toContain("clear");
+    expect(handleTurnMock).not.toHaveBeenCalled();
+  });
+
+  it("still stops the agent while its reply is playing after generation finished (Twilio mark not yet echoed)", async () => {
+    const turns: string[] = [];
+    handleTurnMock.mockImplementation(async (input: any, opts: any) => {
+      turns.push(input.transcript);
+      opts.onReplyChunk("Here's a long answer.");
+      return { reply: "Here's a long answer.", trace: { emotion: { current: { label: "neutral" } }, agent: undefined } };
+    });
+
+    const mockWs = makeMockWs();
+    const onMessage = await startCall(mockWs);
+    const marks = () => mockWs.send.mock.calls.map((c: any[]) => JSON.parse(c[0])).filter((m: any) => m.event === "mark");
+
+    capturedOnTranscript!("what should I eat", true);
+    await new Promise((r) => setTimeout(r, 10));
+    // Its audio reaches Twilio, which then plays it for several seconds.
+    speakStreamInstances[0].emitAudio(Buffer.alloc(640));
+    expect(marks()).toHaveLength(1);
+
+    // The reply text is complete (handleTurn returned) but still audible:
+    // the caller talking over it must stop it, not queue a second reply
+    // behind it.
+    capturedOnTranscript!("sorry I can't hear you", true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(sentEventTypes(mockWs)).toContain("clear");
+    expect(turns).toEqual(["what should I eat", "sorry I can't hear you"]);
+
+    // Once Twilio reports the reply has played, talking is a normal turn again.
+    mockWs.send.mockClear();
+    speakStreamInstances[0].emitAudio(Buffer.alloc(640));
+    const name = marks()[0].mark.name;
+    onMessage(Buffer.from(JSON.stringify({ event: "mark", streamSid: "stream-1", mark: { name } })));
+    mockWs.send.mockClear();
+    capturedOnTranscript!("thanks", true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(sentEventTypes(mockWs)).not.toContain("clear");
+    expect(turns).toEqual(["what should I eat", "sorry I can't hear you", "thanks"]);
   });
 
   it("aborts the LLM call, clears+closes the speak stream, and drops stale audio after a barge-in", async () => {
@@ -283,25 +304,9 @@ describe("TelephonyStreamHandler — barge-in cancels the in-flight turn", () =>
     expect(speakStreamInstances).toHaveLength(1);
     const stream = speakStreamInstances[0];
 
-    // Simulate loud, SPEECH-SHAPED caller audio arriving while the agent is
-    // "speaking" (isSpeaking flips true as soon as the first onReplyChunk
-    // clause fires). Alternating 0xab/0x2b mulaw bytes every 20 samples
-    // decode to a loud signal that also flips sign periodically — real
-    // voiced speech's zero-crossing signature — unlike a flat/constant
-    // buffer (which decodes to loud but zero-crossing-rate-zero, and would
-    // now correctly be rejected as noise-shaped by the ZCR gate). The
-    // raw-RMS barge-in fallback also requires
-    // CONFIG.telephony.bargeInSustainFrames (2) CONSECUTIVE loud frames
-    // before firing — a single frame is held back as a possible noise blip
-    // — so two frames are sent here.
-    const loudMulaw = makeVoicedMulawFrame();
-    const sendLoudFrame = () =>
-      onMessage(Buffer.from(JSON.stringify({
-        event: "media",
-        media: { payload: loudMulaw.toString("base64") },
-      })));
-    sendLoudFrame();
-    sendLoudFrame();
+    // The caller talks over the agent.
+    void onMessage;
+    capturedOnTranscript!("hold on a second", false);
 
     expect(capturedAbortSignal?.aborted).toBe(true);
     expect(stream.clear).toHaveBeenCalled();
@@ -348,11 +353,8 @@ describe("TelephonyStreamHandler — barge-in cancels the in-flight turn", () =>
     // aborted request's rejection actually arrive, matching real timing:
     // the interruption is detected immediately, but generateReply()'s
     // underlying fetch takes a moment longer to actually throw.
-    const loudMulaw = makeVoicedMulawFrame();
-    const sendLoudFrame = () =>
-      onMessage(Buffer.from(JSON.stringify({ event: "media", media: { payload: loudMulaw.toString("base64") } })));
-    sendLoudFrame();
-    sendLoudFrame();
+    void onMessage;
+    capturedOnTranscript!("stop, that is not what I asked", false);
 
     rejectHandleTurn(Object.assign(new Error("aborted"), { name: "AbortError" }));
     await new Promise((r) => setTimeout(r, 15));
@@ -378,12 +380,12 @@ describe("TelephonyStreamHandler — barge-in cancels the in-flight turn", () =>
     expect(recordInterruptedReplyMock).not.toHaveBeenCalled();
   });
 
-  it("does not barge in on a single loud frame — a noise blip must not cut the agent off", async () => {
+  it("never stops the agent for noise alone — a cough, a click or a steady hum", async () => {
     let capturedAbortSignal: AbortSignal | undefined;
     handleTurnMock.mockImplementation((_input: any, opts: any) => {
       capturedAbortSignal = opts.abortSignal;
       opts.onReplyChunk("Starting a long reply");
-      return new Promise(() => {}); // never resolves — turn stays "in flight"
+      return new Promise(() => {});
     });
 
     const mockWs = makeMockWs();
@@ -392,62 +394,40 @@ describe("TelephonyStreamHandler — barge-in cancels the in-flight turn", () =>
     capturedOnTranscript!("tell me a long story", true);
     await new Promise((r) => setTimeout(r, 10));
 
-    const loudMulaw = makeVoicedMulawFrame();
-    onMessage(Buffer.from(JSON.stringify({
-      event: "media",
-      media: { payload: loudMulaw.toString("base64") },
-    })));
-
-    // A single 20ms frame of loud, speech-shaped audio (a click, a cough, a
-    // burst of line static riding briefly at speech-like ZCR) must not be
-    // enough on its own — CONFIG.telephony.bargeInSustainFrames requires it
-    // to sustain across consecutive frames before the raw-RMS fallback
-    // fires.
-    expect(capturedAbortSignal?.aborted).toBe(false);
-    expect(sentEventTypes(mockWs)).not.toContain("clear");
-
-    // A quiet frame in between resets the streak — two loud frames with a
-    // quiet one between them still must not trigger.
-    const quietMulaw = Buffer.alloc(160, 0xff);
-    onMessage(Buffer.from(JSON.stringify({
-      event: "media",
-      media: { payload: quietMulaw.toString("base64") },
-    })));
-    onMessage(Buffer.from(JSON.stringify({
-      event: "media",
-      media: { payload: loudMulaw.toString("base64") },
-    })));
-    expect(capturedAbortSignal?.aborted).toBe(false);
-    expect(sentEventTypes(mockWs)).not.toContain("clear");
-  });
-
-  it("does not barge in on sustained loud but non-speech-shaped audio (e.g. a steady hum/static)", async () => {
-    let capturedAbortSignal: AbortSignal | undefined;
-    handleTurnMock.mockImplementation((_input: any, opts: any) => {
-      capturedAbortSignal = opts.abortSignal;
-      opts.onReplyChunk("Starting a long reply");
-      return new Promise(() => {}); // never resolves — turn stays "in flight"
-    });
-
-    const mockWs = makeMockWs();
-    const onMessage = await startCall(mockWs);
-
-    capturedOnTranscript!("tell me a long story", true);
-    await new Promise((r) => setTimeout(r, 10));
-
-    // Loud AND sustained across many frames, but flat (ZCR=0) — a steady
-    // background hum, not real speech. Should never trigger, no matter how
-    // long it sustains, since it fails the ZCR gate every single frame.
-    const flatMulaw = makeFlatLoudMulawFrame();
-    for (let i = 0; i < 10; i++) {
-      onMessage(Buffer.from(JSON.stringify({
-        event: "media",
-        media: { payload: flatMulaw.toString("base64") },
-      })));
+    // Loud speech-shaped frames (a cough) and loud flat frames (a hum):
+    // without any words behind them, nothing happens.
+    const frames = [makeVoicedMulawFrame(), makeVoicedMulawFrame(), makeVoicedMulawFrame(), ...Array(10).fill(makeFlatLoudMulawFrame())];
+    for (const frame of frames) {
+      onMessage(Buffer.from(JSON.stringify({ event: "media", media: { payload: frame.toString("base64") } })));
     }
 
     expect(capturedAbortSignal?.aborted).toBe(false);
     expect(sentEventTypes(mockWs)).not.toContain("clear");
+  });
+
+  it("keeps talking through listening sounds (hmm, yeah okay, I see)", async () => {
+    let capturedAbortSignal: AbortSignal | undefined;
+    handleTurnMock.mockImplementation((_input: any, opts: any) => {
+      capturedAbortSignal = opts.abortSignal;
+      opts.onReplyChunk("Starting a long reply");
+      return new Promise(() => {});
+    });
+
+    const mockWs = makeMockWs();
+    await startCall(mockWs);
+
+    capturedOnTranscript!("tell me a long story", true);
+    await new Promise((r) => setTimeout(r, 10));
+
+    for (const t of ["hmm", "yeah okay", "Mm-hmm.", "I see", "uh huh"]) {
+      capturedOnTranscript!(t, false);
+      capturedOnTranscript!(t, true);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(capturedAbortSignal?.aborted).toBe(false);
+    expect(sentEventTypes(mockWs)).not.toContain("clear");
+    expect(handleTurnMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -493,7 +473,7 @@ describe("TelephonyStreamHandler — caller continues after a pause", () => {
     expect(turns[1].signal.aborted).toBe(true);
   });
 
-  it("doesn't merge once the agent has started speaking (barge-in handles that)", async () => {
+  it("doesn't merge once the agent has started speaking — the caller interrupts instead", async () => {
     const turns: string[] = [];
     handleTurnMock.mockImplementation((input: any, opts: any) => {
       turns.push(input.transcript);
@@ -509,6 +489,7 @@ describe("TelephonyStreamHandler — caller continues after a pause", () => {
     capturedOnTranscript!("never mind", true);
     await new Promise((r) => setTimeout(r, 5));
 
-    expect(turns).toEqual(["how are my results"]);
+    expect(turns).toEqual(["how are my results", "never mind"]);
+    expect(sentEventTypes(mockWs)).toContain("clear");
   });
 });
