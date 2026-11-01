@@ -91,6 +91,22 @@ export interface StreamHandlerOptions {
   patientId?: string;
 }
 
+/** Listening sounds and acknowledgements — said while the agent talks, they aren't an interruption. */
+const BACKCHANNEL_WORDS = new Set([
+  "hmm", "hm", "mm", "mmm", "mhm", "mmhmm", "uh", "um", "uhm", "umm", "ah", "oh", "er", "erm", "huh",
+  "uhhuh", "yeah", "yes", "yep", "yup", "ok", "okay", "right", "sure", "alright", "fine", "i", "see", "got", "it", "aha",
+]);
+/** Short words that do mean "stop" even on their own. */
+const STOP_WORDS = new Set(["no", "stop", "wait", "hold", "sorry", "excuse", "hey", "hello"]);
+
+/** True when `text` is only listening noises/acknowledgements ("yeah okay", "hmm", "I see"). */
+export function isBackchannel(text: string): boolean {
+  const words = text.toLowerCase().replace(/[^a-z\s'-]/g, " ").replace(/['-]/g, "").split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  if (words.some((w) => STOP_WORDS.has(w))) return false;
+  return words.every((w) => BACKCHANNEL_WORDS.has(w));
+}
+
 /**
  * TelephonyStreamHandler manages the full real-time audio loop for one phone call.
  *
@@ -140,18 +156,10 @@ export class TelephonyStreamHandler {
   private turnAudioChunks: Buffer[] = [];
   // Issue #14: Barge-in interruption counter (per turn, reset on each transcript)
   private turnInterruptionCount = 0;
-  // Consecutive Twilio media frames (20ms each) whose RMS has exceeded
-  // CONFIG.telephony.bargeInEnergyThreshold. A single loud frame — a click,
-  // a cough, a burst of line static — used to be enough to trigger a full
-  // barge-in (cutting the agent off and cancelling its reply) on its own;
-  // requiring BARGE_IN_SUSTAIN_FRAMES consecutive high-energy frames means
-  // only genuinely sustained sound (real speech starting) fires it, while
-  // still reacting within BARGE_IN_SUSTAIN_FRAMES * 20ms — imperceptibly
-  // fast for a real interruption. Deepgram's own VAD signal (constructor's
-  // onSpeechStarted) is unaffected by this and still fires independently as
-  // the primary, model-based trigger — this only tightens the raw-energy
-  // fallback that catches what VAD might miss.
-  private consecutiveHighEnergyFrames = 0;
+  /** Twilio marks sent after reply audio and not yet echoed back — i.e. the
+   * caller is still hearing the agent. See isAgentAudible(). */
+  private pendingMarks = new Set<string>();
+  private markSeq = 0;
 
   // Bumped on every barge-in — a turn whose captured generation no longer
   // matches this is stale and must not speak or be spoken over. Same
@@ -184,15 +192,12 @@ export class TelephonyStreamHandler {
     this.userId = `caller-${opts.callerNumber.replace(/\D/g, "")}`;
     this.startedAt = Date.now();
 
+    // Barge-in is decided from the caller's words (onTranscript), not from
+    // Deepgram's SpeechStarted VAD event or raw audio energy: both fire on a
+    // cough, a "hmm" or background noise, which used to cut the agent off
+    // mid-sentence and start a whole new reply ("double reply").
     this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), {
       sampleRate: 8000,
-      // Deepgram's own VAD onset signal, fired independently of the raw RMS
-      // check below — a raw energy threshold alone can false-trigger on
-      // background noise or miss quiet speech; this fires the same barge-in
-      // path but off Deepgram's own speech-detection instead.
-      onSpeechStarted: () => {
-        if (this.isSpeaking) this.triggerBargeIn("deepgram-vad");
-      },
     });
 
     // Register every ws event handler in this same synchronous tick, before
@@ -375,35 +380,16 @@ export class TelephonyStreamHandler {
           // Issue #14: Accumulate PCM for turn-level acoustic analysis
           this.turnAudioChunks.push(pcmBuf);
 
-          // Issue #14: Energy-based barge-in detection, now paired with
-          // Deepgram's own VAD SpeechStarted signal (see constructor) —
-          // whichever fires first wins. RMS alone is a blunt instrument:
-          // background noise can false-trigger it, quiet speech can miss it.
-          if (this.isSpeaking) {
-            const rms = computeRmsEnergy(pcmBuf);
-            // Loud AND speech-shaped, not loud alone — a steady background
-            // hum or a burst of line static can be just as loud as real
-            // speech but sits at a ZCR extreme (near-0 for a hum, near-1 for
-            // broadband hiss); genuine speech's ZCR lands in between. This
-            // is what makes the raw-energy fallback "sensitive to the
-            // caller's voice, not background noise" instead of triggering
-            // on any sufficiently loud sound.
-            const zcr = rms > CONFIG.telephony.bargeInEnergyThreshold ? computeFrameZeroCrossingRate(pcmBuf) : 0;
-            const isSpeechShaped = zcr >= CONFIG.telephony.bargeInMinZcr && zcr <= CONFIG.telephony.bargeInMaxZcr;
-            if (rms > CONFIG.telephony.bargeInEnergyThreshold && isSpeechShaped) {
-              this.consecutiveHighEnergyFrames++;
-              if (this.consecutiveHighEnergyFrames >= CONFIG.telephony.bargeInSustainFrames) {
-                this.triggerBargeIn(`rms=${rms.toFixed(0)} zcr=${zcr.toFixed(2)} sustained=${this.consecutiveHighEnergyFrames}`);
-              }
-            } else {
-              this.consecutiveHighEnergyFrames = 0;
-            }
-          } else {
-            this.consecutiveHighEnergyFrames = 0;
-          }
-
           this.deepgram.sendAudio(pcmBuf);
         }
+        break;
+      }
+
+      case "mark": {
+        // Twilio echoes each mark once the audio sent before it has played
+        // (and all remaining ones at once after a "clear").
+        const name = (msg.mark as Record<string, unknown> | undefined)?.name;
+        if (typeof name === "string") this.pendingMarks.delete(name);
         break;
       }
 
@@ -412,6 +398,18 @@ export class TelephonyStreamHandler {
         this.onCallEnded();
         break;
     }
+  }
+
+  /**
+   * Whether the caller can currently hear the agent: a reply is still being
+   * generated, or audio already sent to Twilio hasn't finished playing.
+   * `isSpeaking` alone went false as soon as the reply text was finished —
+   * while several seconds of it were still playing — so talking over the
+   * agent then wasn't treated as an interruption at all: the agent kept
+   * talking, then answered as well (the "double reply").
+   */
+  private isAgentAudible(): boolean {
+    return this.isSpeaking || this.pendingMarks.size > 0;
   }
 
   private async onTranscript(text: string, isFinal: boolean) {
@@ -603,6 +601,15 @@ export class TelephonyStreamHandler {
       });
       this.ws.send(mediaMessage);
     }
+    this.sendPlaybackMark();
+  }
+
+  /** Asks Twilio to tell us when the audio sent so far has played (see the "mark" case). */
+  private sendPlaybackMark(): void {
+    if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
+    const name = `reply-${++this.markSeq}`;
+    this.pendingMarks.add(name);
+    this.ws.send(JSON.stringify({ event: "mark", streamSid: this.streamSid, mark: { name } }));
   }
 
   /**
@@ -628,7 +635,6 @@ export class TelephonyStreamHandler {
       const mulawAudio = pcmToMulaw(pcmBytes);
       const base64Audio = mulawAudio.toString("base64");
 
-      this.isSpeaking = true;
       const mediaMessage = JSON.stringify({
         event: "media",
         streamSid: this.streamSid,
@@ -638,6 +644,8 @@ export class TelephonyStreamHandler {
       });
 
       this.ws.send(mediaMessage);
+      // Playback is tracked by the mark from here on (isAgentAudible).
+      this.sendPlaybackMark();
     } catch (err) {
       console.error(`[TelephonyStream] TTS error:`, err);
       this.isSpeaking = false;
@@ -645,13 +653,12 @@ export class TelephonyStreamHandler {
   }
 
   /**
-   * Shared barge-in trigger, invoked by whichever signal fires first — the
-   * RMS energy threshold or Deepgram's own VAD SpeechStarted event. Caller
-   * is responsible for checking `this.isSpeaking` first (both call sites do).
+   * Stops the agent because the caller started talking over it (see
+   * onTranscript): clears queued audio on Twilio and Deepgram, cancels the
+   * in-flight reply, and frees the line for the caller's sentence.
    */
   private triggerBargeIn(reason: string) {
     this.isSpeaking = false;
-    this.consecutiveHighEnergyFrames = 0;
     this.turnInterruptionCount++;
     this.sendClearMessage();
 
@@ -683,6 +690,9 @@ export class TelephonyStreamHandler {
       streamSid: this.streamSid,
     });
     this.ws.send(clearMsg);
+    // Twilio drops the queued audio and echoes the remaining marks; nothing
+    // is playing any more either way.
+    this.pendingMarks.clear();
     console.log(`[TelephonyStream] Barge-in: cleared TTS playback for ${this.callSid}`);
   }
 
