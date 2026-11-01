@@ -12,6 +12,7 @@ import { callQueue } from "../queue/manager";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
 import { CONFIG } from "../config";
+import { isMissingColumnError } from "../db/follow-up-tasks";
 import { computeRmsEnergy, computeFrameZeroCrossingRate, extractAcousticFeatures, isolateLastUtterance, upsample8kTo16kFloat32 } from "../audio/acoustic";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
@@ -351,6 +352,9 @@ export class TelephonyStreamHandler {
         // earlier (e.g. in init()) would target a row keyed by whatever
         // wrong/placeholder id we started with and silently match nothing.
         void this.updateCallLog({ sessionId: this.sessionId });
+        // Separate update: on a database without migration_v25's column it
+        // fails alone instead of taking the sessionId with it.
+        if (this.agentId) void this.recordAgent(this.agentId);
 
         // Only now do we know the real clientId/agentId either — kick off
         // voice setup here, not in init(), for the same reason. Chained to
@@ -745,6 +749,12 @@ export class TelephonyStreamHandler {
     } catch (err) {
       console.error("[TelephonyStream] Error checking/triggering recovery SMS:", err);
     }
+  }
+
+  /** Which agent handled this call (call_logs."agentId", migration_v25) — used to group post-call findings per agent. */
+  private async recordAgent(agentId: string) {
+    const { error } = await supabase.from("call_logs").update({ agentId }).eq("id", this.callSid);
+    if (error && !isMissingColumnError(error)) console.error(`[TelephonyStream] Failed to record agent on call_logs:`, error);
   }
 
   private async updateCallLog(updates: Record<string, unknown>) {

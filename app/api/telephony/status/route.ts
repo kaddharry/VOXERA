@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "../../../../lib/db/supabase";
 import { generateCallSummary } from "../../../../lib/agent/call-summary";
+import { analyzeCall, saveCallInsights } from "../../../../lib/insights/analyze-call";
 import { hasPatientSpoken } from "../../../../lib/logging/session-logger";
 import { handleFollowUpCallOutcome, applyDoNotContactRequest, readAnsweredBy } from "../../../../lib/scheduler/dispatcher";
 import type { TwilioCallStatus } from "../../../../lib/scheduler/policy";
@@ -158,6 +159,21 @@ export async function POST(req: NextRequest) {
               );
             }
             await settleFollowUp({ followUpOutcome: summary.followUpOutcome, doNotContactRequested: summary.requestedDoNotContact });
+
+            // Self-learning pipeline: knowledge gaps and emotional failure
+            // points for this call. After the follow-up is settled, so it
+            // can never delay a retry.
+            const insights = await analyzeCall(updatedCall.sessionId, updatedCall.clientId);
+            if (insights) {
+              await saveCallInsights({
+                callSid,
+                sessionId: updatedCall.sessionId,
+                clientId: updatedCall.clientId,
+                patientId: updatedCall.patientId,
+                summary: summary as unknown as Record<string, unknown>,
+                insights,
+              });
+            }
           })
           .catch(async (err) => {
             console.error(`[Telephony/Status] Call summary failed for ${callSid}:`, err);
