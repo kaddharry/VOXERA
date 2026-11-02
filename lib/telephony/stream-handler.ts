@@ -12,7 +12,8 @@ import { callQueue } from "../queue/manager";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
 import { CONFIG } from "../config";
-import { computeRmsEnergy, computeFrameZeroCrossingRate, extractAcousticFeatures, isolateLastUtterance, upsample8kTo16kFloat32 } from "../audio/acoustic";
+import { isMissingColumnError } from "../db/follow-up-tasks";
+import { extractAcousticFeatures, isolateLastUtterance, upsample8kTo16kFloat32 } from "../audio/acoustic";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
@@ -416,7 +417,16 @@ export class TelephonyStreamHandler {
   }
 
   private async onTranscript(text: string, isFinal: boolean) {
-    if (!isFinal || !text.trim()) return;
+    if (!text.trim()) return;
+    if (this.isAgentAudible()) {
+      // "yeah", "okay", "hmm" while the agent talks is listening, not an
+      // interruption. Anything else stops the agent (interim results arrive
+      // while the caller is still mid-word, so this is quick) and the
+      // caller's sentence becomes the next turn.
+      if (isBackchannel(text)) return;
+      this.triggerBargeIn(isFinal ? "caller spoke" : `caller started speaking: "${text.trim()}"`);
+    }
+    if (!isFinal) return;
     if (this.isBusy) {
       // Once the agent is talking, an interruption goes through barge-in
       // (triggerBargeIn frees the turn before this transcript arrives).
