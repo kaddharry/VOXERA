@@ -28,13 +28,13 @@ export interface PatientRecord {
   doNotContact: boolean;
   doNotContactAt: number | null;
   doNotContactReason: string | null;
-  /** Free-text diagnosis/category label (migration_v27.sql) — e.g. "Post-Op
+  /** Free-text diagnosis/category label (migration_v28.sql) — e.g. "Post-Op
    * Recovery", "Type 2 Diabetes". Deliberately not a fixed taxonomy; the
    * Patients table derives its filter options from whatever values are
    * actually in use. */
   condition: string | null;
   /** Drives the color-coded badge everywhere a patient shows up
-   * (migration_v27.sql). */
+   * (migration_v28.sql). */
   riskLevel: RiskLevel;
 }
 
@@ -58,7 +58,7 @@ export async function listPatients(db: SupabaseClient, clientId: string): Promis
     .eq("clientId", clientId)
     .order("createdAt", { ascending: false });
   if (error) {
-    // Previously swallowed silently — a schema error (e.g. migration_v27's
+    // Previously swallowed silently — a schema error (e.g. migration_v28's
     // columns not yet applied, or PostgREST's schema cache not refreshed
     // after it) looked identical to "no patients" with nothing logged.
     console.error("[lib/db/patients] listPatients failed:", error.message);

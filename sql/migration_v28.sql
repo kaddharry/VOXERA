@@ -1,4 +1,9 @@
--- Migration v27: patient condition + risk level (Patients page redesign).
+-- Migration v28: patient condition + risk level (Patients page redesign).
+--
+-- Note: v27 is taken by feat/gnani-speech-system (PR #110, not yet merged
+-- to main) — this is numbered v28 to avoid a filename/number collision
+-- with that in-flight branch. Purely additive (ADD COLUMN IF NOT EXISTS),
+-- so it's independent of and safe to run before or after v27 lands.
 --
 -- Patients previously had no structured clinical signal — just a freeform
 -- `notes` field and uploaded documents. `condition` is a free-text label

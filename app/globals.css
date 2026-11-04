@@ -301,7 +301,7 @@ body:has(.landing) {
   --chart-3: #9CA3AF;
   --chart-4: #52525B;
   --chart-5: #E5E7EB;
-  /* Patient risk tiers (migration_v27.sql) — deliberately separate from
+  /* Patient risk tiers (migration_v28.sql) — deliberately separate from
      --chart-* above, which is an unrelated dashboard-chart palette; a
      future change to one must never silently recolor the other. */
   --risk-low: #10B981;
