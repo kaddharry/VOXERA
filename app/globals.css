@@ -605,14 +605,9 @@ body {
   justify-content: center;
   text-decoration: none;
   flex-shrink: 0;
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  background: #141414;
-  border: 1px solid var(--lp-border);
   margin-right: 18px;
 }
-.vxl-logo-mark { width: 19px; height: 19px; object-fit: contain; display: block; }
+.vxl-logo-mark { width: 52px; height: 40px; object-fit: contain; display: block; }
 
 .vxl-nav-links { display: flex; align-items: center; gap: 2px; }
 .vxl-nav-link {

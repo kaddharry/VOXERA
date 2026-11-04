@@ -10,7 +10,7 @@ export default function Footer() {
         <div className="vxl-footer-top">
           <div className="vxl-footer-brand">
             <div className="vxl-footer-brand-row">
-              <Image src="/images/voxera-logo.png" alt="Voxera" width={32} height={32} />
+              <Image src="/images/voxera-mark.png" alt="Voxera" width={64} height={49} />
             </div>
             <p className="vxl-footer-tagline">
               AI that runs your
