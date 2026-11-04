@@ -14,6 +14,7 @@ export default function CTASection() {
   }, []);
 
   return (
+    <section className="vxl-cta-frame">
     <section ref={ref} className="vxl-cta-section">
       <div className="vxl-hero-orbs" aria-hidden>
         <div className="vxl-hero-orb-blur" style={{ width: 300, height: 300, top: "10%", left: "-6%", background: "rgba(239,90,0,0.12)" }} />
@@ -50,6 +51,7 @@ export default function CTASection() {
           </Link>
         </div>
       </div>
+    </section>
     </section>
   );
 }

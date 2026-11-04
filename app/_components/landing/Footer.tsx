@@ -34,6 +34,10 @@ export default function Footer() {
           <span className="vxl-footer-copy">Built for hospitals that never want a follow-up to fall through.</span>
         </div>
       </div>
+
+      <div className="vxl-footer-wordmark" aria-hidden="true">
+        VOXERA
+      </div>
     </footer>
   );
 }

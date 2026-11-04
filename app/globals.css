@@ -1259,10 +1259,15 @@ body {
 .vxl-faq-answer-text { font-size: 14.5px; color: var(--lp-text-secondary); line-height: 1.65; padding: 0 20px 20px; }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   CTA — closing panel: a plain black field with a faint orange glow (giga.ai
-   closes the same way — an email-capture panel with no photo), not a busy
-   stock-photo background.
+   CTA — a rounded card inset with a visible gutter on every side (not a
+   flush, edge-to-edge section), so the page's own black shows as a frame
+   around it and the panel itself reads as one deliberate rounded object.
    ════════════════════════════════════════════════════════════════════════════ */
+.vxl-cta-frame {
+  background: var(--lp-bg);
+  padding: clamp(16px, 3vw, 32px);
+}
+
 .vxl-cta-section {
   position: relative;
   width: 100%;
@@ -1271,7 +1276,9 @@ body {
   justify-content: center;
   overflow: hidden;
   padding: clamp(72px, 10vw, 120px) clamp(16px, 4vw, 48px);
-  background: #000000;
+  background: linear-gradient(162deg, #121212 4%, #050505 95%);
+  border: 1px solid var(--lp-border);
+  border-radius: clamp(24px, 3.5vw, 40px);
 }
 
 .vxl-cta-content {
@@ -1325,6 +1332,25 @@ body {
 
 .vxl-footer-bottom { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; padding-top: 24px; border-top: 1px solid var(--lp-border); }
 .vxl-footer-copy { font-size: 13px; color: var(--lp-text-muted); }
+
+/* Giant outlined brand mark closing the page — a common "last thing you
+   see is the name, huge" footer flourish. Outline-only (webkit-text-stroke,
+   transparent fill) so it reads as a watermark, not a second logo
+   competing with the real one above it; clipped so it can run right to
+   the section's edges without ever causing horizontal scroll. */
+.vxl-footer-wordmark {
+  margin-top: clamp(32px, 6vw, 64px);
+  overflow: hidden;
+  text-align: center;
+  font-family: var(--font-landing-pixel);
+  font-weight: 500;
+  font-size: clamp(4.5rem, 16vw, 13rem);
+  line-height: 0.85;
+  letter-spacing: -0.02em;
+  color: transparent;
+  -webkit-text-stroke: 1.5px rgba(255, 255, 255, 0.14);
+  user-select: none;
+}
 
 /* ════════════════════════════════════════════════════════════════════════════
    OVERVIEW — intro line + alternating video/text blocks
