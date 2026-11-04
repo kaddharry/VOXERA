@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
 import Link from "next/link";
+// GradientASCII is vendored plain JS (see its own file header) — treated as
+// untyped here, same reasoning as AgentVoiceBall's CrystalizedBall cast.
+import GradientASCIIUntyped from "../GradientASCII";
+const GradientASCII = GradientASCIIUntyped as unknown as ComponentType<Record<string, unknown>>;
 
 export default function CTASection() {
   const ref = useRef<HTMLElement>(null);
@@ -16,10 +20,22 @@ export default function CTASection() {
   return (
     <section className="vxl-cta-frame">
     <section ref={ref} className="vxl-cta-section">
-      <div className="vxl-hero-orbs" aria-hidden>
-        <div className="vxl-hero-orb-blur" style={{ width: 300, height: 300, top: "10%", left: "-6%", background: "rgba(239,90,0,0.12)" }} />
-        <div className="vxl-hero-orb-blur" style={{ width: 260, height: 260, bottom: "0%", right: "6%", background: "rgba(255,138,61,0.16)", animationDelay: "-4s" }} />
+      <div className="vxl-cta-ascii-bg" aria-hidden>
+        <GradientASCII
+          colors={["#3a0f00", "#ffefe0", "#ffb37a", "#ef5a00"]}
+          shape="horizon"
+          cellSize={16}
+          density={0.5}
+          glyphOpacity={0.4}
+          glow={0.22}
+          softness={0.6}
+          gradientOpacity={0.6}
+          grain={0.05}
+          mouseInteraction
+          intro
+        />
       </div>
+      <div className="vxl-cta-scrim" aria-hidden />
 
       <div
         className="vxl-cta-content"

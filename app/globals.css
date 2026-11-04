@@ -1281,6 +1281,23 @@ body {
   border-radius: clamp(24px, 3.5vw, 40px);
 }
 
+/* GradientASCII sits behind the content as the card's live background —
+   a dark scrim on top keeps the headline/CTA readable over the glyphs
+   without flattening the effect into near-invisibility. */
+.vxl-cta-ascii-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.vxl-cta-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: radial-gradient(65% 60% at 50% 42%, rgba(5, 5, 5, 0.78) 0%, rgba(5, 5, 5, 0.5) 50%, rgba(5, 5, 5, 0.82) 100%);
+  pointer-events: none;
+}
+
 .vxl-cta-content {
   position: relative;
   z-index: 2;
