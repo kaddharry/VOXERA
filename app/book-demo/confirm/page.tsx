@@ -27,7 +27,7 @@ export default function BookDemoConfirmPage() {
   return (
     <Suspense
       fallback={
-        <main className="min-h-screen bg-[var(--color-bg-base)] flex items-center justify-center">
+        <main className="voxera-admin-dark min-h-screen bg-[var(--color-bg-base)] flex items-center justify-center">
           <Loader2 className="w-5 h-5 animate-spin text-[var(--color-text-muted)]" />
         </main>
       }
@@ -105,8 +105,8 @@ function BookDemoConfirmInner() {
   }
 
   return (
-    <main className="min-h-screen bg-[var(--color-bg-base)] font-body text-[var(--color-text-primary)] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-[var(--color-bg-elevated)] rounded-2xl border border-[var(--color-border-subtle)] shadow-[0_0_40px_var(--color-accent-glow)] p-8">
+    <main className="voxera-admin-dark min-h-screen bg-[var(--color-bg-base)] font-body text-[var(--color-text-primary)] flex items-center justify-center p-6">
+      <div className="w-full max-w-md bg-[var(--color-bg-elevated)] rounded-xl border border-[var(--color-border-subtle)] shadow-xl p-8">
         {error && !request ? (
           <>
             <p className="text-[14px] text-red-500 mb-4">{error}</p>
@@ -129,7 +129,7 @@ function BookDemoConfirmInner() {
             <button
               onClick={startCall}
               disabled={calling}
-              className="group flex items-center justify-center gap-2 w-full px-4 py-3 text-[14px] font-semibold text-white btn-gradient rounded-xl transition-all hover:scale-[1.01] disabled:opacity-50"
+              className="group flex items-center justify-center gap-2 w-full px-4 py-3 text-[14px] font-semibold text-white btn-gradient rounded-xl disabled:opacity-50"
             >
               {calling ? <Loader2 className="w-4 h-4 animate-spin" /> : <PhoneCall className="w-4 h-4" />}
               Call me now
@@ -150,7 +150,7 @@ function BookDemoConfirmInner() {
             </p>
             <button
               onClick={() => router.push("/onboarding")}
-              className="group flex items-center justify-center gap-2 w-full px-4 py-3 text-[14px] font-semibold text-white btn-gradient rounded-xl transition-all hover:scale-[1.01]"
+              className="group flex items-center justify-center gap-2 w-full px-4 py-3 text-[14px] font-semibold text-white btn-gradient rounded-xl"
             >
               Continue setup <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
             </button>

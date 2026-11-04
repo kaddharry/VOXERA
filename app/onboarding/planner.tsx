@@ -40,7 +40,11 @@ export function OnboardingPlanner() {
   const [step, setStep] = useState(0);
 
   // Step 1 — basics
-  const [businessName, setBusinessName] = useState("");
+  // VOXERA now deploys one hospital per account — onboarding no longer asks
+  // for a business name (that was for the old multi-hospital signup flow).
+  // The tenant row created on submit still needs a name, so this stays a
+  // fixed internal label rather than a field the user fills in.
+  const businessName = "Hospital";
   const [agentName, setAgentName] = useState("");
   const [description, setDescription] = useState("");
 
@@ -60,7 +64,7 @@ export function OnboardingPlanner() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canContinueStep0 = businessName.trim().length > 0 && description.trim().length > 0;
+  const canContinueStep0 = description.trim().length > 0;
   const canContinueStep1 = systemPrompt.trim().length > 0;
 
   const handleNext = () => {
@@ -129,7 +133,7 @@ export function OnboardingPlanner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           businessName,
-          agentName: agentName.trim() || `${businessName} Agent`,
+          agentName: agentName.trim() || "Follow-Up Agent",
           description,
           systemPrompt,
           greeting: greeting.trim() || undefined,
@@ -148,7 +152,7 @@ export function OnboardingPlanner() {
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl p-6 md:p-10 shadow-[0_4px_30px_rgba(0,0,0,0.08)]">
+    <div className="w-full max-w-2xl mx-auto bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-xl p-6 md:p-10 shadow-xl">
       {/* Progress */}
       <div className="flex items-center gap-2 mb-10">
         {STEPS.map((s, i) => (
@@ -157,7 +161,7 @@ export function OnboardingPlanner() {
               <div
                 className={cn(
                   "h-full transition-all duration-300",
-                  i <= step ? "bg-[var(--color-accent-violet)] shadow-[0_0_8px_var(--color-accent-glow)]" : "bg-transparent"
+                  i <= step ? "bg-[var(--color-accent-violet)]" : "bg-transparent"
                 )}
                 style={{ width: i <= step ? "100%" : "0%" }}
               />
@@ -180,24 +184,12 @@ export function OnboardingPlanner() {
           <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
             <div className="space-y-2">
               <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
-                Business name
-              </label>
-              <input
-                value={businessName}
-                onChange={(e) => setBusinessName(e.target.value)}
-                placeholder="e.g. Acme Dental Clinic"
-                className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-violet)] focus:border-[var(--color-accent-violet)] transition-colors placeholder:text-[var(--color-text-muted)]"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-[13px] font-mono uppercase tracking-widest font-semibold text-[var(--color-text-secondary)]">
                 Agent name <span className="normal-case font-normal text-[var(--color-text-muted)]">(optional)</span>
               </label>
               <input
                 value={agentName}
                 onChange={(e) => setAgentName(e.target.value)}
-                placeholder={businessName ? `${businessName} Agent` : "e.g. Front Desk Concierge"}
+                placeholder="e.g. Discharge Follow-Up Agent"
                 className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl px-4 py-3 text-[14px] text-[var(--color-text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-violet)] focus:border-[var(--color-accent-violet)] transition-colors placeholder:text-[var(--color-text-muted)]"
               />
             </div>
@@ -235,7 +227,7 @@ export function OnboardingPlanner() {
                   className={cn(
                     "flex items-center gap-2.5 p-3.5 rounded-xl border text-left transition-all",
                     promptMode === "ai"
-                      ? "bg-[var(--color-bg-base)] border-[var(--color-border-active)] shadow-[0_0_10px_var(--color-accent-glow)]"
+                      ? "bg-[var(--color-bg-base)] border-[var(--color-border-active)]"
                       : "bg-[var(--color-bg-surface)] border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)]"
                   )}
                 >
@@ -248,7 +240,7 @@ export function OnboardingPlanner() {
                   className={cn(
                     "flex items-center gap-2.5 p-3.5 rounded-xl border text-left transition-all",
                     promptMode === "manual"
-                      ? "bg-[var(--color-bg-base)] border-[var(--color-border-active)] shadow-[0_0_10px_var(--color-accent-glow)]"
+                      ? "bg-[var(--color-bg-base)] border-[var(--color-border-active)]"
                       : "bg-[var(--color-bg-surface)] border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)]"
                   )}
                 >
@@ -263,7 +255,7 @@ export function OnboardingPlanner() {
                 type="button"
                 onClick={generatePrompt}
                 disabled={generating}
-                className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-xl btn-gradient text-white text-[13.5px] font-semibold shadow-[0_0_15px_var(--color-accent-glow)] transition-all hover:scale-[1.01] disabled:opacity-60 disabled:hover:scale-100"
+                className="w-full flex items-center justify-center gap-2 px-5 py-3 rounded-xl btn-gradient text-white text-[13.5px] font-semibold disabled:opacity-60"
               >
                 {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                 {generating ? "Writing your agent's prompt…" : "Generate prompt from your description"}
@@ -415,9 +407,8 @@ export function OnboardingPlanner() {
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest text-[var(--color-text-muted)]">Agent</div>
                 <div className="text-[14.5px] font-semibold text-[var(--color-text-primary)]">
-                  {agentName.trim() || `${businessName} Agent`}
+                  {agentName.trim() || "Follow-Up Agent"}
                 </div>
-                <div className="text-[12.5px] text-[var(--color-text-muted)]">for {businessName}</div>
               </div>
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest text-[var(--color-text-muted)]">System prompt</div>
@@ -470,7 +461,7 @@ export function OnboardingPlanner() {
           <button
             onClick={handleSubmit}
             disabled={isSubmitting}
-            className="group flex items-center gap-2 px-6 py-2.5 rounded-xl btn-gradient text-white text-[14px] font-semibold transition-all hover:scale-[1.02] shadow-[0_0_15px_var(--color-accent-glow)] disabled:opacity-50"
+            className="group flex items-center gap-2 px-6 py-2.5 rounded-xl btn-gradient text-white text-[14px] font-semibold disabled:opacity-50"
           >
             {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
             {isSubmitting ? "Creating…" : "Create Agent"}

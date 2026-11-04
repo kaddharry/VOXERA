@@ -48,7 +48,7 @@ export default function BookDemoPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[var(--color-bg-base)] font-body text-[var(--color-text-primary)]">
+    <main className="voxera-admin-dark min-h-screen bg-[var(--color-bg-base)] font-body text-[var(--color-text-primary)]">
       <div className="mx-auto max-w-2xl px-6 py-12">
         <Link href="/" className="inline-flex items-center gap-2 text-[13px] font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors mb-8">
           <ArrowLeft className="w-4 h-4" /> Back to Home
@@ -147,7 +147,7 @@ export default function BookDemoPage() {
           <button
             type="submit"
             disabled={submitting || !consent}
-            className="group flex items-center justify-center gap-2 w-full px-4 py-3 text-[14px] font-semibold text-white btn-gradient rounded-xl transition-all hover:scale-[1.01] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+            className="group flex items-center justify-center gap-2 w-full px-4 py-3 text-[14px] font-semibold text-white btn-gradient rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
             Continue to create your account

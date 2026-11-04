@@ -8,11 +8,11 @@ export const metadata = {
 
 export default function OnboardingPage() {
   return (
-    <main className="min-h-screen bg-[var(--color-bg-base)] text-[var(--color-text-primary)] font-body">
+    <main className="voxera-admin-dark min-h-screen bg-[var(--color-bg-base)] text-[var(--color-text-primary)] font-body">
       <header className="bg-[var(--color-bg-surface)] border-b border-[var(--color-border-subtle)]">
         <div className="mx-auto flex h-[60px] max-w-6xl items-center justify-between px-6">
           <Link href="/" className="flex items-center gap-2">
-            <span className="font-display font-bold text-lg tracking-tighter text-gradient">VOXERA</span>
+            <span className="font-display font-bold text-lg tracking-tighter text-[var(--color-accent-violet)]">VOXERA</span>
           </Link>
           <div className="flex items-center gap-6">
             <Link href="/demo" className="text-[13px] font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors">
