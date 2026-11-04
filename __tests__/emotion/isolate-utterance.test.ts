@@ -43,3 +43,14 @@ describe("isolateLastUtterance", () => {
     expect(fixed.pauseDurationMs).toBeLessThan(500);
   });
 });
+
+describe("upsample8kTo16kFloat32", () => {
+  it("doubles the sample count, scales to [-1, 1] and interpolates between samples", async () => {
+    const { upsample8kTo16kFloat32 } = await import("../../lib/audio/acoustic");
+    const pcm = Buffer.alloc(6);
+    pcm.writeInt16LE(0, 0);
+    pcm.writeInt16LE(16384, 2);
+    pcm.writeInt16LE(-32768, 4);
+    expect(Array.from(upsample8kTo16kFloat32(pcm))).toEqual([0, 0.25, 0.5, -0.25, -1, -1]);
+  });
+});

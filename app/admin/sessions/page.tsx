@@ -6,6 +6,8 @@ import { MessageSquare, LayoutList, Activity, Terminal, Zap, User, Bot, AlertTri
 import { GlassCard } from "@/app/_components/GlassCard";
 import { ValenceTimeline, type ValencePoint } from "@/components/admin/ValenceTimeline";
 import { describeCallEmotion, type CallEmotion } from "@/lib/emotion/call-emotion";
+import type { CallInsights } from "@/lib/insights/call-insights";
+import { CallInsightsCard } from "@/components/admin/CallInsightsCard";
 
 /** A real, LLM-generated post-call read for a clinician — see
  * lib/agent/call-summary.ts. Grounded strictly in the transcript, never
@@ -17,6 +19,8 @@ interface CallSummary {
   followUpOutcome: "resolved" | "needs_retry" | "needs_review";
   requestedDoNotContact: boolean;
   callEmotion?: CallEmotion;
+  /** Post-call findings (lib/insights/analyze-call.ts). */
+  insights?: CallInsights;
 }
 
 interface CallLogRow {
@@ -489,6 +493,8 @@ export default function SessionsPage() {
                       </p>
                     </GlassCard>
                   )}
+
+                  {selectedCall?.summary?.insights && <CallInsightsCard insights={selectedCall.summary.insights} />}
 
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                     <StatTile label="Duration" value={formatDuration(overview.durationMs)} />

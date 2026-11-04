@@ -72,4 +72,18 @@ describe("emotion report", () => {
     ]);
     expect(turns.map((t) => t.emotion?.label)).toEqual(["neutral", "frustration"]);
   });
+
+  it("marks a half-sentence the patient then finished and leaves it out of the totals", () => {
+    const turns = groupTurns([
+      ev(1, "utterance", { role: "user", utteranceId: "u1", text: "I feel very low." }),
+      ev(2, "emotion", { utteranceId: "u1", label: "sadness", intensity: 0.3, latencyMs: { total: 1 } }),
+      ev(3, "utterance", { role: "user", utteranceId: "u2", text: "I feel very low. I can't do anything by myself." }),
+      ev(4, "emotion", { utteranceId: "u2", label: "sadness", intensity: 0.3, latencyMs: { total: 1 } }),
+    ]);
+    expect(turns.map((t) => !!t.continued)).toEqual([true, false]);
+    const md = buildReport("tel-x", undefined, turns);
+    expect(md).toContain("- Patient turns: 1 (plus 1 half-sentence the patient then finished, answered as one)");
+    expect(md).toContain("_(cut off, finished in the next row)_");
+    expect(md).toContain("1 of 1 under 300ms");
+  });
 });

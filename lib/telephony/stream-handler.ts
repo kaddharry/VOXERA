@@ -12,7 +12,8 @@ import { callQueue } from "../queue/manager";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
 import { CONFIG } from "../config";
-import { computeRmsEnergy, computeFrameZeroCrossingRate, extractAcousticFeatures, isolateLastUtterance } from "../audio/acoustic";
+import { isMissingColumnError } from "../db/follow-up-tasks";
+import { extractAcousticFeatures, isolateLastUtterance, upsample8kTo16kFloat32 } from "../audio/acoustic";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
@@ -91,6 +92,22 @@ export interface StreamHandlerOptions {
   patientId?: string;
 }
 
+/** Listening sounds and acknowledgements — said while the agent talks, they aren't an interruption. */
+const BACKCHANNEL_WORDS = new Set([
+  "hmm", "hm", "mm", "mmm", "mhm", "mmhmm", "uh", "um", "uhm", "umm", "ah", "oh", "er", "erm", "huh",
+  "uhhuh", "yeah", "yes", "yep", "yup", "ok", "okay", "right", "sure", "alright", "fine", "i", "see", "got", "it", "aha",
+]);
+/** Short words that do mean "stop" even on their own. */
+const STOP_WORDS = new Set(["no", "stop", "wait", "hold", "sorry", "excuse", "hey", "hello"]);
+
+/** True when `text` is only listening noises/acknowledgements ("yeah okay", "hmm", "I see"). */
+export function isBackchannel(text: string): boolean {
+  const words = text.toLowerCase().replace(/[^a-z\s'-]/g, " ").replace(/['-]/g, "").split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  if (words.some((w) => STOP_WORDS.has(w))) return false;
+  return words.every((w) => BACKCHANNEL_WORDS.has(w));
+}
+
 /**
  * TelephonyStreamHandler manages the full real-time audio loop for one phone call.
  *
@@ -131,6 +148,8 @@ export class TelephonyStreamHandler {
   private startedAt: number;
   private isBusy = false; // prevent overlapping LLM turns
   private isSpeaking = false; // Issue #8: track if TTS is playing for barge-in
+  /** The caller's sentence the in-flight turn is answering ("" when idle). */
+  private currentTurnText = "";
   private hasEnded = false; // prevent double-invocation of onCallEnded
   private slotTaken = false;
 
@@ -138,18 +157,10 @@ export class TelephonyStreamHandler {
   private turnAudioChunks: Buffer[] = [];
   // Issue #14: Barge-in interruption counter (per turn, reset on each transcript)
   private turnInterruptionCount = 0;
-  // Consecutive Twilio media frames (20ms each) whose RMS has exceeded
-  // CONFIG.telephony.bargeInEnergyThreshold. A single loud frame — a click,
-  // a cough, a burst of line static — used to be enough to trigger a full
-  // barge-in (cutting the agent off and cancelling its reply) on its own;
-  // requiring BARGE_IN_SUSTAIN_FRAMES consecutive high-energy frames means
-  // only genuinely sustained sound (real speech starting) fires it, while
-  // still reacting within BARGE_IN_SUSTAIN_FRAMES * 20ms — imperceptibly
-  // fast for a real interruption. Deepgram's own VAD signal (constructor's
-  // onSpeechStarted) is unaffected by this and still fires independently as
-  // the primary, model-based trigger — this only tightens the raw-energy
-  // fallback that catches what VAD might miss.
-  private consecutiveHighEnergyFrames = 0;
+  /** Twilio marks sent after reply audio and not yet echoed back — i.e. the
+   * caller is still hearing the agent. See isAgentAudible(). */
+  private pendingMarks = new Set<string>();
+  private markSeq = 0;
 
   // Bumped on every barge-in — a turn whose captured generation no longer
   // matches this is stale and must not speak or be spoken over. Same
@@ -182,15 +193,12 @@ export class TelephonyStreamHandler {
     this.userId = `caller-${opts.callerNumber.replace(/\D/g, "")}`;
     this.startedAt = Date.now();
 
+    // Barge-in is decided from the caller's words (onTranscript), not from
+    // Deepgram's SpeechStarted VAD event or raw audio energy: both fire on a
+    // cough, a "hmm" or background noise, which used to cut the agent off
+    // mid-sentence and start a whole new reply ("double reply").
     this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), {
       sampleRate: 8000,
-      // Deepgram's own VAD onset signal, fired independently of the raw RMS
-      // check below — a raw energy threshold alone can false-trigger on
-      // background noise or miss quiet speech; this fires the same barge-in
-      // path but off Deepgram's own speech-detection instead.
-      onSpeechStarted: () => {
-        if (this.isSpeaking) this.triggerBargeIn("deepgram-vad");
-      },
     });
 
     // Register every ws event handler in this same synchronous tick, before
@@ -349,6 +357,9 @@ export class TelephonyStreamHandler {
         // earlier (e.g. in init()) would target a row keyed by whatever
         // wrong/placeholder id we started with and silently match nothing.
         void this.updateCallLog({ sessionId: this.sessionId });
+        // Separate update: on a database without migration_v25's column it
+        // fails alone instead of taking the sessionId with it.
+        if (this.agentId) void this.recordAgent(this.agentId);
 
         // Only now do we know the real clientId/agentId either — kick off
         // voice setup here, not in init(), for the same reason. Chained to
@@ -373,35 +384,16 @@ export class TelephonyStreamHandler {
           // Issue #14: Accumulate PCM for turn-level acoustic analysis
           this.turnAudioChunks.push(pcmBuf);
 
-          // Issue #14: Energy-based barge-in detection, now paired with
-          // Deepgram's own VAD SpeechStarted signal (see constructor) —
-          // whichever fires first wins. RMS alone is a blunt instrument:
-          // background noise can false-trigger it, quiet speech can miss it.
-          if (this.isSpeaking) {
-            const rms = computeRmsEnergy(pcmBuf);
-            // Loud AND speech-shaped, not loud alone — a steady background
-            // hum or a burst of line static can be just as loud as real
-            // speech but sits at a ZCR extreme (near-0 for a hum, near-1 for
-            // broadband hiss); genuine speech's ZCR lands in between. This
-            // is what makes the raw-energy fallback "sensitive to the
-            // caller's voice, not background noise" instead of triggering
-            // on any sufficiently loud sound.
-            const zcr = rms > CONFIG.telephony.bargeInEnergyThreshold ? computeFrameZeroCrossingRate(pcmBuf) : 0;
-            const isSpeechShaped = zcr >= CONFIG.telephony.bargeInMinZcr && zcr <= CONFIG.telephony.bargeInMaxZcr;
-            if (rms > CONFIG.telephony.bargeInEnergyThreshold && isSpeechShaped) {
-              this.consecutiveHighEnergyFrames++;
-              if (this.consecutiveHighEnergyFrames >= CONFIG.telephony.bargeInSustainFrames) {
-                this.triggerBargeIn(`rms=${rms.toFixed(0)} zcr=${zcr.toFixed(2)} sustained=${this.consecutiveHighEnergyFrames}`);
-              }
-            } else {
-              this.consecutiveHighEnergyFrames = 0;
-            }
-          } else {
-            this.consecutiveHighEnergyFrames = 0;
-          }
-
           this.deepgram.sendAudio(pcmBuf);
         }
+        break;
+      }
+
+      case "mark": {
+        // Twilio echoes each mark once the audio sent before it has played
+        // (and all remaining ones at once after a "clear").
+        const name = (msg.mark as Record<string, unknown> | undefined)?.name;
+        if (typeof name === "string") this.pendingMarks.delete(name);
         break;
       }
 
@@ -412,9 +404,47 @@ export class TelephonyStreamHandler {
     }
   }
 
+  /**
+   * Whether the caller can currently hear the agent: a reply is still being
+   * generated, or audio already sent to Twilio hasn't finished playing.
+   * `isSpeaking` alone went false as soon as the reply text was finished —
+   * while several seconds of it were still playing — so talking over the
+   * agent then wasn't treated as an interruption at all: the agent kept
+   * talking, then answered as well (the "double reply").
+   */
+  private isAgentAudible(): boolean {
+    return this.isSpeaking || this.pendingMarks.size > 0;
+  }
+
   private async onTranscript(text: string, isFinal: boolean) {
-    if (!isFinal || !text.trim() || this.isBusy) return;
+    if (!text.trim()) return;
+    if (this.isAgentAudible()) {
+      // "yeah", "okay", "hmm" while the agent talks is listening, not an
+      // interruption. Anything else stops the agent (interim results arrive
+      // while the caller is still mid-word, so this is quick) and the
+      // caller's sentence becomes the next turn.
+      if (isBackchannel(text)) return;
+      this.triggerBargeIn(isFinal ? "caller spoke" : `caller started speaking: "${text.trim()}"`);
+    }
+    if (!isFinal) return;
+    if (this.isBusy) {
+      // Once the agent is talking, an interruption goes through barge-in
+      // (triggerBargeIn frees the turn before this transcript arrives).
+      if (this.isSpeaking || !this.currentTurnText) return;
+      // The caller kept talking after a pause while the agent was still
+      // preparing its reply, so that turn was only half a sentence ("I'm
+      // really worried that something" … "went wrong in the surgery"). This
+      // used to be dropped outright, losing the end of the sentence and
+      // answering the fragment. Cancel the half-built reply and answer the
+      // whole sentence instead.
+      const merged = `${this.currentTurnText} ${text.trim()}`;
+      console.log(`[TelephonyStream] Caller continued before the reply started (${this.callSid}) — answering the whole sentence: "${merged}"`);
+      this.generation++;
+      this.currentAbortController?.abort();
+      text = merged;
+    }
     this.isBusy = true;
+    this.currentTurnText = text;
     const myGeneration = this.generation;
 
     console.log(`[TelephonyStream] Transcript (${this.callSid}): "${text}"`);
@@ -455,6 +485,9 @@ export class TelephonyStreamHandler {
         sttConfidence: 0.9,
         audioEmotion: null,
         acousticFeatures,
+        // The same utterance for the trained voice-emotion model, which runs
+        // in the deferred diagnostics pass (never delays the reply).
+        rawAudioPcm16k: turnPcm.length > 0 ? upsample8kTo16kFloat32(turnPcm) : undefined,
         bargeInCount: this.turnInterruptionCount,
         // Powers the Live Dashboard's per-engine breakdown for real calls —
         // safe to enable here specifically because deferDiagnostics (below)
@@ -549,11 +582,16 @@ export class TelephonyStreamHandler {
         console.error(`[TelephonyStream] handleTurn error:`, err);
       }
     } finally {
-      this.isBusy = false;
-      this.currentAbortController = null;
-      // Reset turn-level accumulators for next utterance
-      this.turnAudioChunks = [];
-      this.turnInterruptionCount = 0;
+      // A superseded turn (barge-in, or merged into a longer sentence above)
+      // must not reset state the turn that replaced it is now using.
+      if (myGeneration === this.generation) {
+        this.isBusy = false;
+        this.currentTurnText = "";
+        this.currentAbortController = null;
+        // Reset turn-level accumulators for next utterance
+        this.turnAudioChunks = [];
+        this.turnInterruptionCount = 0;
+      }
     }
   }
 
@@ -576,6 +614,15 @@ export class TelephonyStreamHandler {
       });
       this.ws.send(mediaMessage);
     }
+    this.sendPlaybackMark();
+  }
+
+  /** Asks Twilio to tell us when the audio sent so far has played (see the "mark" case). */
+  private sendPlaybackMark(): void {
+    if (!this.streamSid || this.ws.readyState !== WebSocket.OPEN) return;
+    const name = `reply-${++this.markSeq}`;
+    this.pendingMarks.add(name);
+    this.ws.send(JSON.stringify({ event: "mark", streamSid: this.streamSid, mark: { name } }));
   }
 
   /**
@@ -601,7 +648,6 @@ export class TelephonyStreamHandler {
       const mulawAudio = pcmToMulaw(pcmBytes);
       const base64Audio = mulawAudio.toString("base64");
 
-      this.isSpeaking = true;
       const mediaMessage = JSON.stringify({
         event: "media",
         streamSid: this.streamSid,
@@ -611,6 +657,8 @@ export class TelephonyStreamHandler {
       });
 
       this.ws.send(mediaMessage);
+      // Playback is tracked by the mark from here on (isAgentAudible).
+      this.sendPlaybackMark();
     } catch (err) {
       console.error(`[TelephonyStream] TTS error:`, err);
       this.isSpeaking = false;
@@ -618,13 +666,12 @@ export class TelephonyStreamHandler {
   }
 
   /**
-   * Shared barge-in trigger, invoked by whichever signal fires first — the
-   * RMS energy threshold or Deepgram's own VAD SpeechStarted event. Caller
-   * is responsible for checking `this.isSpeaking` first (both call sites do).
+   * Stops the agent because the caller started talking over it (see
+   * onTranscript): clears queued audio on Twilio and Deepgram, cancels the
+   * in-flight reply, and frees the line for the caller's sentence.
    */
   private triggerBargeIn(reason: string) {
     this.isSpeaking = false;
-    this.consecutiveHighEnergyFrames = 0;
     this.turnInterruptionCount++;
     this.sendClearMessage();
 
@@ -641,6 +688,7 @@ export class TelephonyStreamHandler {
     // was queued/in-flight for the turn that just got interrupted.
     this.currentSpeakStream?.clear();
     this.isBusy = false;
+    this.currentTurnText = "";
 
     console.log(`[TelephonyStream] Barge-in triggered (${reason}) for ${this.callSid}`);
   }
@@ -655,6 +703,9 @@ export class TelephonyStreamHandler {
       streamSid: this.streamSid,
     });
     this.ws.send(clearMsg);
+    // Twilio drops the queued audio and echoes the remaining marks; nothing
+    // is playing any more either way.
+    this.pendingMarks.clear();
     console.log(`[TelephonyStream] Barge-in: cleared TTS playback for ${this.callSid}`);
   }
 
@@ -717,6 +768,12 @@ export class TelephonyStreamHandler {
     } catch (err) {
       console.error("[TelephonyStream] Error checking/triggering recovery SMS:", err);
     }
+  }
+
+  /** Which agent handled this call (call_logs."agentId", migration_v25) — used to group post-call findings per agent. */
+  private async recordAgent(agentId: string) {
+    const { error } = await supabase.from("call_logs").update({ agentId }).eq("id", this.callSid);
+    if (error && !isMissingColumnError(error)) console.error(`[TelephonyStream] Failed to record agent on call_logs:`, error);
   }
 
   private async updateCallLog(updates: Record<string, unknown>) {
