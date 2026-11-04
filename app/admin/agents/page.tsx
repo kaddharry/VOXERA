@@ -16,8 +16,10 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { CreateAgentDialog } from "./CreateAgentDialog";
-import { BLANK_DRAFT, type Agent, type Draft, type GeneratedAgentDraft } from "./types";
+import { BLANK_DRAFT, GNANI_LANGUAGES, type Agent, type Draft, type GeneratedAgentDraft } from "./types";
 import { VoicePicker } from "./VoicePicker";
+import { GnaniVoicePicker } from "./GnaniVoicePicker";
+import { parseGnaniPersona, formatGnaniPersona } from "@/lib/tts/gnani-voices";
 import { KnowledgeTab } from "./KnowledgeTab";
 
 type Tab = "persona" | "prompt" | "knowledge";
@@ -113,6 +115,8 @@ export default function AgentBuilderPage() {
       system_prompt: agent.system_prompt ?? "",
       greeting: agent.greeting ?? "",
       voice_persona: agent.voice_persona ?? "female-friendly",
+      speech_provider: agent.speech_provider ?? null,
+      language: agent.language ?? null,
     });
   };
 
@@ -133,6 +137,8 @@ export default function AgentBuilderPage() {
       system_prompt: generated.system_prompt,
       greeting: generated.greeting,
       voice_persona: "female-friendly",
+      speech_provider: null,
+      language: null,
     });
   };
 
@@ -388,16 +394,85 @@ export default function AgentBuilderPage() {
 
                     <div>
                       <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">
-                        Voice
+                        Speech provider
                       </label>
                       <p className="text-[12px] text-[var(--color-text-muted)] mb-2.5">
-                        Deepgram Aura-2 — search by name, trait, or accent, and preview before you pick.
+                        Leave unset to use your account's default (Settings → Voice). Gnani covers Hindi,
+                        Hinglish, and 9 other Indian languages for both listening and speaking on calls.
                       </p>
-                      <VoicePicker
-                        value={draft.voice_persona}
-                        onChange={(id) => setDraft((d) => ({ ...d, voice_persona: id }))}
-                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        {(
+                          [
+                            { id: null, label: "Account default" },
+                            { id: "deepgram", label: "Deepgram (English)" },
+                            { id: "gnani", label: "Gnani (Indian languages)" },
+                          ] as const
+                        ).map((opt) => (
+                          <button
+                            key={opt.label}
+                            type="button"
+                            onClick={() => setDraft((d) => ({ ...d, speech_provider: opt.id, language: opt.id === "gnani" ? (d.language ?? "hi-en") : null }))}
+                            className={`px-3.5 py-2.5 rounded-xl border text-[12.5px] font-semibold transition-all text-left ${
+                              draft.speech_provider === opt.id
+                                ? "border-[var(--color-border-active)] bg-[var(--color-bg-base)] text-[var(--color-text-primary)]"
+                                : "border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-active)]"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
+
+                    {draft.speech_provider === "gnani" && (
+                      <div>
+                        <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">
+                          Language
+                        </label>
+                        <select
+                          value={draft.language ?? "hi-en"}
+                          onChange={(e) => setDraft((d) => ({ ...d, language: e.target.value }))}
+                          className="w-full px-4 py-3 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl focus:ring-1 focus:ring-[var(--color-accent-cyan)] focus:border-[var(--color-accent-cyan)] text-[14px] text-[var(--color-text-primary)] transition-colors"
+                        >
+                          {GNANI_LANGUAGES.map((l) => (
+                            <option key={l.id} value={l.id}>{l.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {draft.speech_provider === "gnani" ? (
+                      <div>
+                        <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">
+                          Voice
+                        </label>
+                        <p className="text-[12px] text-[var(--color-text-muted)] mb-2.5">
+                          Gnani Timbre — search by name or gender, and preview before you pick. Timbre v3.0
+                          voices speak every language; Timbre v2.5 voices are shown for your selected language.
+                        </p>
+                        <GnaniVoicePicker
+                          voice={parseGnaniPersona(draft.voice_persona).id}
+                          model={parseGnaniPersona(draft.voice_persona).model}
+                          language={draft.language ?? "hi-en"}
+                          onChange={(voiceId, voiceModel) =>
+                            setDraft((d) => ({ ...d, voice_persona: formatGnaniPersona({ id: voiceId, model: voiceModel as "timbre-v2.5" | "timbre-v3.0" }) }))
+                          }
+                        />
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">
+                          Voice
+                        </label>
+                        <p className="text-[12px] text-[var(--color-text-muted)] mb-2.5">
+                          Deepgram Aura-2 — search by name, trait, or accent, and preview before you pick.
+                        </p>
+                        <VoicePicker
+                          value={draft.voice_persona}
+                          onChange={(id) => setDraft((d) => ({ ...d, voice_persona: id }))}
+                        />
+                      </div>
+                    )}
                   </>
                 )}
 

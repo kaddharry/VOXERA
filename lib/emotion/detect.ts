@@ -5,6 +5,17 @@ import { classifyConfidence } from "./confidence";
 import { LEXICON } from "./lexicon";
 import type { HFDetectResult } from "./ml-detect";
 import { detectTextEmotionLocalONNX, type LocalOnnxDetectResult } from "./local-onnx-detect";
+import { detectTextEmotionXLMEmo, type XlmEmoDetectResult } from "./xlm-emo-detect";
+
+/** Language codes (lib/speech/resolve.ts's resolved values) treated as
+ * "English" — the production router below only branches to the multilingual
+ * XLM-EMO engine for anything else. Keeps the English path (Local ONNX)
+ * completely untouched for the common case. */
+const ENGLISH_LANGUAGE_CODES = new Set(["en", "en-IN", "en-US", "English"]);
+
+function isEnglish(language: string | undefined): boolean {
+  return !language || ENGLISH_LANGUAGE_CODES.has(language);
+}
 
 // HF (HuggingFace Inference API) engine was removed from the live pipeline —
 // see the eval writeup in VOXERA_IMPLEMENTATION.md. It runs the exact same
@@ -302,11 +313,15 @@ export interface TextEmotionResult {
   lexicon: EmotionSignal & { matchedKeywords: string[] };
   /** HuggingFace remote-API engine result (null if timed out or unavailable — usually just means no HF_TOKEN is set). */
   hf: HFDetectResult;
-  /** Local ONNX engine result — the SAME underlying model as `hf` (j-hartmann/emotion-english-distilroberta-base), run in-process instead of over the network. No token, no network dependency. */
+  /** Local ONNX engine result — the SAME underlying model as `hf` (j-hartmann/emotion-english-distilroberta-base), run in-process instead of over the network. No token, no network dependency. English only — see xlmEmo for non-English calls. */
   localOnnx: LocalOnnxDetectResult;
+  /** Multilingual engine result (MilaNLProc/xlm-emo-t, see xlm-emo-detect.ts) — only ever populated when a non-English `language` was passed; null-signal placeholder otherwise. See xlm-emo-label-map.ts for its narrower (4-class) label coverage. */
+  xlmEmo: XlmEmoDetectResult;
   /** Which engine was selected as primary and why. */
-  selection: { engine: "local_onnx" | "hf" | "lexicon"; reason: string };
+  selection: { engine: "local_onnx" | "xlm_emo" | "hf" | "lexicon"; reason: string };
 }
+
+const XLM_EMO_DISABLED_RESULT: XlmEmoDetectResult = { signal: null, latencyMs: 0, timedOut: false };
 
 /**
  * Universal text emotion router. Runs Local ONNX, HF, and Lexicon CONCURRENTLY.
@@ -342,14 +357,18 @@ export interface TextEmotionResult {
  *
  * All three results are always returned for diagnostic comparison.
  */
-export async function detectTextEmotion(text: string): Promise<TextEmotionResult> {
+export async function detectTextEmotion(text: string, opts?: { language?: string }): Promise<TextEmotionResult> {
   // Lexicon is synchronous/instant — run it first. Its two early-exit cases
   // below (small-talk guard, real keyword match) are both deterministic and
-  // already ignore whatever Local ONNX would say, so there is nothing to
-  // gain by waiting on Local ONNX's up-to-500ms budget in either case. Only
-  // fall through to actually awaiting Local ONNX when the lexicon is sitting
-  // on its bare default and its answer would actually be used.
+  // already ignore whatever the ML engine would say, so there is nothing to
+  // gain by waiting on its latency budget in either case. Only fall through
+  // to actually awaiting the ML engine when the lexicon is sitting on its
+  // bare default and its answer would actually be used. The lexicon itself
+  // is English-only keyword/regex matching — for non-English text it simply
+  // won't match (same as any unrecognized English text today), so no
+  // language gating is needed here, only on which ML engine runs below.
   const lexiconResult = detectTextEmotionLexicon(text);
+  const english = isEnglish(opts?.language);
 
   // Small-talk guard: overrides all engines when the whole utterance is a
   // bare greeting/small-talk phrase and the lexicon found no real keyword
@@ -361,22 +380,61 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
       lexicon: lexiconResult,
       hf: HF_DISABLED_RESULT,
       localOnnx: { signal: null, latencyMs: 0, errored: false },
+      xlmEmo: XLM_EMO_DISABLED_RESULT,
       selection: { engine: "lexicon", reason: "Small-talk guard: bare greeting, forced neutral" },
     };
   }
 
   // Lexicon wins outright on a real keyword match — deliberate, hand-tuned
   // evidence beats a generic classifier's guess, and is the ONLY way to
-  // reach the 5 labels the ML model structurally can't express.
+  // reach the labels the ML models structurally can't express.
   if (lexiconResult.matchedKeywords.length > 0) {
     return {
       primary: lexiconResult,
       lexicon: lexiconResult,
       hf: HF_DISABLED_RESULT,
       localOnnx: { signal: null, latencyMs: 0, errored: false },
+      xlmEmo: XLM_EMO_DISABLED_RESULT,
       selection: {
         engine: "lexicon",
         reason: `Lexicon matched keyword(s) [${lexiconResult.matchedKeywords.join(", ")}] → label=${lexiconResult.label}`,
+      },
+    };
+  }
+
+  // Non-English call: route the ML stage through the multilingual engine
+  // instead of the English-only Local ONNX model — see xlm-emo-detect.ts and
+  // its label-map's documented gap (no `distress` class). The English path
+  // below is completely untouched.
+  if (!english) {
+    const xlmEmoResult = await detectTextEmotionXLMEmo(text).catch((err): XlmEmoDetectResult => {
+      console.warn("[EmotionRouter] XLM-EMO detection threw:", err);
+      return { signal: null, latencyMs: 0, timedOut: false };
+    });
+
+    if (xlmEmoResult.signal) {
+      return {
+        primary: xlmEmoResult.signal,
+        lexicon: lexiconResult,
+        hf: HF_DISABLED_RESULT,
+        localOnnx: { signal: null, latencyMs: 0, errored: false },
+        xlmEmo: xlmEmoResult,
+        selection: {
+          engine: "xlm_emo",
+          reason: `Lexicon found no keyword match; language="${opts?.language}" routed to XLM-EMO, returned in ${xlmEmoResult.latencyMs.toFixed(1)}ms with label=${xlmEmoResult.signal.label} conf=${xlmEmoResult.signal.confidence.toFixed(3)}`,
+        },
+      };
+    }
+
+    return {
+      primary: lexiconResult,
+      lexicon: lexiconResult,
+      hf: HF_DISABLED_RESULT,
+      localOnnx: { signal: null, latencyMs: 0, errored: false },
+      xlmEmo: xlmEmoResult,
+      selection: {
+        engine: "lexicon",
+        reason: `Lexicon found no keyword match; language="${opts?.language}" XLM-EMO unavailable/timed out (likely no HF_TOKEN configured), using lexicon default`,
       },
     };
   }
@@ -400,6 +458,7 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
       lexicon: lexiconResult,
       hf: HF_DISABLED_RESULT,
       localOnnx: localOnnxResult,
+      xlmEmo: XLM_EMO_DISABLED_RESULT,
       selection: {
         engine: "local_onnx",
         reason: `Lexicon found no keyword match; Local ONNX returned in ${localOnnxResult.latencyMs.toFixed(1)}ms with label=${localOnnxResult.signal.label} conf=${localOnnxResult.signal.confidence.toFixed(3)}`,
@@ -419,6 +478,7 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
     lexicon: lexiconResult,
     hf: HF_DISABLED_RESULT,
     localOnnx: localOnnxResult,
+    xlmEmo: XLM_EMO_DISABLED_RESULT,
     selection: { engine: "lexicon", reason },
   };
 }
