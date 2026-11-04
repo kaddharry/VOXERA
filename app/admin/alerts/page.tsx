@@ -93,93 +93,94 @@ export default function AlertsPage() {
   }, [alerts]);
 
   return (
-    <div className="max-w-5xl mx-auto px-6 py-10">
-      <Link href="/admin" className="inline-flex items-center gap-2 text-[15px] font-semibold text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors mb-6">
-        <ArrowLeft className="w-4 h-4" /> Back to Overview
-      </Link>
-
-      <div className="flex items-center gap-3 mb-6">
-        <div className="p-2.5 bg-red-500/10 border border-red-500/25 rounded-xl text-red-500">
-          <ShieldAlert className="w-5 h-5" />
+    <div className="flex h-full flex-col font-body">
+      {/* Compact header, flush below the breadcrumb bar — same convention as
+          every other admin page (Patients, the Patient detail page). Alerts
+          isn't a sidebar item, so it keeps the back-link row the Patient
+          detail page also uses, directly above the title line. */}
+      <header className="flex flex-none flex-col gap-2 border-b border-[var(--color-border-subtle)] px-6 py-3 md:px-10">
+        <Link href="/admin" className="inline-flex w-fit items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)]">
+          <ArrowLeft className="w-3.5 h-3.5" /> Back to Overview
+        </Link>
+        <div className="flex items-center gap-2 min-w-0">
+          <ShieldAlert className="h-4 w-4 flex-none text-red-400" />
+          <span className="text-[13px] font-semibold text-[var(--color-text-primary)]">Alerts</span>
+          <span className="hidden truncate text-[12px] text-[var(--color-text-muted)] sm:inline">
+            · everything flagged for human review, grouped by whether the patient actually talked to the agent
+          </span>
         </div>
-        <div>
-          <h1 className="text-[22px] font-semibold text-[var(--color-text-primary)]">Alerts</h1>
-          <p className="text-[14.5px] text-[var(--color-text-muted)]">
-            Everything flagged for human review, grouped by whether the patient actually talked to the agent.
-          </p>
+      </header>
+
+      {/* Tab bar — same underline-tab pattern as the Patient detail page's,
+          directly below the header with its own border-b. */}
+      {alerts !== null && alerts.length > 0 && (
+        <div className="flex flex-none items-center gap-1 overflow-x-auto border-b border-[var(--color-border-subtle)] px-6 pt-2 md:px-10">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3.5 py-2.5 text-[13px] font-medium transition-colors ${
+                tab === t.id
+                  ? "border-[var(--color-accent-violet)] text-[var(--color-text-primary)]"
+                  : "border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
+              }`}
+            >
+              {t.label} · {counts[t.id]}
+            </button>
+          ))}
         </div>
-      </div>
+      )}
 
-      {alerts === null ? (
-        <div className="flex justify-center py-16"><Loader2 className="w-5 h-5 animate-spin text-[var(--color-text-muted)]" /></div>
-      ) : alerts.length === 0 ? (
-        <GlassCard className="p-10 text-center">
-          <CheckCircle2 className="w-8 h-8 mx-auto mb-3 text-emerald-500 opacity-70" />
-          <p className="text-[15px] text-[var(--color-text-muted)]">Nothing needs attention right now.</p>
-        </GlassCard>
-      ) : (
-        <>
-          {/* Tab bar — same pattern as app/admin/page.tsx's: flat buttons,
-              one click to a priority instead of scrolling past the others. */}
-          <div className="flex flex-wrap items-center gap-1 mb-6 -mx-1">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-semibold transition-colors ${
-                  tab === t.id
-                    ? "bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
-                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
-                }`}
-              >
-                {t.label} · {counts[t.id]}
-              </button>
-            ))}
-          </div>
-
-          {tab === "all" && (
-            <div className="flex flex-col gap-10">
-              <section>
-                <h2 className="text-[16px] font-semibold text-[var(--color-text-primary)] mb-4">Patient picked up</h2>
-                <div className="flex flex-col gap-6">
-                  {PRIORITY_ORDER.map((p) => {
-                    const items = pickedUpByPriority.get(p) ?? [];
-                    if (items.length === 0) return null;
-                    return (
-                      <div key={p}>
-                        <h3
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12.5px] font-mono font-bold uppercase tracking-wider mb-3 text-black"
-                          style={{ backgroundColor: PRIORITY_COLOR[p] }}
-                        >
-                          {PRIORITY_LABEL[p]} · {items.length}
-                        </h3>
-                        <div className="flex flex-col gap-2.5">
-                          {items.map((a) => (
-                            <AlertRow key={a.id} alert={a} busy={busyId === a.id} onResolve={() => resolve(a.id)} />
-                          ))}
-                        </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-6 md:px-10">
+        {alerts === null ? (
+          <div className="flex justify-center py-16"><Loader2 className="w-5 h-5 animate-spin text-[var(--color-text-muted)]" /></div>
+        ) : alerts.length === 0 ? (
+          <GlassCard className="p-10 text-center">
+            <CheckCircle2 className="w-8 h-8 mx-auto mb-3 text-emerald-500 opacity-70" />
+            <p className="text-[15px] text-[var(--color-text-muted)]">Nothing needs attention right now.</p>
+          </GlassCard>
+        ) : tab === "all" ? (
+          <div className="flex flex-col gap-10">
+            <section>
+              <h2 className="text-[16px] font-semibold text-[var(--color-text-primary)] mb-4">Patient picked up</h2>
+              <div className="flex flex-col gap-6">
+                {PRIORITY_ORDER.map((p) => {
+                  const items = pickedUpByPriority.get(p) ?? [];
+                  if (items.length === 0) return null;
+                  return (
+                    <div key={p}>
+                      <h3
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12.5px] font-mono font-bold uppercase tracking-wider mb-3 text-black"
+                        style={{ backgroundColor: PRIORITY_COLOR[p] }}
+                      >
+                        {PRIORITY_LABEL[p]} · {items.length}
+                      </h3>
+                      <div className="flex flex-col gap-2.5">
+                        {items.map((a) => (
+                          <AlertRow key={a.id} alert={a} busy={busyId === a.id} onResolve={() => resolve(a.id)} />
+                        ))}
                       </div>
-                    );
-                  })}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            {notPickedUp.length > 0 && (
+              <section>
+                <h2 className="text-[16px] font-semibold text-[var(--color-text-primary)] mb-4 flex items-center gap-2">
+                  <PhoneOff className="w-4 h-4 text-[var(--color-text-muted)]" /> Patient didn&rsquo;t pick up · {notPickedUp.length}
+                </h2>
+                <div className="flex flex-col gap-2.5">
+                  {notPickedUp.map((a) => (
+                    <AlertRow key={a.id} alert={a} busy={busyId === a.id} onResolve={() => resolve(a.id)} />
+                  ))}
                 </div>
               </section>
-
-              {notPickedUp.length > 0 && (
-                <section>
-                  <h2 className="text-[16px] font-semibold text-[var(--color-text-primary)] mb-4 flex items-center gap-2">
-                    <PhoneOff className="w-4 h-4 text-[var(--color-text-muted)]" /> Patient didn&rsquo;t pick up · {notPickedUp.length}
-                  </h2>
-                  <div className="flex flex-col gap-2.5">
-                    {notPickedUp.map((a) => (
-                      <AlertRow key={a.id} alert={a} busy={busyId === a.id} onResolve={() => resolve(a.id)} />
-                    ))}
-                  </div>
-                </section>
-              )}
-            </div>
-          )}
-
-          {tab !== "all" && (() => {
+            )}
+          </div>
+        ) : (
+          (() => {
             const items = tab === "missed" ? notPickedUp : pickedUpByPriority.get(tab) ?? [];
             return items.length === 0 ? (
               <GlassCard className="p-10 text-center">
@@ -193,9 +194,9 @@ export default function AlertsPage() {
                 ))}
               </div>
             );
-          })()}
-        </>
-      )}
+          })()
+        )}
+      </div>
     </div>
   );
 }
