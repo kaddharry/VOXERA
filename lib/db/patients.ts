@@ -8,6 +8,9 @@ import { nanoid } from "nanoid";
  * indirection, patients don't need a separate tenant-relationship lookup.
  */
 
+export const RISK_LEVELS = ["low", "medium", "high", "critical"] as const;
+export type RiskLevel = (typeof RISK_LEVELS)[number];
+
 export interface PatientRecord {
   id: string;
   clientId: string;
@@ -25,6 +28,14 @@ export interface PatientRecord {
   doNotContact: boolean;
   doNotContactAt: number | null;
   doNotContactReason: string | null;
+  /** Free-text diagnosis/category label (migration_v27.sql) — e.g. "Post-Op
+   * Recovery", "Type 2 Diabetes". Deliberately not a fixed taxonomy; the
+   * Patients table derives its filter options from whatever values are
+   * actually in use. */
+  condition: string | null;
+  /** Drives the color-coded badge everywhere a patient shows up
+   * (migration_v27.sql). */
+  riskLevel: RiskLevel;
 }
 
 export interface PatientFields {
@@ -33,10 +44,12 @@ export interface PatientFields {
   notes?: string;
   assignedAgentId?: string | null;
   nextCheckInAt?: number | null;
+  condition?: string | null;
+  riskLevel?: RiskLevel;
 }
 
 const PATIENT_COLUMNS =
-  'id, "clientId", name, phone, notes, "assignedAgentId", "nextCheckInAt", "createdAt", "doNotContact", "doNotContactAt", "doNotContactReason"';
+  'id, "clientId", name, phone, notes, "assignedAgentId", "nextCheckInAt", "createdAt", "doNotContact", "doNotContactAt", "doNotContactReason", "condition", "riskLevel"';
 
 export async function listPatients(db: SupabaseClient, clientId: string): Promise<PatientRecord[]> {
   const { data, error } = await db
@@ -44,7 +57,14 @@ export async function listPatients(db: SupabaseClient, clientId: string): Promis
     .select(PATIENT_COLUMNS)
     .eq("clientId", clientId)
     .order("createdAt", { ascending: false });
-  if (error || !data) return [];
+  if (error) {
+    // Previously swallowed silently — a schema error (e.g. migration_v27's
+    // columns not yet applied, or PostgREST's schema cache not refreshed
+    // after it) looked identical to "no patients" with nothing logged.
+    console.error("[lib/db/patients] listPatients failed:", error.message);
+    return [];
+  }
+  if (!data) return [];
   return data as unknown as PatientRecord[];
 }
 
@@ -55,7 +75,11 @@ export async function getPatient(db: SupabaseClient, patientId: string, clientId
     .eq("id", patientId)
     .eq("clientId", clientId)
     .single();
-  if (error || !data) return null;
+  if (error) {
+    console.error("[lib/db/patients] getPatient failed:", error.message);
+    return null;
+  }
+  if (!data) return null;
   return data as unknown as PatientRecord;
 }
 
@@ -80,6 +104,8 @@ export async function createPatient(db: SupabaseClient, clientId: string, fields
       notes: fields.notes ?? "",
       assignedAgentId: fields.assignedAgentId ?? null,
       nextCheckInAt: fields.nextCheckInAt ?? null,
+      condition: fields.condition ?? null,
+      riskLevel: fields.riskLevel ?? "low",
       createdAt: Date.now(),
     })
     .select(PATIENT_COLUMNS)

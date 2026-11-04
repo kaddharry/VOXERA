@@ -27,6 +27,30 @@
   --font-mono:    "DM Mono", "JetBrains Mono", monospace;
 }
 
+/* shadcn-convention tokens (bg-background, text-foreground, bg-card, etc.) —
+   this codebase otherwise names its own tokens (--color-bg-..., --color-text-...),
+   so nothing previously read these. Added for components authored against
+   the shadcn/ui convention (e.g. TeamLanyardRail); mapped to the landing
+   page's dark palette (--lp-*) so such components sit on the black landing
+   surface instead of the admin's light default. The five --color-chart-*
+   values are a deliberate clinical-triage ramp (critical → routine), not a
+   generic categorical palette — used to color-code call urgency. */
+@theme {
+  --color-background: #000000;
+  --color-foreground: #FFFFFF;
+  --color-card: #141414;
+  --color-card-foreground: #FFFFFF;
+  --color-muted: #171717;
+  --color-muted-foreground: #ABABAB;
+  --color-border: rgba(255, 255, 255, 0.12);
+  --color-ring: #EF5A00;
+  --color-chart-1: #EF4444;
+  --color-chart-2: #F97316;
+  --color-chart-3: #EAB308;
+  --color-chart-4: #3B82F6;
+  --color-chart-5: #10B981;
+}
+
 /*
  * This entire app is a single, deliberately light-only theme — there is no
  * dark stylesheet. Without this, browsers on a dark-mode OS render native
@@ -277,6 +301,13 @@ body:has(.landing) {
   --chart-3: #9CA3AF;
   --chart-4: #52525B;
   --chart-5: #E5E7EB;
+  /* Patient risk tiers (migration_v27.sql) — deliberately separate from
+     --chart-* above, which is an unrelated dashboard-chart palette; a
+     future change to one must never silently recolor the other. */
+  --risk-low: #10B981;
+  --risk-medium: #EAB308;
+  --risk-high: #F97316;
+  --risk-critical: #EF4444;
   --sidebar: #0D0D0D;
   /* The site-wide serif "display" font (Lora) is a landing-page brand
      choice that reads as a mismatch against this flat-black instrument
@@ -607,7 +638,7 @@ body {
   flex-shrink: 0;
   margin-right: 18px;
 }
-.vxl-logo-mark { width: 52px; height: 40px; object-fit: contain; display: block; }
+.vxl-logo-mark { width: 36px; height: 28px; object-fit: contain; display: block; }
 
 .vxl-nav-links { display: flex; align-items: center; gap: 2px; }
 .vxl-nav-link {
