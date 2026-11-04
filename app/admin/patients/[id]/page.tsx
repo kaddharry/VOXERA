@@ -251,7 +251,7 @@ export default function PatientProfilePage() {
             className={`flex-none rounded-lg border px-3 py-1.5 text-[12.5px] font-semibold transition-colors ${
               patient.doNotContact
                 ? "bg-red-500/15 border-red-500/30 text-red-400 hover:bg-red-500/25"
-                : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                : "bg-[var(--color-bg-surface)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
             }`}
           >
             {patient.doNotContact ? "Do Not Contact — Clear" : "Mark Do Not Contact"}
@@ -371,7 +371,7 @@ export default function PatientProfilePage() {
           ) : (
             <div className="flex flex-col gap-2">
               {documents.map((doc) => (
-                <div key={doc.id} className="flex items-start justify-between gap-3 p-3.5 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)]">
+                <div key={doc.id} className="flex items-start justify-between gap-3 p-3.5 rounded-lg bg-black/30 border border-[var(--color-border-subtle)]">
                   <div className="min-w-0">
                     <div className="text-[14.5px] font-semibold text-[var(--color-text-primary)] flex items-center gap-1.5">
                       <FileText className="w-3.5 h-3.5 flex-none" /> {doc.filename}
@@ -451,7 +451,7 @@ export default function PatientProfilePage() {
           ) : (
             <div className="flex flex-col gap-2">
               {alerts.map((a) => (
-                <div key={a.id} className={`flex items-center justify-between gap-3 p-3.5 rounded-lg border ${a.status === "open" ? "bg-red-500/5 border-red-500/20" : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)]"}`}>
+                <div key={a.id} className={`flex items-center justify-between gap-3 p-3.5 rounded-lg border ${a.status === "open" ? "bg-red-500/5 border-red-500/20" : "bg-black/30 border-[var(--color-border-subtle)]"}`}>
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span
@@ -569,7 +569,7 @@ function TimelineRow({ event }: { event: TimelineEvent }) {
   if (event.kind === "call") {
     const c = event.call;
     return (
-      <div className={`p-3.5 rounded-lg border ${c.status === "completed" ? "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)]" : "bg-[var(--color-bg-elevated)]/50 border-dashed border-[var(--color-border-subtle)]"}`}>
+      <div className={`p-3.5 rounded-lg border ${c.status === "completed" ? "bg-black/30 border-[var(--color-border-subtle)]" : "bg-black/15 border-dashed border-[var(--color-border-subtle)]"}`}>
         <div className="flex items-center justify-between gap-3 mb-1.5">
           <span className="text-[14.5px] text-[var(--color-text-secondary)] flex items-center gap-1.5">
             {c.status === "completed" ? <Phone className="w-3.5 h-3.5 text-[var(--risk-low)]" /> : <PhoneOff className="w-3.5 h-3.5 text-[var(--color-text-muted)]" />}

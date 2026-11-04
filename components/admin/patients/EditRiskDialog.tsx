@@ -65,7 +65,7 @@ export function EditRiskDialog({
         <>
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+            className="px-4 py-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
           >
             Cancel
           </button>
@@ -89,7 +89,7 @@ export function EditRiskDialog({
             value={condition}
             onChange={(e) => setCondition(e.target.value)}
             placeholder="e.g. Post-Op Recovery, Type 2 Diabetes"
-            className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+            className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
           />
         </div>
         <div>

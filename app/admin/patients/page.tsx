@@ -391,7 +391,7 @@ export default function PatientsPage() {
             <>
               <button
                 onClick={() => setShowAdd(false)}
-                className="px-4 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+                className="px-4 py-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
               >
                 Cancel
               </button>
@@ -413,7 +413,7 @@ export default function PatientsPage() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Alex Rivera"
-                  className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                  className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
                 />
               </div>
               <div>
@@ -431,7 +431,7 @@ export default function PatientsPage() {
                   value={condition}
                   onChange={(e) => setCondition(e.target.value)}
                   placeholder="e.g. Post-Op Recovery"
-                  className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                  className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
                 />
               </div>
               <div>
@@ -455,7 +455,7 @@ export default function PatientsPage() {
               <label className="text-[11px] font-mono uppercase tracking-widest text-[var(--color-text-muted)] mb-1.5 block">
                 Knowledge base (PDF or text — surgery details, red-flag symptoms, anything the agent should know)
               </label>
-              <label className="flex items-center gap-2.5 px-3.5 py-3 rounded-lg border border-dashed border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)] cursor-pointer hover:border-[var(--color-accent-violet)]/40 transition-colors">
+              <label className="flex items-center gap-2.5 px-3.5 py-3 rounded-lg border border-dashed border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] cursor-pointer hover:border-[var(--color-accent-violet)]/40 transition-colors">
                 <Upload className="w-4 h-4 text-[var(--color-text-muted)] flex-none" />
                 <span className="text-[12.5px] text-[var(--color-text-muted)] flex-1 min-w-0 truncate">
                   {file ? file.name : "Click to upload a PDF or text file"}
@@ -478,7 +478,7 @@ export default function PatientsPage() {
                 onChange={(e) => setNotes(e.target.value)}
                 rows={3}
                 placeholder="Anything not in the document..."
-                className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
               />
             </div>
 
@@ -489,7 +489,7 @@ export default function PatientsPage() {
               <select
                 value={assignedAgentId}
                 onChange={(e) => setAssignedAgentId(e.target.value)}
-                className="w-full sm:w-64 bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                className="w-full sm:w-64 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
               >
                 <option value="">No default — pick each time</option>
                 {agents.map((a) => (
@@ -504,7 +504,7 @@ export default function PatientsPage() {
         {patients === null ? (
           <div className="flex flex-col gap-3">
             {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-[52px] rounded-xl bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] animate-pulse" />
+              <div key={i} className="h-[52px] rounded-xl bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] animate-pulse" />
             ))}
           </div>
         ) : patients.length === 0 ? (
@@ -529,10 +529,10 @@ export default function PatientsPage() {
           <>
             {/* Stat strip — answers "who needs attention" before scrolling the table */}
             <div className="grid grid-cols-2 gap-3 mb-5 lg:grid-cols-4">
-              <StatCard title="Total Patients" value={stats.total} icon={Users} />
-              <StatCard title="High / Critical Risk" value={stats.highRisk} icon={ShieldAlert} color={stats.highRisk > 0 ? "var(--risk-high)" : undefined} />
-              <StatCard title="Overdue Follow-ups" value={stats.overdue} icon={CalendarClock} color={stats.overdue > 0 ? "var(--risk-critical)" : undefined} />
-              <StatCard title="Open Alerts" value={stats.openAlerts} icon={AlertTriangle} color={stats.openAlerts > 0 ? "var(--risk-critical)" : undefined} />
+              <StatCard title="Total Patients" value={stats.total} icon={Users} accent="var(--color-accent-violet)" />
+              <StatCard title="High / Critical Risk" value={stats.highRisk} icon={ShieldAlert} accent="var(--risk-high)" urgent={stats.highRisk > 0} />
+              <StatCard title="Overdue Follow-ups" value={stats.overdue} icon={CalendarClock} accent="var(--risk-critical)" urgent={stats.overdue > 0} />
+              <StatCard title="Open Alerts" value={stats.openAlerts} icon={AlertTriangle} accent="var(--risk-critical)" urgent={stats.openAlerts > 0} />
             </div>
 
             {/* Search + filters */}
@@ -543,13 +543,13 @@ export default function PatientsPage() {
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search by name, phone, or condition…"
-                  className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg pl-9 pr-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                  className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg pl-9 pr-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
                 />
               </div>
               <select
                 value={riskFilter}
                 onChange={(e) => setRiskFilter(e.target.value as "all" | RiskLevel)}
-                className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                className="bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
               >
                 <option value="all">All risk levels</option>
                 {RISK_LEVELS.map((level) => (
@@ -561,7 +561,7 @@ export default function PatientsPage() {
                 className={`flex items-center justify-center gap-1.5 whitespace-nowrap px-3 py-2 rounded-lg border text-[12.5px] font-semibold transition-all ${
                   onlyWithAlerts
                     ? "bg-red-500/15 border-red-500/30 text-red-400"
-                    : "bg-[var(--color-bg-elevated)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+                    : "bg-[var(--color-bg-surface)] border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
                 }`}
               >
                 <AlertTriangle className="w-3.5 h-3.5" /> Open alerts only
@@ -569,7 +569,7 @@ export default function PatientsPage() {
             </div>
 
             {/* Table */}
-            <div className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl overflow-hidden">
+            <div className="bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-2xl overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-[13px]">
                   <thead className="bg-[var(--color-bg-surface)] border-b border-[var(--color-border-subtle)] text-[10.5px] font-bold uppercase tracking-widest text-[var(--color-text-muted)]">
@@ -592,7 +592,7 @@ export default function PatientsPage() {
                       const overdue = !!nextTask && nextTask.nextAttemptAt < Date.now();
                       const alertCount = alertsByPatient[p.id]?.length ?? 0;
                       return (
-                        <tr key={p.id} className="hover:bg-[var(--color-bg-surface)] transition-colors">
+                        <tr key={p.id} className="hover:bg-white/[0.03] transition-colors">
                           <td className="px-4 py-3">
                             <Link href={`/admin/patients/${p.id}`} className="flex items-center gap-2.5 min-w-0 group">
                               <div
@@ -643,7 +643,10 @@ export default function PatientsPage() {
                           </td>
                           <td className="px-4 py-3">
                             {alertCount > 0 ? (
-                              <span className="inline-flex items-center justify-center min-w-[22px] px-1.5 py-0.5 rounded-full bg-red-500/15 border border-red-500/30 text-red-400 text-[11px] font-bold font-mono">
+                              <span
+                                className="inline-flex items-center justify-center min-w-[24px] px-2 py-0.5 rounded-full text-[11px] font-bold font-mono text-black"
+                                style={{ backgroundColor: "var(--risk-critical)" }}
+                              >
                                 {alertCount}
                               </span>
                             ) : (
@@ -709,7 +712,7 @@ export default function PatientsPage() {
           <>
             <button
               onClick={() => setCallTarget(null)}
-              className="px-4 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+              className="px-4 py-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] text-[13px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
             >
               Cancel
             </button>
@@ -729,7 +732,7 @@ export default function PatientsPage() {
           id="call-agent"
           value={callAgentId}
           onChange={(e) => setCallAgentId(e.target.value)}
-          className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+          className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
         >
           <option value="">Select an agent…</option>
           {agents.map((a) => (
@@ -749,7 +752,7 @@ export default function PatientsPage() {
           <>
             <button
               onClick={() => setScheduleTarget(null)}
-              className="px-4 py-2.5 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] text-[14px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+              className="px-4 py-2.5 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] text-[14px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
             >
               Cancel
             </button>
@@ -766,7 +769,7 @@ export default function PatientsPage() {
       >
         {scheduleTarget && (
           <>
-            <div className="flex gap-1.5 mb-4 p-1 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)]">
+            <div className="flex gap-1.5 mb-4 p-1 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)]">
               <button
                 onClick={() => setScheduleMode("range")}
                 className={`flex-1 px-3 py-1.5 rounded-md text-[13px] font-semibold transition-colors ${scheduleMode === "range" ? "bg-[var(--color-accent-violet)] text-white" : "text-[var(--color-text-secondary)]"}`}
@@ -795,7 +798,7 @@ export default function PatientsPage() {
                     <select
                       value={selectedProgrammeId}
                       onChange={(e) => setSelectedProgrammeId(e.target.value)}
-                      className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
                     >
                       <option value="">Select a programme…</option>
                       {programmes.map((p) => (
@@ -816,7 +819,7 @@ export default function PatientsPage() {
                 <select
                   value={scheduleAgentId}
                   onChange={(e) => setScheduleAgentId(e.target.value)}
-                  className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50 mb-4"
+                  className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50 mb-4"
                 >
                   <option value="">Use programme/patient default…</option>
                   {agents.map((a) => (
@@ -841,7 +844,7 @@ export default function PatientsPage() {
                 <select
                   value={scheduleAgentId}
                   onChange={(e) => setScheduleAgentId(e.target.value)}
-                  className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50 mb-1"
+                  className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50 mb-1"
                 >
                   <option value="">Select an agent…</option>
                   {agents.map((a) => (
@@ -863,7 +866,7 @@ export default function PatientsPage() {
                       max={10}
                       value={scheduleMaxAttempts}
                       onChange={(e) => setScheduleMaxAttempts(Number(e.target.value))}
-                      className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
                     />
                   </div>
                   <div>
@@ -876,7 +879,7 @@ export default function PatientsPage() {
                       max={1440}
                       value={scheduleRetryDelay}
                       onChange={(e) => setScheduleRetryDelay(Number(e.target.value))}
-                      className="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+                      className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2.5 text-[14.5px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
                     />
                   </div>
                 </div>
@@ -903,15 +906,47 @@ export default function PatientsPage() {
   );
 }
 
-function StatCard({ title, value, icon: Icon, color }: { title: string; value: number; icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>; color?: string }) {
+function StatCard({
+  title,
+  value,
+  icon: Icon,
+  accent,
+  urgent = false,
+}: {
+  title: string;
+  value: number;
+  icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>;
+  accent: string;
+  /** Renders as a bold, fully-saturated color block instead of a calm dark
+   * card — reserved for counts that actually need attention right now
+   * (a risk/alert/overdue stat sitting above zero), so it reads as a real
+   * signal rather than decoration. */
+  urgent?: boolean;
+}) {
+  if (urgent) {
+    return (
+      <div
+        className="rounded-xl p-4 flex items-center gap-3 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.5)]"
+        style={{ background: `linear-gradient(135deg, ${accent}, color-mix(in oklab, ${accent} 55%, black))` }}
+      >
+        <div className="p-2.5 rounded-lg bg-black/15 flex-none">
+          <Icon className="w-4 h-4 text-black" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-[10.5px] font-bold uppercase tracking-widest text-black/55 truncate">{title}</p>
+          <p className="text-[24px] font-extrabold text-black leading-none">{value}</p>
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className="bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-xl p-4 flex items-center gap-3">
-      <div className="p-2 rounded-lg bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] flex-none">
-        <Icon className="w-4 h-4" style={{ color: color ?? "var(--color-accent-cyan)" }} />
+    <div className="rounded-xl p-4 flex items-center gap-3 border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)]">
+      <div className="p-2.5 rounded-lg flex-none" style={{ backgroundColor: `color-mix(in oklab, ${accent} 20%, transparent)` }}>
+        <Icon className="w-4 h-4" style={{ color: accent }} />
       </div>
       <div className="min-w-0">
         <p className="text-[10.5px] font-bold uppercase tracking-widest text-[var(--color-text-muted)] truncate">{title}</p>
-        <p className="text-[20px] font-bold" style={{ color: color ?? "var(--color-text-primary)" }}>{value}</p>
+        <p className="text-[22px] font-bold text-[var(--color-text-primary)] leading-none">{value}</p>
       </div>
     </div>
   );
