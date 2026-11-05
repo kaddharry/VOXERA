@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import WebSocket from "ws";
 import { resolveVoiceModel, getClientVoiceSettings } from "../deepgram/tts";
-import { handleTurn, recordInterruptedReply } from "../agent/orchestrator";
+import { announceGreeting, handleTurn, recordInterruptedReply } from "../agent/orchestrator";
 import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "../emotion/tts-params";
 import type { EmotionLabel, PolicyDirectives } from "../types";
 import { supabase } from "../db/supabase";
@@ -208,6 +208,12 @@ export class TelephonyStreamHandler {
   private speechProvider: SpeechProvider = "deepgram";
   private language: string = "en-IN";
   private ttsEngine: TtsEngine = new DeepgramTtsAdapter();
+  // Agent Builder's "greeting" field (lib/db/agents.ts's AgentRecord),
+  // resolved alongside voice/provider in setupVoiceForCall() — spoken once,
+  // proactively, as soon as voice setup resolves (see the "start" handler
+  // below), instead of the agent only ever responding once the caller
+  // speaks first.
+  private greeting: string | null = null;
 
   constructor(opts: StreamHandlerOptions) {
     this.ws = opts.ws;
@@ -310,6 +316,7 @@ export class TelephonyStreamHandler {
       if (agentInfo?.voice_persona) {
         this.voiceModel = resolveVoiceModel(agentInfo.voice_persona);
       }
+      this.greeting = agentInfo?.greeting ?? null;
       if (voiceSettings?.provider === "elevenlabs" && voiceSettings.voiceId) {
         // Tenant's custom cloned ElevenLabs voice takes priority over any
         // agent-level speech_provider choice (Deepgram/Gnani) — unchanged
@@ -398,6 +405,42 @@ export class TelephonyStreamHandler {
     return { stream: this.currentSpeakStream, ready: this.speakStreamReadyPromise! };
   }
 
+  /**
+   * Speaks the agent's configured opening line (Agent Builder's `greeting`
+   * field) the moment voice setup resolves, instead of the agent only ever
+   * responding once the caller speaks first — kicked off from the "start"
+   * handler below, right alongside the existing eager ensureSpeakStream()
+   * call, so it shares the exact same resolved voice/provider a normal
+   * reply this call would use.
+   */
+  private async speakGreeting(): Promise<void> {
+    const text = this.greeting?.trim();
+    if (!text || this.hasEnded) return;
+
+    void announceGreeting({ sessionId: this.sessionId, userId: this.userId, clientId: this.clientId, text });
+
+    const myGeneration = this.generation;
+    if (this.useBufferedTts) {
+      await this.speakBuffered(text);
+      return;
+    }
+
+    const { stream: speakStream, ready: speakStreamReady } = this.ensureSpeakStream();
+    speakStream.setAudioHandler((audioChunk) => {
+      if (myGeneration !== this.generation) return; // barge-in happened mid-greeting
+      this.sendAudioChunkToTwilio(audioChunk);
+    });
+    this.isSpeaking = true;
+    try {
+      await speakStreamReady;
+      if (myGeneration !== this.generation) return;
+      speakStream.sendText(text);
+      speakStream.flush();
+    } finally {
+      if (myGeneration === this.generation) this.isSpeaking = false;
+    }
+  }
+
   private onTwilioMessage(raw: Buffer) {
     let msg: Record<string, unknown>;
     try {
@@ -452,6 +495,7 @@ export class TelephonyStreamHandler {
         // handshake doesn't sit on the first turn's critical path either.
         this.voiceSetupPromise = this.setupVoiceForCall().then(() => {
           if (!this.useBufferedTts) this.ensureSpeakStream();
+          void this.speakGreeting().catch((err) => console.error(`[TelephonyStream] speakGreeting failed for ${this.callSid}:`, err));
         });
         break;
       }
@@ -576,6 +620,7 @@ export class TelephonyStreamHandler {
         clientId: this.clientId,
         agentId: this.agentId,
         patientId: this.patientId,
+        callerNumber: this.callerNumber,
         transcript: text,
         language: this.language,
         sttConfidence: 0.9,
