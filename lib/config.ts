@@ -82,21 +82,28 @@ export const CONFIG = {
     // problem.
     ttsModel: "aura-2-asteria-en", // Default: female, friendly
     language: "en",
-    // BUG-E19: OFF by default — deliberately not the default live behavior.
-    // Live STT (lib/deepgram/live.ts) is hardcoded to model "nova-2" +
-    // language "en" for every call. Per Deepgram's own docs (checked live,
-    // 2026-11-05): Nova-2's `language=multi` code-switching only covers
-    // Spanish+English — Hindi+English code-switching needs `model=nova-3`
-    // with `language=multi` plus `language_hint=hi` and `language_hint=en`.
-    // Flipping this on changes the STT model/params for EVERY call, not
-    // just Hindi-speaking patients, so it needs real Hindi/Hinglish call
-    // audio testing and a Deepgram pricing check for nova-3 vs nova-2
-    // before enabling in production — not something to default on blind.
-    // Also note: Deepgram's documented output for Hindi on nova-2/nova-3 is
-    // Devanagari script, NOT romanized text (`hi-Latn` only exists on the
-    // legacy `nova`/`base` models) — lib/emotion/lexicon.ts's Hinglish
-    // entries (BUG-E18) are Latin-script and won't match Devanagari output;
-    // see the separate Devanagari entries added alongside them for that.
+    // BUG-E19 (resolved 2026-11-05): this USED to be a single global switch
+    // that hardcoded every Deepgram-provider call to model "nova-2" +
+    // language "en", full stop — a Hindi/Hinglish-configured tenant/agent
+    // still got English-only STT, which could badly mistranscribe (or fail
+    // to transcribe at all) non-English speech. lib/deepgram/live.ts now
+    // decides this PER CALL from the resolved speech language
+    // (DeepgramLiveOptions.language — see its doc) instead: any call
+    // actually configured for Hindi/Hinglish/auto/another Indian language
+    // gets nova-3 + language=multi + language_hint=hi/en automatically, and
+    // an English-configured call is completely unaffected (same nova-2/en
+    // as before, no latency/cost change). This flag now only matters as the
+    // fallback default for a caller that doesn't pass `language` at all.
+    // Per Deepgram's own docs (checked live, 2026-11-05): nova-2's
+    // `language=multi` code-switching only covers Spanish+English — Hindi+
+    // English code-switching needs `model=nova-3` with `language=multi`
+    // plus `language_hint=hi` and `language_hint=en`, which is what the
+    // per-call path above now sends. Also note: Deepgram's documented
+    // output for Hindi on nova-2/nova-3 is Devanagari script, NOT romanized
+    // text (`hi-Latn` only exists on the legacy `nova`/`base` models) —
+    // lib/emotion/lexicon.ts's Hinglish entries (BUG-E18) are Latin-script
+    // and won't match Devanagari output; see the separate Devanagari
+    // entries added alongside them for that.
     sttHindiCodeSwitching: false,
     // FR-25: Available voice personas for businesses to choose from
     voicePersonas: {
