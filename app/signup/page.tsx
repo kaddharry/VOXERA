@@ -23,11 +23,11 @@ export default async function SignupPage(props: {
   }
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-[var(--color-bg-base)] font-body text-[var(--color-text-primary)]">
+    <div className="voxera-admin-dark flex items-center justify-center min-h-screen bg-[var(--color-bg-base)] font-body text-[var(--color-text-primary)]">
       {/* Background ambient glow */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-[var(--color-accent-violet)] rounded-full blur-[120px] opacity-10 pointer-events-none" />
 
-      <div className="relative w-full max-w-md p-8 sm:p-10 space-y-8 bg-[var(--color-bg-elevated)] rounded-2xl shadow-[0_0_40px_var(--color-accent-glow)] border border-[var(--color-border-subtle)]">
+      <div className="relative w-full max-w-md p-8 sm:p-10 space-y-8 bg-[var(--color-bg-elevated)] rounded-xl shadow-xl border border-[var(--color-border-subtle)]">
         <div className="text-center">
           <Link href="/" className="inline-block font-display font-extrabold text-3xl tracking-tighter text-gradient">
             VOXERA
@@ -71,7 +71,7 @@ export default async function SignupPage(props: {
 
           <button
             type="submit"
-            className="group flex items-center justify-center gap-2 w-full px-4 py-3 text-[14px] font-semibold text-white btn-gradient rounded-xl transition-all hover:scale-[1.02] shadow-[0_0_15px_var(--color-accent-glow)]"
+            className="group flex items-center justify-center gap-2 w-full px-4 py-3 text-[14px] font-semibold text-white btn-gradient rounded-xl"
           >
             Create workspace
             <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />

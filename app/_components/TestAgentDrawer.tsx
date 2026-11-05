@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { Radio, X, Phone, PhoneOff, Sparkles, ChevronDown, Database, ListTree, AlertTriangle, CheckCircle2, Mic, MicOff, Volume2, VolumeX, Activity, LineChart, Zap, Shuffle, ClipboardList } from "lucide-react";
+import { Radio, X, Phone, PhoneOff, ChevronDown, Database, ListTree, AlertTriangle, CheckCircle2, Mic, MicOff, Volume2, VolumeX, Activity, LineChart, Zap, Shuffle, ClipboardList } from "lucide-react";
 import { getMicSupport, describeMicError } from "./micUtils";
 import { useVoiceActivityDetection } from "./useVoiceActivityDetection";
+import { AgentVoiceBall, type AgentVoiceBallHandle } from "./AgentVoiceBall";
 import {
   EngineDiagnosticPanel,
   EmotionTimeline,
@@ -401,7 +402,7 @@ export function TestAgentDrawer() {
   // node that's scheduled but hasn't finished playing yet.
   const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextPlayTimeRef = useRef(0);
-  const orbRef = useRef<HTMLDivElement | null>(null);
+  const orbRef = useRef<AgentVoiceBallHandle | null>(null);
   const rafRef = useRef<number | null>(null);
   const statusRef = useRef<CallStatus>("idle");
   const active = useRef(false);
@@ -471,9 +472,6 @@ export function TestAgentDrawer() {
 
   useEffect(() => {
     statusRef.current = status;
-    if (orbRef.current) {
-      orbRef.current.style.setProperty("--hue", status === "speaking" ? "var(--console-cyan)" : "var(--console-violet)");
-    }
   }, [status]);
 
   // One persistent AudioContext for streamed TTS playback — each reply
@@ -532,7 +530,7 @@ export function TestAgentDrawer() {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
-    orbRef.current?.style.setProperty("--level", "0");
+    orbRef.current?.setLevel(0);
   }, []);
 
   const startLevelLoop = useCallback(() => {
@@ -542,7 +540,7 @@ export function TestAgentDrawer() {
       const analyser = statusRef.current === "speaking" ? playbackAnalyserRef.current : micAnalyserRef.current;
       const buf = statusRef.current === "speaking" ? playbackBuf : micBuf;
       const level = analyser ? readLevel(analyser, buf) : 0;
-      orbRef.current?.style.setProperty("--level", level.toFixed(3));
+      orbRef.current?.setLevel(level);
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -872,11 +870,7 @@ export function TestAgentDrawer() {
         {/* Pinned top bar — orb, status, call control. Compact and horizontal
             so it never eats into the conversation/analytics split below. */}
         <div className="flex-none border-b border-[var(--console-border)] px-5 py-3.5 flex items-center gap-4">
-          <div ref={orbRef} className="voxera-orb !w-14 !h-14 flex-none">
-            <div className="voxera-orb-core !w-8 !h-8">
-              <Sparkles className="w-3.5 h-3.5" />
-            </div>
-          </div>
+          <AgentVoiceBall ref={orbRef} size={56} active={status === "listening" || status === "speaking"} />
 
           <div className="min-w-0">
             <div className="text-[12px] font-bold text-[var(--console-text)] leading-tight">Live Test Call</div>
@@ -1120,11 +1114,7 @@ export function TestAgentDrawer() {
           <div className="flex-1 min-w-0 min-h-0 overflow-y-auto px-5 py-4 flex flex-col gap-3">
             {turns.length === 0 && !interim ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-7 px-6 py-10 text-center">
-                <div className="voxera-orb is-idle !h-20 !w-20 flex-none">
-                  <div className="voxera-orb-core !h-11 !w-11">
-                    <Sparkles className="h-5 w-5" />
-                  </div>
-                </div>
+                <AgentVoiceBall size={80} active={false} />
 
                 <div>
                   <h3 className="text-[16px] font-bold text-[var(--console-text)]">Ready when you are</h3>

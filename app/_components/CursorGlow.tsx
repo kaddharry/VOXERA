@@ -22,7 +22,7 @@ export function CursorGlow() {
       aria-hidden="true"
       className="pointer-events-none fixed top-0 left-0 w-[400px] h-[400px] z-0 opacity-[0.05] will-change-transform"
       style={{
-        background: "radial-gradient(circle, var(--color-accent-violet) 0%, transparent 70%)",
+        background: "radial-gradient(circle, var(--vx-indigo, var(--color-accent-violet)) 0%, transparent 70%)",
         filter: "blur(10px)",
       }}
     />

@@ -106,6 +106,12 @@ export default function Hero() {
             transition: "opacity 0.9s cubic-bezier(0.22, 1, 0.36, 1) 0.2s, transform 0.9s cubic-bezier(0.22, 1, 0.36, 1) 0.2s",
           }}
         >
+          <div className="vxl-hero-badges">
+            <span className="vxl-hero-badge">Voice</span>
+            <span className="vxl-hero-badge">Follow-up</span>
+            <span className="vxl-hero-badge vxl-hero-badge-accent">Escalation</span>
+          </div>
+
           <h1 className="vxl-hero-h1">
             Every patient followed up.
             <br />

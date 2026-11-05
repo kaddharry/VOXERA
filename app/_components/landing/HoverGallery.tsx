@@ -49,11 +49,13 @@ export default function HoverGallery() {
 
       <div className="vxl-integrations">
         <div className="vxl-integrations-label">Connects to the tools you already use</div>
-        <div className="vxl-integrations-row">
-          {INTEGRATIONS.map((tool) => (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img key={tool.name} src={tool.icon} alt={tool.name} title={tool.name} />
-          ))}
+        <div className="vxl-marquee">
+          <div className="vxl-integrations-row vxl-marquee-track">
+            {[...INTEGRATIONS, ...INTEGRATIONS].map((tool, i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={`${tool.name}-${i}`} src={tool.icon} alt={i < INTEGRATIONS.length ? tool.name : ""} title={tool.name} aria-hidden={i >= INTEGRATIONS.length} />
+            ))}
+          </div>
         </div>
       </div>
     </section>
