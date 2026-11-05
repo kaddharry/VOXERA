@@ -65,10 +65,16 @@ wss.on("connection", async (ws: WebSocket, request) => {
   // also overrides clientId from the agent's tenant when agentId is valid.
   // ?clientId=<tenant auth_user_id> is kept for direct tenant testing
   // without a specific agent (legacy /api/tenants selector, still valid).
+  // ?patientId=<lib/db/patients.ts roster patient id> lets the test drawer
+  // verify appointment-booking tools (lib/agent/tools.ts's
+  // resolveVerifiedPatient) end to end — those tools refuse to act without
+  // either a patientId or a real caller phone number, and a browser test
+  // call has neither by default.
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
   const agentId = requestUrl.searchParams.get("agentId") || undefined;
   const clientId = requestUrl.searchParams.get("clientId") || DEMO.clientId;
-  console.log(`\n[Server] New client connected. clientId=${clientId} agentId=${agentId ?? "(none)"}`);
+  const patientId = requestUrl.searchParams.get("patientId") || undefined;
+  console.log(`\n[Server] New client connected. clientId=${clientId} agentId=${agentId ?? "(none)"} patientId=${patientId ?? "(none)"}`);
 
   const sessionId = `browser-${nanoid(12)}`;
   let isBusy = false; // prevent overlapping turns while a reply is being generated
@@ -302,7 +308,16 @@ wss.on("connection", async (ws: WebSocket, request) => {
         userId: DEMO.userId,
         clientId,
         agentId,
+        patientId,
         transcript: text,
+        // Missing here entirely until now — buildLLMContext's language-
+        // matching rule (lib/agent/context.ts) only fires when this is set,
+        // so the browser test drawer always replied in English regardless
+        // of what language the caller actually spoke, even though STT
+        // (Gnani, when configured) was already transcribing it correctly.
+        // lib/telephony/stream-handler.ts already threaded this through for
+        // real calls; this brings the test drawer in line with it.
+        language,
         sttConfidence: 0.9,
         acousticFeatures,
         rawAudioPcm16k,
