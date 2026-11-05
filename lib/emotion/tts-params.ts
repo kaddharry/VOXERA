@@ -129,8 +129,32 @@ export function getEmotionTTSParams(
  * "subtle" (ordinary comma-driven pacing from the text itself is already
  * enough — adding punctuation on top of what the LLM already wrote risks
  * doubling up and reading worse, not better).
+ *
+ * Gnani's Timbre v3.0 is different: it DOES support inline expressive tags
+ * (confirmed against docs.gnani.ai/api/TTS/tts-audio-tags) — `<pauses>` for
+ * a real silence, `<excited>` for energetic delivery, etc. Timbre v2.5
+ * silently strips any tag before synthesis rather than speaking it aloud
+ * (also confirmed in that doc), so it's safe to always emit them for Gnani
+ * regardless of which Timbre model the call ends up using — v2.5 calls just
+ * get the same text-level pacing Deepgram gets, with no tag artifacts.
+ *
+ * Deliberately conservative about WHICH tags get used: only `<pauses>` (a
+ * pure timing tag, carries no "personality") and `<excited>` on the
+ * "pleasing" tone (good news/confirmations — a receptionist being upbeat
+ * about that is normal). Tags like `<laugh>`/`<giggle>`/`<whispers>` are
+ * left unused — the same professionalism/liability reasoning that kept a
+ * "flirty" tone mode out of this file applies here: a business receptionist
+ * audibly laughing or whispering reads as a bug, not warmth, in most of the
+ * contexts this agent actually operates in.
  */
-export function applyEmotionProsody(text: string, params: TTSProsodyParams): string {
+export function applyEmotionProsody(text: string, params: TTSProsodyParams, provider: "deepgram" | "gnani" = "deepgram"): string {
+  if (provider === "gnani") {
+    let shaped = params.pauseStrategy === "long" ? text.replace(/([\.!?])\s+/g, "$1 <pauses> ") : text;
+    if (params.toneMode === "pleasing") {
+      shaped = `<excited> ${shaped}`;
+    }
+    return shaped;
+  }
   if (params.pauseStrategy === "long") {
     return text.replace(/([\.!?])\s+/g, "$1 — ");
   }

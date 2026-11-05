@@ -1,8 +1,6 @@
 import { nanoid } from "nanoid";
 import WebSocket from "ws";
-import { DeepgramLiveWrapper } from "../deepgram/live";
-import { synthesizeLinear16, resolveVoiceModel, getClientVoiceSettings } from "../deepgram/tts";
-import { DeepgramSpeakStream } from "../deepgram/tts-stream";
+import { resolveVoiceModel, getClientVoiceSettings } from "../deepgram/tts";
 import { handleTurn, recordInterruptedReply } from "../agent/orchestrator";
 import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "../emotion/tts-params";
 import type { EmotionLabel, PolicyDirectives } from "../types";
@@ -14,6 +12,11 @@ import { sendSMS } from "./sms";
 import { CONFIG } from "../config";
 import { isMissingColumnError } from "../db/follow-up-tasks";
 import { extractAcousticFeatures, isolateLastUtterance, upsample8kTo16kFloat32 } from "../audio/acoustic";
+import { createLiveStt, createTtsEngine, createSpeakStream } from "../speech/factory";
+import { DeepgramTtsAdapter } from "../speech/deepgram-adapter";
+import { resolveSpeechConfig } from "../speech/resolve";
+import { parseGnaniPersona } from "../tts/gnani-voices";
+import type { LiveSttConnection, SpeakStreamHandle, SpeechProvider, TtsEngine } from "../speech/types";
 
 // Twilio sends audio as 8kHz mulaw (G.711 u-law). Deepgram needs linear16 PCM.
 // We do a simple mulaw → linear16 decode in pure JS — no native deps.
@@ -113,16 +116,23 @@ export function isBackchannel(text: string): boolean {
  *
  * Lifecycle:
  *  1. Twilio opens a WebSocket (Media Stream) → this handler receives audio frames
- *  2. Audio is decoded mulaw → PCM → streamed to Deepgram STT
+ *  2. Audio is decoded mulaw → PCM → streamed to STT (Deepgram or Gnani,
+ *     resolved per call — see lib/speech/)
  *  3. On final transcript → handleTurn() (orchestrator), streaming clause-by-clause
- *  4. Each clause → Deepgram's streaming Speak WebSocket → μ-law → sent to Twilio
- *     as soon as it's ready, not buffered until the whole reply is done
+ *  4. Each clause → the resolved provider's streaming Speak connection
+ *     (DeepgramSpeakStream or GnaniSpeakStream, both behind SpeakStreamHandle
+ *     — see lib/speech/factory.ts's createSpeakStream()) → μ-law → sent to
+ *     Twilio as soon as it's ready, not buffered until the whole reply is done
  *  5. Call ends → DB updated, queue updated
  *
  * Latency-overhaul notes (see /Users/vikasverma/.claude/plans/structured-zooming-quiche.md):
- *  - TTS is streamed (DeepgramSpeakStream, lib/deepgram/tts-stream.ts) so the
- *    caller starts hearing clause 1 while the LLM is still generating later
- *    clauses, instead of waiting for the entire reply to finish synthesizing.
+ *  - TTS is streamed so the caller starts hearing clause 1 while the LLM is
+ *    still generating later clauses, instead of waiting for the entire reply
+ *    to finish synthesizing. True for both providers — Gnani's streaming
+ *    protocol differs from Deepgram's (no Flush/Clear, one request at a
+ *    time — see GnaniSpeakStream's header comment for the barge-in latency
+ *    trade-off that implies), but TelephonyStreamHandler doesn't need to
+ *    know which is in play, both satisfy the same SpeakStreamHandle shape.
  *  - Barge-in uses the generation-counter pattern already proven in
  *    server.ts (the browser demo path): bumping `generation` invalidates
  *    whatever's in flight, so a stale turn's audio/clauses are dropped
@@ -130,9 +140,11 @@ export function isBackchannel(text: string): boolean {
  *  - On barge-in: cancels the in-flight LLM call (AbortController) and
  *    clears/closes the in-flight Speak stream, instead of only stopping
  *    Twilio playback of audio already sent.
- *  - A tenant's custom ElevenLabs voice (no streaming Speak WS support yet)
- *    falls back to the original buffered synth-then-send path for that call
- *    only — see setupVoiceForCall().
+ *  - A tenant's custom ElevenLabs voice (no streaming support at all) falls
+ *    back to the original buffered synth-then-send path for that call only
+ *    — see setupVoiceForCall(). The same buffered fallback also kicks in if
+ *    the resolved provider's streaming connection itself fails to open
+ *    (see ensureSpeakStream()'s catch).
  */
 export class TelephonyStreamHandler {
   private ws: WebSocket;
@@ -143,7 +155,7 @@ export class TelephonyStreamHandler {
   private patientId?: string;
   private sessionId: string;
   private userId: string;
-  private deepgram: DeepgramLiveWrapper;
+  private stt: LiveSttConnection;
   private streamSid: string | null = null;
   private startedAt: number;
   private isBusy = false; // prevent overlapping LLM turns
@@ -172,15 +184,30 @@ export class TelephonyStreamHandler {
   // ensureSpeakStream()) — reachable from the barge-in handler (a different
   // method) so it can be cleared immediately instead of only stopping
   // Twilio playback of audio already sent.
-  private currentSpeakStream: DeepgramSpeakStream | null = null;
+  private currentSpeakStream: SpeakStreamHandle | null = null;
   private speakStreamReadyPromise: Promise<void> | null = null;
 
   // Resolved once per call (not per turn) in setupVoiceForCall() — an
   // agent's voice and a tenant's custom-voice provider don't change
   // mid-call, so there's no reason to re-resolve either on every reply.
   private voiceModel: string = CONFIG.deepgram.ttsModel;
+  // Gnani-only — which voice/Timbre model this call's streaming TTS uses
+  // (lib/tts/gnani-voices.ts). Unused when speechProvider is "deepgram".
+  private gnaniVoice: string = "Nalini";
+  private gnaniModel: string = "timbre-v2.5";
+  // Only ever true for a tenant's custom ElevenLabs voice now — both
+  // Deepgram and Gnani stream via ensureSpeakStream()/createSpeakStream().
   private useBufferedTts = false;
   private voiceSetupPromise: Promise<void> | null = null;
+
+  // Resolved alongside voiceModel in setupVoiceForCall() — "deepgram" unless
+  // the agent (or the tenant default, see lib/speech/resolve.ts) picks
+  // Gnani. ttsEngine starts as the Deepgram adapter so a call that somehow
+  // never reaches setupVoiceForCall still has a working buffered-TTS
+  // fallback (speakBuffered, the ElevenLabs/filler-phrase path).
+  private speechProvider: SpeechProvider = "deepgram";
+  private language: string = "en-IN";
+  private ttsEngine: TtsEngine = new DeepgramTtsAdapter();
 
   constructor(opts: StreamHandlerOptions) {
     this.ws = opts.ws;
@@ -197,8 +224,17 @@ export class TelephonyStreamHandler {
     // Deepgram's SpeechStarted VAD event or raw audio energy: both fire on a
     // cough, a "hmm" or background noise, which used to cut the agent off
     // mid-sentence and start a whole new reply ("double reply").
-    this.deepgram = new DeepgramLiveWrapper(this.onTranscript.bind(this), {
+    // Eagerly opens the DEFAULT (Deepgram) connection — the real
+    // provider/language isn't known until setupVoiceForCall() resolves on
+    // the "start" event (needs clientId/agentId, see below). This preserves
+    // the existing "don't lose early audio" latency optimization for the
+    // common (Deepgram) case; setupVoiceForCall() tears this down and
+    // reopens with the resolved provider only when it actually differs, so
+    // only Gnani-routed calls pay that one extra reconnect.
+    this.stt = createLiveStt("deepgram", {
       sampleRate: 8000,
+      language: "en-IN",
+      onTranscript: this.onTranscript.bind(this),
     });
 
     // Register every ws event handler in this same synchronous tick, before
@@ -225,15 +261,15 @@ export class TelephonyStreamHandler {
   private async init() {
     await callQueue.markCallStarted();
     this.slotTaken = true;
-    await this.deepgram.connect();
-    console.log(`[TelephonyStream] Deepgram ready for session: ${this.sessionId}`);
+    await this.stt.connect();
+    console.log(`[TelephonyStream] STT ready for session: ${this.sessionId}`);
   }
   private async onInitFailed(err: unknown) {
     console.error(`[TelephonyStream] Initialisation failed for ${this.callSid}:`, err);
     this.hasEnded = true;
 
     try {
-      this.deepgram.close();
+      this.stt.close();
     } catch {
       // may have failed before connecting
     }
@@ -275,12 +311,47 @@ export class TelephonyStreamHandler {
         this.voiceModel = resolveVoiceModel(agentInfo.voice_persona);
       }
       if (voiceSettings?.provider === "elevenlabs" && voiceSettings.voiceId) {
-        // Deepgram's streaming Speak WS doesn't cover a tenant's custom
-        // cloned ElevenLabs voice — fall back to the original buffered
-        // synth-then-send path for this call only, so the customization
-        // keeps working correctly (streaming ElevenLabs is good follow-up
-        // work, not core to this latency fix).
+        // Tenant's custom cloned ElevenLabs voice takes priority over any
+        // agent-level speech_provider choice (Deepgram/Gnani) — unchanged
+        // from before this feature existed. Neither streaming path
+        // (DeepgramSpeakStream nor GnaniSpeakStream) covers a cloned voice,
+        // so this still needs the buffered synth-then-send path
+        // (synthesizeLinear16, reached via the default Deepgram ttsEngine
+        // below, already redirects to ElevenLabs internally via
+        // getClientVoiceSettings).
         this.useBufferedTts = true;
+      } else {
+        const speechConfig = await resolveSpeechConfig(this.clientId, this.agentId, agentInfo);
+        this.speechProvider = speechConfig.provider;
+        this.language = speechConfig.language;
+
+        if (this.speechProvider === "gnani") {
+          // Agent's own voice_persona wins; falls back to the tenant's
+          // business_settings.voice_persona (resolveSpeechConfig already
+          // carried that through), then to DEFAULT_GNANI_VOICE.
+          const gnaniVoice = parseGnaniPersona(agentInfo?.voice_persona ?? speechConfig.voicePersona);
+          this.gnaniVoice = gnaniVoice.id;
+          this.gnaniModel = gnaniVoice.model;
+        }
+
+        if (this.speechProvider !== "deepgram") {
+          // Swap the eagerly-opened default (Deepgram) STT connection for
+          // the resolved provider's — only non-Deepgram calls pay this one
+          // reconnect, see the constructor's comment.
+          this.stt.close();
+          this.stt = createLiveStt(this.speechProvider, {
+            sampleRate: 8000,
+            language: this.language,
+            onTranscript: this.onTranscript.bind(this),
+          });
+          await this.stt.connect();
+        }
+
+        // Both providers stream now (DeepgramSpeakStream / GnaniSpeakStream,
+        // see ensureSpeakStream() below) — ttsEngine here is only the
+        // buffered fallback used if the streaming connection itself fails
+        // to open (see ensureSpeakStream()'s catch).
+        this.ttsEngine = createTtsEngine(this.speechProvider, this.language, this.gnaniVoice, this.gnaniModel);
       }
     } catch (err) {
       console.warn(`[TelephonyStream] Voice setup failed for ${this.callSid}, using defaults:`, err);
@@ -300,17 +371,28 @@ export class TelephonyStreamHandler {
    * connection; barge-in calls clear() on it, never close() — see
    * onTwilioMessage's "media" case.
    */
-  private ensureSpeakStream(): { stream: DeepgramSpeakStream; ready: Promise<void> } {
+  private ensureSpeakStream(): { stream: SpeakStreamHandle; ready: Promise<void> } {
     if (!this.currentSpeakStream) {
-      const stream = new DeepgramSpeakStream(
-        { model: this.voiceModel, encoding: "linear16", sampleRate: 8000 },
+      const stream = createSpeakStream(
+        this.speechProvider,
+        {
+          sampleRate: 8000,
+          language: this.language,
+          voice: this.speechProvider === "gnani" ? this.gnaniVoice : this.voiceModel,
+          gnaniModel: this.gnaniModel,
+        },
         () => { } // replaced per-turn via setAudioHandler before first use
       );
       this.currentSpeakStream = stream;
       this.speakStreamReadyPromise = stream.connect().catch((err) => {
-        console.error(`[TelephonyStream] Speak stream connect failed for ${this.callSid}:`, err);
+        console.error(`[TelephonyStream] Speak stream connect failed for ${this.callSid}, falling back to buffered TTS:`, err);
         this.currentSpeakStream = null;
         this.speakStreamReadyPromise = null;
+        // Without this, a failed streaming connect just silently no-ops on
+        // every sendText()/flush() for the rest of the call (both
+        // DeepgramSpeakStream and GnaniSpeakStream check `ws.readyState`
+        // before sending) — the agent would go quiet instead of degrading.
+        this.useBufferedTts = true;
       });
     }
     return { stream: this.currentSpeakStream, ready: this.speakStreamReadyPromise! };
@@ -384,7 +466,7 @@ export class TelephonyStreamHandler {
           // Issue #14: Accumulate PCM for turn-level acoustic analysis
           this.turnAudioChunks.push(pcmBuf);
 
-          this.deepgram.sendAudio(pcmBuf);
+          this.stt.sendAudio(pcmBuf);
         }
         break;
       }
@@ -427,6 +509,16 @@ export class TelephonyStreamHandler {
       this.triggerBargeIn(isFinal ? "caller spoke" : `caller started speaking: "${text.trim()}"`);
     }
     if (!isFinal) return;
+    // BUG-E7: when the merge branch below fires, the caller's two
+    // transcript fragments get concatenated into one `text`, but the pause
+    // between them (the agent still composing its reply) is commonly well
+    // past isolateLastUtterance's default utterance-boundary cutoff — which
+    // would then (wrongly, since we KNOW structurally this is one
+    // utterance) drop the earlier fragment's audio while wordCount below
+    // still counts both fragments' words. Tracked here so the turnPcm
+    // isolation a few lines down can opt into "span from first speech"
+    // mode specifically for this case.
+    let wasMerged = false;
     if (this.isBusy) {
       // Once the agent is talking, an interruption goes through barge-in
       // (triggerBargeIn frees the turn before this transcript arrives).
@@ -442,6 +534,7 @@ export class TelephonyStreamHandler {
       this.generation++;
       this.currentAbortController?.abort();
       text = merged;
+      wasMerged = true;
     }
     this.isBusy = true;
     this.currentTurnText = text;
@@ -466,8 +559,10 @@ export class TelephonyStreamHandler {
     try {
       // Issue #14: Extract acoustic features from accumulated PCM
       // Only the caller's own latest utterance — not the silence while the
-      // agent spoke or the line waited (see isolateLastUtterance).
-      const turnPcm = isolateLastUtterance(Buffer.concat(this.turnAudioChunks));
+      // agent spoke or the line waited (see isolateLastUtterance). On a
+      // merged turn, span from the very first speech instead of applying
+      // the normal utterance-gap cutoff — see BUG-E7 note above.
+      const turnPcm = isolateLastUtterance(Buffer.concat(this.turnAudioChunks), { fromFirstSpeech: wasMerged });
       const wordCount = text.split(/\s+/).filter(Boolean).length;
       const acousticFeatures = turnPcm.length > 0
         ? extractAcousticFeatures(turnPcm, wordCount)
@@ -482,6 +577,7 @@ export class TelephonyStreamHandler {
         agentId: this.agentId,
         patientId: this.patientId,
         transcript: text,
+        language: this.language,
         sttConfidence: 0.9,
         audioEmotion: null,
         acousticFeatures,
@@ -544,7 +640,7 @@ export class TelephonyStreamHandler {
           if (myGeneration !== this.generation) return; // stale — dropped by barge-in
           trulySpokenClauses.push(clause);
           this.isSpeaking = true;
-          const shaped = prosodyParams ? applyEmotionProsody(clause, prosodyParams) : clause;
+          const shaped = prosodyParams ? applyEmotionProsody(clause, prosodyParams, this.speechProvider) : clause;
           void speakStreamReady.then(() => {
             if (myGeneration !== this.generation) return;
             speakStream.sendText(shaped);
@@ -644,7 +740,7 @@ export class TelephonyStreamHandler {
       // when this call is routed through a custom agent — takes priority
       // over the CONFIG default but is still overridden by a tenant-level
       // ElevenLabs voice inside synthesizeLinear16() if one is configured.
-      const pcmBytes = await synthesizeLinear16(text, { clientId: this.clientId, emotion: emotionLabel, persona, policy, callerText });
+      const pcmBytes = await this.ttsEngine.synthesizeLinear16(text, { clientId: this.clientId, emotion: emotionLabel, persona, policy, callerText });
       const mulawAudio = pcmToMulaw(pcmBytes);
       const base64Audio = mulawAudio.toString("base64");
 
@@ -719,7 +815,7 @@ export class TelephonyStreamHandler {
     console.log(`[TelephonyStream] Call ended: ${this.callSid}, duration: ${durationMs}ms`);
 
     await callQueue.markCallEnded();
-    this.deepgram.close();
+    this.stt.close();
     this.currentSpeakStream?.close();
 
     await this.updateCallLog({

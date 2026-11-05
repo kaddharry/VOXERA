@@ -82,6 +82,22 @@ export const CONFIG = {
     // problem.
     ttsModel: "aura-2-asteria-en", // Default: female, friendly
     language: "en",
+    // BUG-E19: OFF by default — deliberately not the default live behavior.
+    // Live STT (lib/deepgram/live.ts) is hardcoded to model "nova-2" +
+    // language "en" for every call. Per Deepgram's own docs (checked live,
+    // 2026-11-05): Nova-2's `language=multi` code-switching only covers
+    // Spanish+English — Hindi+English code-switching needs `model=nova-3`
+    // with `language=multi` plus `language_hint=hi` and `language_hint=en`.
+    // Flipping this on changes the STT model/params for EVERY call, not
+    // just Hindi-speaking patients, so it needs real Hindi/Hinglish call
+    // audio testing and a Deepgram pricing check for nova-3 vs nova-2
+    // before enabling in production — not something to default on blind.
+    // Also note: Deepgram's documented output for Hindi on nova-2/nova-3 is
+    // Devanagari script, NOT romanized text (`hi-Latn` only exists on the
+    // legacy `nova`/`base` models) — lib/emotion/lexicon.ts's Hinglish
+    // entries (BUG-E18) are Latin-script and won't match Devanagari output;
+    // see the separate Devanagari entries added alongside them for that.
+    sttHindiCodeSwitching: false,
     // FR-25: Available voice personas for businesses to choose from
     voicePersonas: {
       "female-friendly": { model: "aura-2-asteria-en", label: "Female · Friendly" },

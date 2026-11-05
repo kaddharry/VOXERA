@@ -12,10 +12,17 @@ export function buildEmotionContext(args: {
   const window = args.window ?? 6;
   const baseline = deriveBaseline(args.ltmUser) ?? DEFAULT_BASELINE;
 
+  // BUG-E10 fix: used to `.slice(-window)` the raw STM array (which
+  // interleaves user AND agent turns ~1:1) before dropping entries with no
+  // `.emotion` (agent turns never have one) — on a real call that silently
+  // shrank the trend window to ~window/2 actual readings, since half the
+  // sliced entries got filtered out afterward. Filter to emotion-bearing
+  // (user) turns FIRST, then take the last `window` of those, so `window`
+  // means what it says regardless of how many agent replies sit between them.
   const recentSignals = args.stm
-    .slice(-window)
     .map((u) => u.emotion)
-    .filter((e): e is EmotionSignal => !!e);
+    .filter((e): e is EmotionSignal => !!e)
+    .slice(-window);
 
   const arousals = recentSignals.map((e) => e.vad.a).concat(args.current.vad.a);
   const valences = recentSignals.map((e) => e.vad.v).concat(args.current.vad.v);

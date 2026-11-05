@@ -74,6 +74,13 @@ ALTER TABLE public.business_settings ADD COLUMN IF NOT EXISTS sms_recovery_link 
 ALTER TABLE public.business_settings ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'English';
 ALTER TABLE public.business_settings ADD COLUMN IF NOT EXISTS tone TEXT DEFAULT 'Professional';
 
+-- migration_v27.sql — per-agent speech provider (Deepgram vs Gnani/Vachana)
+-- + language, with business_settings as the tenant-level default. NULL on
+-- `agents` (below) means "inherit the tenant default", not "Deepgram" —
+-- resolved in lib/speech/resolve.ts. business_settings.language (above) is
+-- repurposed as that tenant-level default language code.
+ALTER TABLE public.business_settings ADD COLUMN IF NOT EXISTS speech_provider TEXT DEFAULT 'deepgram';
+
 ALTER TABLE public.business_settings ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Tenants can manage their own settings" ON public.business_settings;
 CREATE POLICY "Tenants can manage their own settings" ON public.business_settings
@@ -103,6 +110,11 @@ ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS system_prompt TEXT;
 ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS greeting TEXT;
 ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS voice_persona TEXT DEFAULT 'female-friendly';
+
+-- migration_v27.sql — NULL = inherit the tenant's business_settings default
+-- (see below), not "Deepgram". Resolved in lib/speech/resolve.ts.
+ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS speech_provider TEXT;
+ALTER TABLE public.agents ADD COLUMN IF NOT EXISTS language TEXT;
 
 ALTER TABLE public.agents ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Tenants can manage their own agents" ON public.agents;

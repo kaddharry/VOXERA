@@ -8,6 +8,9 @@ import { nanoid } from "nanoid";
  * indirection, patients don't need a separate tenant-relationship lookup.
  */
 
+export const RISK_LEVELS = ["low", "medium", "high", "critical"] as const;
+export type RiskLevel = (typeof RISK_LEVELS)[number];
+
 export interface PatientRecord {
   id: string;
   clientId: string;
@@ -25,6 +28,14 @@ export interface PatientRecord {
   doNotContact: boolean;
   doNotContactAt: number | null;
   doNotContactReason: string | null;
+  /** Free-text diagnosis/category label (migration_v28.sql) — e.g. "Post-Op
+   * Recovery", "Type 2 Diabetes". Deliberately not a fixed taxonomy; the
+   * Patients table derives its filter options from whatever values are
+   * actually in use. */
+  condition: string | null;
+  /** Drives the color-coded badge everywhere a patient shows up
+   * (migration_v28.sql). */
+  riskLevel: RiskLevel;
 }
 
 export interface PatientFields {
@@ -33,30 +44,76 @@ export interface PatientFields {
   notes?: string;
   assignedAgentId?: string | null;
   nextCheckInAt?: number | null;
+  condition?: string | null;
+  riskLevel?: RiskLevel;
 }
 
-const PATIENT_COLUMNS =
+const BASE_PATIENT_COLUMNS =
   'id, "clientId", name, phone, notes, "assignedAgentId", "nextCheckInAt", "createdAt", "doNotContact", "doNotContactAt", "doNotContactReason"';
+const PATIENT_COLUMNS = `${BASE_PATIENT_COLUMNS}, "condition", "riskLevel"`;
+
+/** Postgres' "column does not exist" SQLSTATE — the specific, narrow signal
+ * that migration_v28.sql hasn't been run (or its schema cache hasn't
+ * refreshed) yet, as opposed to some other, real query failure. Only this
+ * exact error triggers the base-columns fallback below; anything else is
+ * still reported as a genuine failure. */
+function isMissingColumnError(error: { code?: string } | null): boolean {
+  return error?.code === "42703";
+}
+
+/** Fills in defaults for rows read via the base-columns fallback (which
+ * simply won't have `condition`/`riskLevel` keys at all) so every caller
+ * still gets a complete, consistently-shaped PatientRecord either way. */
+function withDefaults(row: Record<string, unknown>): PatientRecord {
+  return {
+    ...row,
+    condition: (row.condition as string | null | undefined) ?? null,
+    riskLevel: (row.riskLevel as RiskLevel | undefined) ?? "low",
+  } as PatientRecord;
+}
+
+/** Runs a patients-table select/update/insert with PATIENT_COLUMNS first;
+ * if that fails specifically because the condition/riskLevel columns don't
+ * exist yet, retries with just BASE_PATIENT_COLUMNS — so every patient
+ * already in the database keeps showing up (without the new fields) while
+ * migration_v28.sql hasn't been run, instead of the whole list silently
+ * going empty. */
+async function withPatientColumnFallback<T>(
+  run: (columns: string) => PromiseLike<{ data: T | null; error: { code?: string; message: string } | null }>,
+): Promise<{ data: T | null; error: { code?: string; message: string } | null; migrationPending: boolean }> {
+  const result = await run(PATIENT_COLUMNS);
+  if (result.error && isMissingColumnError(result.error)) {
+    const fallback = await run(BASE_PATIENT_COLUMNS);
+    return { ...fallback, migrationPending: true };
+  }
+  return { ...result, migrationPending: false };
+}
 
 export async function listPatients(db: SupabaseClient, clientId: string): Promise<PatientRecord[]> {
-  const { data, error } = await db
-    .from("patients")
-    .select(PATIENT_COLUMNS)
-    .eq("clientId", clientId)
-    .order("createdAt", { ascending: false });
-  if (error || !data) return [];
-  return data as unknown as PatientRecord[];
+  const { data, error, migrationPending } = await withPatientColumnFallback((columns) =>
+    db.from("patients").select(columns).eq("clientId", clientId).order("createdAt", { ascending: false }),
+  );
+  if (migrationPending) {
+    console.warn("[lib/db/patients] \"condition\"/\"riskLevel\" columns not found — run sql/migration_v28.sql. Showing patients without them in the meantime.");
+  }
+  if (error) {
+    console.error("[lib/db/patients] listPatients failed:", error.message);
+    return [];
+  }
+  if (!data) return [];
+  return (data as unknown as Record<string, unknown>[]).map(withDefaults);
 }
 
 export async function getPatient(db: SupabaseClient, patientId: string, clientId: string): Promise<PatientRecord | null> {
-  const { data, error } = await db
-    .from("patients")
-    .select(PATIENT_COLUMNS)
-    .eq("id", patientId)
-    .eq("clientId", clientId)
-    .single();
-  if (error || !data) return null;
-  return data as unknown as PatientRecord;
+  const { data, error } = await withPatientColumnFallback((columns) =>
+    db.from("patients").select(columns).eq("id", patientId).eq("clientId", clientId).single(),
+  );
+  if (error) {
+    console.error("[lib/db/patients] getPatient failed:", error.message);
+    return null;
+  }
+  if (!data) return null;
+  return withDefaults(data as unknown as Record<string, unknown>);
 }
 
 /** No clientId scoping — used server-side (e.g. orchestrator resolving
@@ -64,31 +121,40 @@ export async function getPatient(db: SupabaseClient, patientId: string, clientId
  * a per-request authenticated tenant boundary. Mirrors getAgentWithTenant's
  * unscoped lookup in lib/db/agents.ts for the same reason. */
 export async function getPatientById(db: SupabaseClient, patientId: string): Promise<PatientRecord | null> {
-  const { data, error } = await db.from("patients").select(PATIENT_COLUMNS).eq("id", patientId).single();
+  const { data, error } = await withPatientColumnFallback((columns) =>
+    db.from("patients").select(columns).eq("id", patientId).single(),
+  );
   if (error || !data) return null;
-  return data as unknown as PatientRecord;
+  return withDefaults(data as unknown as Record<string, unknown>);
 }
 
 export async function createPatient(db: SupabaseClient, clientId: string, fields: PatientFields): Promise<PatientRecord | null> {
-  const { data, error } = await db
-    .from("patients")
-    .insert({
-      id: nanoid(12),
-      clientId,
-      name: fields.name,
-      phone: fields.phone,
-      notes: fields.notes ?? "",
-      assignedAgentId: fields.assignedAgentId ?? null,
-      nextCheckInAt: fields.nextCheckInAt ?? null,
-      createdAt: Date.now(),
-    })
-    .select(PATIENT_COLUMNS)
-    .single();
+  const payload: Record<string, unknown> = {
+    id: nanoid(12),
+    clientId,
+    name: fields.name,
+    phone: fields.phone,
+    notes: fields.notes ?? "",
+    assignedAgentId: fields.assignedAgentId ?? null,
+    nextCheckInAt: fields.nextCheckInAt ?? null,
+    condition: fields.condition ?? null,
+    riskLevel: fields.riskLevel ?? "low",
+    createdAt: Date.now(),
+  };
+
+  let { data, error } = await db.from("patients").insert(payload).select(PATIENT_COLUMNS).single();
+  if (error && isMissingColumnError(error)) {
+    console.warn("[lib/db/patients] \"condition\"/\"riskLevel\" columns not found — run sql/migration_v28.sql. Creating patient without them in the meantime.");
+    const { condition: _condition, riskLevel: _riskLevel, ...basePayload } = payload;
+    void _condition;
+    void _riskLevel;
+    ({ data, error } = await db.from("patients").insert(basePayload).select(BASE_PATIENT_COLUMNS).single());
+  }
   if (error || !data) {
     console.error("[lib/db/patients] createPatient failed:", error?.message);
     return null;
   }
-  return data as unknown as PatientRecord;
+  return withDefaults(data as unknown as Record<string, unknown>);
 }
 
 export async function updatePatient(
@@ -105,10 +171,14 @@ export async function updatePatient(
     .select(PATIENT_COLUMNS)
     .single();
   if (error || !data) {
-    console.error("[lib/db/patients] updatePatient failed:", error?.message);
+    if (isMissingColumnError(error)) {
+      console.error("[lib/db/patients] updatePatient failed: \"condition\"/\"riskLevel\" columns don't exist yet — run sql/migration_v28.sql before editing them.");
+    } else {
+      console.error("[lib/db/patients] updatePatient failed:", error?.message);
+    }
     return null;
   }
-  return data as unknown as PatientRecord;
+  return withDefaults(data as unknown as Record<string, unknown>);
 }
 
 export async function deletePatient(db: SupabaseClient, patientId: string, clientId: string): Promise<boolean> {
@@ -131,17 +201,19 @@ export async function setDoNotContact(
   value: boolean,
   reason?: string,
 ): Promise<PatientRecord | null> {
-  const { data, error } = await db
-    .from("patients")
-    .update({
-      doNotContact: value,
-      doNotContactAt: value ? Date.now() : null,
-      doNotContactReason: value ? (reason ?? null) : null,
-    })
-    .eq("id", patientId)
-    .eq("clientId", clientId)
-    .select(PATIENT_COLUMNS)
-    .single();
+  const { data, error } = await withPatientColumnFallback((columns) =>
+    db
+      .from("patients")
+      .update({
+        doNotContact: value,
+        doNotContactAt: value ? Date.now() : null,
+        doNotContactReason: value ? (reason ?? null) : null,
+      })
+      .eq("id", patientId)
+      .eq("clientId", clientId)
+      .select(columns)
+      .single(),
+  );
   if (error || !data) return null;
-  return data as unknown as PatientRecord;
+  return withDefaults(data as unknown as Record<string, unknown>);
 }

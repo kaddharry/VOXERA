@@ -7,19 +7,15 @@ import type { ConfidenceCategory } from "../types";
  *  - High:   >= 0.80
  *  - Medium: >= 0.50 and < 0.80
  *  - Low:    < 0.50
+ *
+ * Used to take an optional `{ lexiconMatch, acousticEnergy }` param to
+ * compute a more specific `explanation` string, but no caller anywhere in
+ * the codebase ever passed it — the branch was permanently dead, and the
+ * computed `explanation` isn't surfaced in any UI either. Removed rather
+ * than left as code that looks load-bearing but never runs.
  */
-export function classifyConfidence(confidence: number, params?: { 
-  lexiconMatch?: boolean, 
-  acousticEnergy?: number 
-}): ConfidenceCategory {
-  let explanation = "Standard confidence threshold calculation.";
-  
-  if (params?.lexiconMatch && params?.acousticEnergy && params.acousticEnergy > 0.8) {
-    explanation = "High confidence due to strong lexicon match and high vocal energy.";
-  } else if (!params?.lexiconMatch && confidence < 0.5) {
-    explanation = "Low confidence: weak lexicon match and ambiguous signal.";
-  }
-
+export function classifyConfidence(confidence: number): ConfidenceCategory {
+  const explanation = "Standard confidence threshold calculation.";
   if (confidence >= 0.8) return { level: "high", explanation };
   if (confidence >= 0.5) return { level: "medium", explanation };
   return { level: "low", explanation };

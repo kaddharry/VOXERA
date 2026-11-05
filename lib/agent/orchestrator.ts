@@ -63,6 +63,11 @@ export interface TurnInput {
    * CONTEXT" block (lib/agent/context.ts), additive alongside the agent's
    * own system_prompt, never overriding CORE RULES/grounding. */
   patientId?: string;
+  /** Resolved speech language for this call (lib/speech/resolve.ts) — e.g.
+   * "en-IN", "hi-IN", "hi-en". Drives which emotion-detection model
+   * detectTextEmotion() uses (lib/emotion/detect.ts); unset/English leaves
+   * the existing engine untouched. */
+  language?: string;
 }
 
 /** Lightweight, judge-readable view of a MemoryRecord — enough to show WHY a
@@ -283,7 +288,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   let textEmotionMs = 0;
   const [agentInfo, textEmoResult, queryEmbedding, patientContext] = await Promise.all([
     agentInfoPromise,
-    detectTextEmotion(input.transcript).then((result) => {
+    detectTextEmotion(input.transcript, { language: input.language }).then((result) => {
       textEmotionMs = performance.now() - emotionStartedAt;
       return result;
     }),
@@ -569,6 +574,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     personaLock,
     inlineKnowledgeBase: inlineKb ?? undefined,
     patientContext,
+    language: input.language,
   });
 
   const llmStart = Date.now();

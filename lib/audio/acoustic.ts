@@ -104,8 +104,22 @@ const SPEECH_EDGE_PADDING_MS = 100;
  * came out at 10-50 words per minute with 4-13s of "pauses", which the
  * voice rules read as hesitant, confused speech whatever was said.
  * Returns an empty buffer when there is no speech at all.
+ *
+ * `opts.fromFirstSpeech`: skip the UTTERANCE_GAP_MS boundary cutoff and walk
+ * all the way back to the very first speech in the buffer instead. For most
+ * callers the default (split on a long gap) is right — a gap that long really
+ * does mean "a separate utterance, not this one". But stream-handler.ts's
+ * barge-in merge path (onTranscript) concatenates two transcript fragments
+ * into one `text` specifically because the caller kept talking across a
+ * pause while the agent was still composing its reply — that pause is
+ * commonly >1.5s (LLM+TTS latency), which is exactly what the default cutoff
+ * would (wrongly, for this one case) treat as a separate utterance and drop,
+ * leaving the acoustic features measuring only the back half of a sentence
+ * against a word count for the whole thing (see BUG-E7). The merge path
+ * already knows structurally that both fragments are one utterance, so it
+ * opts into this mode instead of guessing from the gap alone.
  */
-export function isolateLastUtterance(pcm: Buffer): Buffer {
+export function isolateLastUtterance(pcm: Buffer, opts?: { fromFirstSpeech?: boolean }): Buffer {
   const windowSize = 80; // 10ms at 8kHz
   const sampleCount = Math.floor(pcm.length / 2);
   const windows = Math.floor(sampleCount / windowSize);
@@ -122,7 +136,7 @@ export function isolateLastUtterance(pcm: Buffer): Buffer {
   while (last >= 0 && !isSpeech(last)) last--;
   if (last < 0) return Buffer.alloc(0);
 
-  const maxGapWindows = Math.round(UTTERANCE_GAP_MS / 10);
+  const maxGapWindows = opts?.fromFirstSpeech ? Infinity : Math.round(UTTERANCE_GAP_MS / 10);
   let first = last;
   let silentRun = 0;
   for (let w = last - 1; w >= 0; w--) {
@@ -222,8 +236,23 @@ export function extractAcousticFeatures(pcm: Buffer, wordCount: number): Acousti
   }
 
   // Speaking rate
+  // BUG-E7 safety net: `wordCount` comes from the transcript text and
+  // `durationMs` from this buffer, but the two aren't always talking about
+  // the same stretch of speech — e.g. stream-handler.ts's barge-in/merge
+  // path concatenates two transcript fragments into one `text` while
+  // isolateLastUtterance() can drop the earlier fragment's audio entirely
+  // if the gap between them (the agent still composing its reply) exceeds
+  // its 1.5s utterance-boundary cutoff. That mismatch produces physically
+  // impossible rates (600+ wpm) that corrupted the diagnostic display and
+  // any downstream consumer (e.g. lib/emotion/cai.ts) that trusts this
+  // number. Clamping to a generous ceiling above the fastest sustained human
+  // speech (~350-400 wpm) stops the impossible number from propagating;
+  // it does not fix the underlying word-count/audio-span mismatch in the
+  // merge path itself, which needs a telephony-layer fix (tracking which
+  // words belong to which isolated audio span) to resolve properly.
+  const MAX_PLAUSIBLE_WPM = 400;
   const durationSec = durationMs / 1000;
-  const speakingRateWPM = durationSec > 0 ? (wordCount / durationSec) * 60 : 0;
+  const speakingRateWPM = durationSec > 0 ? Math.min(MAX_PLAUSIBLE_WPM, (wordCount / durationSec) * 60) : 0;
 
   // Pause detection
   const { pauseDurationMs, pauseCount } = detectPauses(pcm, sampleCount);

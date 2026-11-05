@@ -5,6 +5,17 @@ import { classifyConfidence } from "./confidence";
 import { LEXICON } from "./lexicon";
 import type { HFDetectResult } from "./ml-detect";
 import { detectTextEmotionLocalONNX, type LocalOnnxDetectResult } from "./local-onnx-detect";
+import { detectTextEmotionXLMEmo, type XlmEmoDetectResult } from "./xlm-emo-detect";
+
+/** Language codes (lib/speech/resolve.ts's resolved values) treated as
+ * "English" — the production router below only branches to the multilingual
+ * XLM-EMO engine for anything else. Keeps the English path (Local ONNX)
+ * completely untouched for the common case. */
+const ENGLISH_LANGUAGE_CODES = new Set(["en", "en-IN", "en-US", "English"]);
+
+function isEnglish(language: string | undefined): boolean {
+  return !language || ENGLISH_LANGUAGE_CODES.has(language);
+}
 
 // HF (HuggingFace Inference API) engine was removed from the live pipeline —
 // see the eval writeup in VOXERA_IMPLEMENTATION.md. It runs the exact same
@@ -41,13 +52,25 @@ export function detectTextEmotionLexicon(text: string): EmotionSignal & { matche
   let hasNegMatch = false;
   let hasPosMatch = false;
 
-  // A negation cue ("not", "n't", "never", "no", "hardly", "barely") in the
-  // ~20 chars right before a match flips the read entirely — the lexicon had
-  // no negation handling at all, so "I'm not feeling good" matched the
-  // "good" keyword and scored as pure JOY. Flip positive labels to their
-  // negative counterpart on negation; drop negated negative-label matches
-  // ("not angry") rather than guess a specific replacement label.
-  const NEGATION_RE = /\b(?:not|n't|never|no|hardly|barely)\s+(?:\w+\s+){0,2}$/i;
+  // A negation cue ("not", a contraction like "don't"/"isn't"/"can't",
+  // "never", "no", "hardly", "barely") in the ~20 chars right before a match
+  // flips the read entirely — the lexicon had no negation handling at all,
+  // so "I'm not feeling good" matched the "good" keyword and scored as pure
+  // JOY. Flip positive labels to their negative counterpart on negation;
+  // drop negated negative-label matches ("not angry") rather than guess a
+  // specific replacement label.
+  //
+  // BUG-E5 fix: the contraction alternative used to be the bare token "n't",
+  // which can never match — \b requires a word-boundary immediately before
+  // the "n", but every real contraction ("don't", "isn't", "can't"...) has a
+  // letter there, not a boundary. That silently disabled negation for the
+  // single most common way people negate a feeling in speech. Spelling out
+  // the actual contraction bases (do/does/did/is/was/are/were/wo/would/
+  // could/should/have/has/had/ca/ai + "n't") fixes the match without
+  // over-matching ordinary words that merely end in "-nt" ("patient",
+  // "recent", "moment", "important") the way a generic \w*n't would.
+  const NEGATION_RE =
+    /\b(?:not|cannot|(?:do|does|did|is|was|are|were|wo|would|could|should|have|has|had|ca|ai)n'?t|never|no|hardly|barely)\s+(?:[\w']+\s+){0,2}$/i;
   const POS_TO_NEG: Partial<Record<EmotionLabel, EmotionLabel>> = {
     joy: "sadness",
     gratitude: "disappointment",
@@ -254,7 +277,12 @@ export async function detectTextEmotionLocal(text: string): Promise<EmotionSigna
     vad,
     source: "text",
     at: Date.now(),
-    isMixed: false,
+    // BUG-E6b: hardcoded false regardless of what the lexicon actually
+    // found — silently dropped the mixed-emotion signal whenever this path
+    // ever gets used (see classifier.ts's header for why it's currently
+    // unreachable in production, but deliberately kept for a future
+    // tertiary-fallback use).
+    isMixed: lexSignal.isMixed,
   };
 }
 
@@ -302,11 +330,15 @@ export interface TextEmotionResult {
   lexicon: EmotionSignal & { matchedKeywords: string[] };
   /** HuggingFace remote-API engine result (null if timed out or unavailable — usually just means no HF_TOKEN is set). */
   hf: HFDetectResult;
-  /** Local ONNX engine result — the SAME underlying model as `hf` (j-hartmann/emotion-english-distilroberta-base), run in-process instead of over the network. No token, no network dependency. */
+  /** Local ONNX engine result — the SAME underlying model as `hf` (j-hartmann/emotion-english-distilroberta-base), run in-process instead of over the network. No token, no network dependency. English only — see xlmEmo for non-English calls. */
   localOnnx: LocalOnnxDetectResult;
+  /** Multilingual engine result (MilaNLProc/xlm-emo-t, see xlm-emo-detect.ts) — only ever populated when a non-English `language` was passed; null-signal placeholder otherwise. See xlm-emo-label-map.ts for its narrower (4-class) label coverage. */
+  xlmEmo: XlmEmoDetectResult;
   /** Which engine was selected as primary and why. */
-  selection: { engine: "local_onnx" | "hf" | "lexicon"; reason: string };
+  selection: { engine: "local_onnx" | "xlm_emo" | "hf" | "lexicon"; reason: string };
 }
+
+const XLM_EMO_DISABLED_RESULT: XlmEmoDetectResult = { signal: null, latencyMs: 0, timedOut: false };
 
 /**
  * Universal text emotion router. Runs Local ONNX, HF, and Lexicon CONCURRENTLY.
@@ -342,14 +374,18 @@ export interface TextEmotionResult {
  *
  * All three results are always returned for diagnostic comparison.
  */
-export async function detectTextEmotion(text: string): Promise<TextEmotionResult> {
+export async function detectTextEmotion(text: string, opts?: { language?: string }): Promise<TextEmotionResult> {
   // Lexicon is synchronous/instant — run it first. Its two early-exit cases
   // below (small-talk guard, real keyword match) are both deterministic and
-  // already ignore whatever Local ONNX would say, so there is nothing to
-  // gain by waiting on Local ONNX's up-to-500ms budget in either case. Only
-  // fall through to actually awaiting Local ONNX when the lexicon is sitting
-  // on its bare default and its answer would actually be used.
+  // already ignore whatever the ML engine would say, so there is nothing to
+  // gain by waiting on its latency budget in either case. Only fall through
+  // to actually awaiting the ML engine when the lexicon is sitting on its
+  // bare default and its answer would actually be used. The lexicon itself
+  // is English-only keyword/regex matching — for non-English text it simply
+  // won't match (same as any unrecognized English text today), so no
+  // language gating is needed here, only on which ML engine runs below.
   const lexiconResult = detectTextEmotionLexicon(text);
+  const english = isEnglish(opts?.language);
 
   // Small-talk guard: overrides all engines when the whole utterance is a
   // bare greeting/small-talk phrase and the lexicon found no real keyword
@@ -361,22 +397,79 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
       lexicon: lexiconResult,
       hf: HF_DISABLED_RESULT,
       localOnnx: { signal: null, latencyMs: 0, errored: false },
+      xlmEmo: XLM_EMO_DISABLED_RESULT,
       selection: { engine: "lexicon", reason: "Small-talk guard: bare greeting, forced neutral" },
     };
   }
 
   // Lexicon wins outright on a real keyword match — deliberate, hand-tuned
   // evidence beats a generic classifier's guess, and is the ONLY way to
-  // reach the 5 labels the ML model structurally can't express.
-  if (lexiconResult.matchedKeywords.length > 0) {
+  // reach the labels the ML models structurally can't express.
+  //
+  // BUG-E16: this used to check matchedKeywords.length alone, but
+  // detectTextEmotionLexicon's punctuation heuristics (repeated "?" ->
+  // confusion, repeated "!" -> excitement when no negative keyword is
+  // present) can set a non-neutral label WITHOUT adding to
+  // matchedKeywords — punctuation isn't a "keyword". A word-sparse,
+  // punctuation-heavy utterance ("!!!!", "??????") then fell through to
+  // the ONNX fallback despite the lexicon already having a deliberate,
+  // documented answer for it — and the fallback isn't just a different
+  // opinion, it can flip the valence sign entirely: "!!!!" alone reads as
+  // EXCITEMENT (positive) by the lexicon's own design, but came back
+  // ANGER (negative) once routed to ONNX. Trusting any non-neutral lexicon
+  // label here, not just a keyword match, keeps the lexicon's own
+  // punctuation-only verdict instead of discarding it — this also means a
+  // non-English punctuation-only utterance stays on the lexicon's verdict
+  // rather than being routed to XLM-EMO below, same reasoning.
+  if (lexiconResult.matchedKeywords.length > 0 || lexiconResult.label !== "neutral") {
     return {
       primary: lexiconResult,
       lexicon: lexiconResult,
       hf: HF_DISABLED_RESULT,
       localOnnx: { signal: null, latencyMs: 0, errored: false },
+      xlmEmo: XLM_EMO_DISABLED_RESULT,
       selection: {
         engine: "lexicon",
-        reason: `Lexicon matched keyword(s) [${lexiconResult.matchedKeywords.join(", ")}] → label=${lexiconResult.label}`,
+        reason: lexiconResult.matchedKeywords.length > 0
+          ? `Lexicon matched keyword(s) [${lexiconResult.matchedKeywords.join(", ")}] → label=${lexiconResult.label}`
+          : `Lexicon's punctuation-only heuristic → label=${lexiconResult.label} (no keyword match)`,
+      },
+    };
+  }
+
+  // Non-English call: route the ML stage through the multilingual engine
+  // instead of the English-only Local ONNX model — see xlm-emo-detect.ts and
+  // its label-map's documented gap (no `distress` class). The English path
+  // below is completely untouched.
+  if (!english) {
+    const xlmEmoResult = await detectTextEmotionXLMEmo(text).catch((err): XlmEmoDetectResult => {
+      console.warn("[EmotionRouter] XLM-EMO detection threw:", err);
+      return { signal: null, latencyMs: 0, timedOut: false };
+    });
+
+    if (xlmEmoResult.signal) {
+      return {
+        primary: xlmEmoResult.signal,
+        lexicon: lexiconResult,
+        hf: HF_DISABLED_RESULT,
+        localOnnx: { signal: null, latencyMs: 0, errored: false },
+        xlmEmo: xlmEmoResult,
+        selection: {
+          engine: "xlm_emo",
+          reason: `Lexicon found no keyword match; language="${opts?.language}" routed to XLM-EMO, returned in ${xlmEmoResult.latencyMs.toFixed(1)}ms with label=${xlmEmoResult.signal.label} conf=${xlmEmoResult.signal.confidence.toFixed(3)}`,
+        },
+      };
+    }
+
+    return {
+      primary: lexiconResult,
+      lexicon: lexiconResult,
+      hf: HF_DISABLED_RESULT,
+      localOnnx: { signal: null, latencyMs: 0, errored: false },
+      xlmEmo: xlmEmoResult,
+      selection: {
+        engine: "lexicon",
+        reason: `Lexicon found no keyword match; language="${opts?.language}" XLM-EMO unavailable/timed out (likely no HF_TOKEN configured), using lexicon default`,
       },
     };
   }
@@ -400,6 +493,7 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
       lexicon: lexiconResult,
       hf: HF_DISABLED_RESULT,
       localOnnx: localOnnxResult,
+      xlmEmo: XLM_EMO_DISABLED_RESULT,
       selection: {
         engine: "local_onnx",
         reason: `Lexicon found no keyword match; Local ONNX returned in ${localOnnxResult.latencyMs.toFixed(1)}ms with label=${localOnnxResult.signal.label} conf=${localOnnxResult.signal.confidence.toFixed(3)}`,
@@ -419,6 +513,7 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
     lexicon: lexiconResult,
     hf: HF_DISABLED_RESULT,
     localOnnx: localOnnxResult,
+    xlmEmo: XLM_EMO_DISABLED_RESULT,
     selection: { engine: "lexicon", reason },
   };
 }
@@ -447,6 +542,16 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
 /** Text confidence from which a non-neutral words label always wins fusion
  * (see fuseEmotion). The lexicon's single-keyword matches score ~0.55. */
 const TEXT_LABEL_AUTHORITY_CONFIDENCE = 0.5;
+
+const FUSION_POSITIVE_LABELS = new Set<EmotionLabel>(["joy", "gratitude", "excitement", "calm"]);
+const FUSION_NEGATIVE_LABELS = new Set<EmotionLabel>([
+  "anger", "frustration", "sadness", "distress", "fear", "disappointment", "confusion",
+]);
+function fusionValenceBucket(label: EmotionLabel): "positive" | "negative" | "neutral" {
+  if (FUSION_POSITIVE_LABELS.has(label)) return "positive";
+  if (FUSION_NEGATIVE_LABELS.has(label)) return "negative";
+  return "neutral";
+}
 
 export function fuseEmotion(
   text: EmotionSignal,
@@ -508,7 +613,24 @@ export function fuseEmotion(
   }
 
   const intensity = clamp(Math.sqrt(vad.v * vad.v + vad.a * vad.a + vad.d * vad.d) / Math.sqrt(3));
-  const confidence = clamp((audio.confidence + text.confidence) / 2 + 0.05);
+
+  // BUG-E8 fix: a flat +0.05 used to be added to the text/audio average
+  // unconditionally, so two signals that flatly DISAGREE (words say "great",
+  // voice says "angry") could come out of fusion MORE confident than either
+  // engine was on its own — the opposite of what sensor fusion should do.
+  // Only corroborate (small bonus) when the two sources land in the same
+  // broad valence bucket. On disagreement this used to clamp to
+  // Math.min(audio, text) — that over-corrected: a confidently-read neutral
+  // text signal (e.g. the small-talk guard's 0.9) got dragged all the way
+  // down to a weak, noisy reconstructed audio read (e.g. 0.3) just because
+  // the two didn't land in the same bucket, discarding almost all of the
+  // text signal's real certainty. The plain average without the bonus still
+  // fixes the original complaint (can never exceed either input) without
+  // that overcorrection.
+  const agree = fusionValenceBucket(text.label) === fusionValenceBucket(audio.label);
+  const confidence = agree
+    ? clamp((audio.confidence + text.confidence) / 2 + 0.05)
+    : clamp((audio.confidence + text.confidence) / 2);
 
   return {
     label,

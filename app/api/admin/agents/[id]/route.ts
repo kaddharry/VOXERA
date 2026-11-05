@@ -11,6 +11,8 @@ const UpdateAgentSchema = z.object({
   system_prompt: z.string().max(6000).nullable().optional(),
   greeting: z.string().max(500).nullable().optional(),
   voice_persona: z.string().max(60).nullable().optional(),
+  speech_provider: z.enum(["deepgram", "gnani"]).nullable().optional(),
+  language: z.string().max(20).nullable().optional(),
 });
 
 async function resolveTenant(request: NextRequest) {

@@ -5,6 +5,55 @@ export type TranscriptCallback = (text: string, isFinal: boolean) => void;
 
 export type ConnectionState = "disconnected" | "connecting" | "connected";
 
+/**
+ * Builds the Deepgram live-listen query params — pulled out of connect() so
+ * the model/language/hint logic (BUG-E19) is unit-testable without mocking
+ * a WebSocket connection or DEEPGRAM_API_KEY.
+ */
+export function buildListenParams(sampleRate: number, opts?: { codeSwitching?: boolean }): URLSearchParams {
+  // BUG-E19: opt-in Hindi/English code-switching (see CONFIG.deepgram
+  // .sttHindiCodeSwitching's doc comment for why this isn't the default).
+  // Off: unchanged nova-2/en, exactly today's production behavior. `opts`
+  // lets tests override without fighting CONFIG's `as const` readonly-ness.
+  const codeSwitching = opts?.codeSwitching ?? CONFIG.deepgram.sttHindiCodeSwitching;
+  const params = new URLSearchParams({
+    model: codeSwitching ? "nova-3" : "nova-2",
+    ...(codeSwitching ? { language: "multi" } : { language: "en" }),
+    smart_format: "true",
+    encoding: "linear16",
+    sample_rate: String(sampleRate),
+    channels: "1",
+    interim_results: "true",
+    // `is_final` on a Results message means "this word group is finalized
+    // and won't be re-transcribed" — it does NOT mean the caller stopped
+    // talking. Treating every is_final segment as a complete turn (the
+    // previous behavior) meant an ordinary mid-sentence thinking pause
+    // ("...tell me about your <pause> experience in Salesforce?") got
+    // split into two separate turns, the first answered as if it were a
+    // complete (fragment) question. `endpointing: 900` still controls how
+    // eagerly each word group gets marked is_final — kept as-is. The real
+    // "caller is done talking" signal is UtteranceEnd, which requires
+    // vad_events=true to be emitted at all; handleTranscript() below now
+    // buffers is_final segments and only fires a turn-triggering callback
+    // on UtteranceEnd, using utterance_end_ms as the silence gap for that
+    // decision specifically.
+    endpointing: String(CONFIG.stt.endpointingMs),
+    utterance_end_ms: String(CONFIG.stt.utteranceEndMs),
+    vad_events: "true",
+  });
+  if (codeSwitching) {
+    // Deepgram's docs example repeats this param: language_hint=hi&language_hint=en
+    // — URLSearchParams needs .append() for that (the object constructor
+    // above can't hold two values under one key). Biases detection toward
+    // these two languages without restricting to only them.
+    params.append("language_hint", "hi");
+    params.append("language_hint", "en");
+    // Recommended by Deepgram's code-switching docs for streaming.
+    params.set("endpointing", "100");
+  }
+  return params;
+}
+
 export interface DeepgramLiveOptions {
   /** Sample rate in Hz. Use 16000 for browser audio, 8000 for Twilio telephony. */
   sampleRate?: number;
@@ -78,31 +127,7 @@ export class DeepgramLiveWrapper {
     const key = process.env.DEEPGRAM_API_KEY;
     if (!key) throw new Error("DEEPGRAM_API_KEY is not set");
 
-    const params = new URLSearchParams({
-      model: "nova-2",
-      language: "en",
-      smart_format: "true",
-      encoding: "linear16",
-      sample_rate: String(this.sampleRate),
-      channels: "1",
-      interim_results: "true",
-      // `is_final` on a Results message means "this word group is finalized
-      // and won't be re-transcribed" — it does NOT mean the caller stopped
-      // talking. Treating every is_final segment as a complete turn (the
-      // previous behavior) meant an ordinary mid-sentence thinking pause
-      // ("...tell me about your <pause> experience in Salesforce?") got
-      // split into two separate turns, the first answered as if it were a
-      // complete (fragment) question. `endpointing: 900` still controls how
-      // eagerly each word group gets marked is_final — kept as-is. The real
-      // "caller is done talking" signal is UtteranceEnd, which requires
-      // vad_events=true to be emitted at all; handleTranscript() below now
-      // buffers is_final segments and only fires a turn-triggering callback
-      // on UtteranceEnd, using utterance_end_ms as the silence gap for that
-      // decision specifically.
-      endpointing: String(CONFIG.stt.endpointingMs),
-      utterance_end_ms: String(CONFIG.stt.utteranceEndMs),
-      vad_events: "true",
-    });
+    const params = buildListenParams(this.sampleRate);
     const url = `wss://api.deepgram.com/v1/listen?${params.toString()}`;
 
     await new Promise<void>((resolve, reject) => {
