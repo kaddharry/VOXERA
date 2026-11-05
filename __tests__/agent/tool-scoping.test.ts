@@ -1,13 +1,14 @@
 /**
- * Reservation tools (check/create/modify/cancel_booking) are a single
- * global TOOLS array with no per-agent scoping — every custom Agent Builder
- * agent used to get the exact same restaurant-booking tools as the
+ * Reservation tools (check/create/modify/cancel_booking) used to be a
+ * single global TOOLS array with no per-agent scoping — every custom Agent
+ * Builder agent got the exact same restaurant-booking tools as the
  * hardcoded demo agent, regardless of what that business actually does.
  * Live-reproduced: a resume agent, given a question it had no grounding to
- * answer, called create_booking with fabricated customer data. Custom
- * agents have no booking system built for their tenants at all, so tools
- * are now restricted to the hardcoded demo path only (orchestrator.ts's
- * `useTools: !resolvedAgent`).
+ * answer, called create_booking with fabricated customer data. Fixed by
+ * migration_v29.sql's agents."enabledTools" allowlist: a custom agent now
+ * gets tools only if explicitly opted in (defaults to none, same effective
+ * behavior as before for every agent that hasn't been given any) — the
+ * hardcoded demo path (no agentId) is unchanged.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -104,6 +105,37 @@ describe("Tool access is scoped to the hardcoded demo agent, not custom agents",
 
     expect(mockGenerateReply).toHaveBeenCalledTimes(1);
     expect(mockGenerateReply.mock.calls[0][0].useTools).toBe(false);
+  });
+
+  it("enables tools for a custom agent that has an enabledTools allowlist, and passes it through", async () => {
+    mockGetAgentWithTenant.mockResolvedValue({
+      id: "agent-2",
+      tenant_id: "tenant-2",
+      tenant_auth_user_id: "tenant-auth-2",
+      name: "Hospital Front Desk",
+      type: "custom",
+      status: "active",
+      description: null,
+      system_prompt: "You are a hospital front-desk agent.",
+      greeting: null,
+      voice_persona: "female-friendly",
+      enabledTools: ["check_appointment_availability", "book_appointment"],
+      created_at: "",
+      updated_at: "",
+    });
+
+    await handleTurn({
+      sessionId: "s4",
+      userId: "u4",
+      clientId: "whatever-client",
+      agentId: "agent-2",
+      transcript: "I'd like to book an appointment",
+      sttConfidence: 0.9,
+    });
+
+    expect(mockGenerateReply).toHaveBeenCalledTimes(1);
+    expect(mockGenerateReply.mock.calls[0][0].useTools).toBe(true);
+    expect(mockGenerateReply.mock.calls[0][0].enabledTools).toEqual(["check_appointment_availability", "book_appointment"]);
   });
 
   it("still enables tools if agent resolution fails (falls back to the demo path)", async () => {

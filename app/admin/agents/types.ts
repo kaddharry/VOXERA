@@ -11,6 +11,8 @@ export interface Agent {
   /** NULL = inherit the tenant's Settings default (app/admin/settings). */
   speech_provider: "deepgram" | "gnani" | null;
   language: string | null;
+  /** migration_v29.sql — see APPOINTMENT_TOOL_OPTIONS below. */
+  enabledTools: string[];
   created_at: string;
   updated_at: string;
 }
@@ -31,6 +33,7 @@ export interface Draft {
   /** null = inherit the tenant's Settings default. */
   speech_provider: "deepgram" | "gnani" | null;
   language: string | null;
+  enabledTools: string[];
 }
 
 export const BLANK_DRAFT: Draft = {
@@ -41,7 +44,21 @@ export const BLANK_DRAFT: Draft = {
   voice_persona: "female-friendly",
   speech_provider: null,
   language: null,
+  enabledTools: [],
 };
+
+/** Matches lib/agent/tools.ts's APPOINTMENT_TOOLS names exactly — kept as a
+ * small static list here (rather than fetched) since this UI only needs
+ * name + a human label, and the two can't drift silently: adding a new
+ * appointment tool there without adding it here just means it's
+ * unreachable from the UI, not a runtime mismatch. */
+export const APPOINTMENT_TOOL_OPTIONS: { id: string; label: string; description: string }[] = [
+  { id: "check_appointment_availability", label: "Check availability", description: "Look up open slots for a provider on a given date." },
+  { id: "book_appointment", label: "Book appointments", description: "Create a new appointment for the caller." },
+  { id: "reschedule_appointment", label: "Reschedule appointments", description: "Move an existing appointment to a new time." },
+  { id: "cancel_appointment", label: "Cancel appointments", description: "Cancel an existing appointment." },
+  { id: "confirm_appointment", label: "Confirm appointments", description: "Mark an appointment confirmed when the patient says they'll attend." },
+];
 
 export const VOICE_PERSONAS = [
   { id: "female-friendly", label: "Female · Friendly" },

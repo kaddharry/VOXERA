@@ -855,7 +855,7 @@ export function TestAgentDrawer() {
       <button
         onClick={() => setOpen((o) => !o)}
         aria-label={open ? "Close agent test panel" : "Talk to the agent"}
-        className={`${adminDark} fixed bottom-6 right-6 z-[110] flex items-center gap-2.5 pl-4 pr-5 py-3.5 rounded-full bg-[var(--console-bg)] border border-[var(--console-border-active)] text-[var(--console-text)] shadow-[0_10px_40px_-8px_rgba(139,92,246,0.55)] hover:shadow-[0_14px_50px_-8px_rgba(139,92,246,0.7)] transition-shadow`}
+        className={`${adminDark} fixed bottom-6 right-6 z-[110] flex items-center gap-2.5 pl-4 pr-5 py-3.5 rounded-full bg-[var(--console-bg)] border border-[var(--console-border-active)] text-[var(--console-text)] shadow-lg hover:shadow-xl transition-shadow`}
       >
         {open ? <X className="w-4 h-4" /> : <Radio className="w-4 h-4 text-[var(--console-violet)]" />}
         <span className="text-[13px] font-semibold">{open ? "Close" : "Talk to the agent"}</span>

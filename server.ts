@@ -1,12 +1,14 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { nanoid } from "nanoid";
-import { DeepgramLiveWrapper } from "./lib/deepgram/live";
-import { handleTurn } from "./lib/agent/orchestrator";
+import { announceGreeting, handleTurn } from "./lib/agent/orchestrator";
 import { synthesize, resolveVoiceModel, getClientVoiceSettings } from "./lib/deepgram/tts";
-import { DeepgramSpeakStream } from "./lib/deepgram/tts-stream";
 import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "./lib/emotion/tts-params";
 import { getAgentWithTenant } from "./lib/db/agents";
 import { supabase } from "./lib/db/supabase";
+import { createLiveStt, createSpeakStream } from "./lib/speech/factory";
+import { resolveSpeechConfig } from "./lib/speech/resolve";
+import { parseGnaniPersona } from "./lib/tts/gnani-voices";
+import type { LiveSttConnection, SpeakStreamHandle, SpeechProvider } from "./lib/speech/types";
 import { extractAcousticFeatures, computeRmsEnergy, isolateLastUtterance } from "./lib/audio/acoustic";
 import { int16ToFloat32Pcm } from "./lib/emotion/local-audio-detect";
 import { DEMO, ensureSeeded } from "./lib/bootstrap";
@@ -63,10 +65,16 @@ wss.on("connection", async (ws: WebSocket, request) => {
   // also overrides clientId from the agent's tenant when agentId is valid.
   // ?clientId=<tenant auth_user_id> is kept for direct tenant testing
   // without a specific agent (legacy /api/tenants selector, still valid).
+  // ?patientId=<lib/db/patients.ts roster patient id> lets the test drawer
+  // verify appointment-booking tools (lib/agent/tools.ts's
+  // resolveVerifiedPatient) end to end — those tools refuse to act without
+  // either a patientId or a real caller phone number, and a browser test
+  // call has neither by default.
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
   const agentId = requestUrl.searchParams.get("agentId") || undefined;
   const clientId = requestUrl.searchParams.get("clientId") || DEMO.clientId;
-  console.log(`\n[Server] New client connected. clientId=${clientId} agentId=${agentId ?? "(none)"}`);
+  const patientId = requestUrl.searchParams.get("patientId") || undefined;
+  console.log(`\n[Server] New client connected. clientId=${clientId} agentId=${agentId ?? "(none)"} patientId=${patientId ?? "(none)"}`);
 
   const sessionId = `browser-${nanoid(12)}`;
   let isBusy = false; // prevent overlapping turns while a reply is being generated
@@ -93,15 +101,34 @@ wss.on("connection", async (ws: WebSocket, request) => {
   // ONE Speak connection reused for the whole session (see
   // ensureSpeakStream() in stream-handler.ts for the same pattern and its
   // rationale — a fresh handshake per turn measured 900ms-5.3s live).
-  let currentSpeakStream: DeepgramSpeakStream | null = null;
+  let currentSpeakStream: SpeakStreamHandle | null = null;
   let speakStreamReadyPromise: Promise<void> | null = null;
   let voiceModel: string = CONFIG.deepgram.ttsModel;
   let useBufferedTts = false;
+  // Resolved in voiceSetupPromise below, mirroring lib/telephony/
+  // stream-handler.ts's setupVoiceForCall() exactly — this is what was
+  // previously missing here entirely, so every browser test call spoke
+  // Deepgram/English regardless of the agent's own speech_provider/
+  // language (Gnani) setting.
+  let speechProvider: SpeechProvider = "deepgram";
+  let language: string = "en-IN";
+  let gnaniVoice: string = "Nalini";
+  let gnaniModel: string = "timbre-v2.5";
+  // Agent Builder's "greeting" field — spoken once, proactively, as soon as
+  // voice setup resolves (see the bottom of voiceSetupPromise below),
+  // instead of the agent only ever responding once the user speaks first.
+  let greeting: string | null = null;
 
-  function ensureSpeakStream(): { stream: DeepgramSpeakStream; ready: Promise<void> } {
+  function ensureSpeakStream(): { stream: SpeakStreamHandle; ready: Promise<void> } {
     if (!currentSpeakStream) {
-      const stream = new DeepgramSpeakStream(
-        { model: voiceModel, encoding: "linear16", sampleRate: BROWSER_TTS_SAMPLE_RATE },
+      const stream = createSpeakStream(
+        speechProvider,
+        {
+          sampleRate: BROWSER_TTS_SAMPLE_RATE,
+          language,
+          voice: speechProvider === "gnani" ? gnaniVoice : voiceModel,
+          gnaniModel,
+        },
         () => {} // rebound per-turn via setAudioHandler before first use
       );
       currentSpeakStream = stream;
@@ -113,32 +140,6 @@ wss.on("connection", async (ws: WebSocket, request) => {
     }
     return { stream: currentSpeakStream, ready: speakStreamReadyPromise! };
   }
-
-  // Resolved once per connection (agent voice persona / tenant ElevenLabs
-  // override), same rationale as stream-handler.ts's setupVoiceForCall() —
-  // avoids a per-turn DB round trip, and kicked off here (not awaited yet)
-  // so it overlaps with ensureSeeded()/Deepgram STT connect below.
-  const voiceSetupPromise = (async () => {
-    try {
-      const [agentInfo, voiceSettings] = await Promise.all([
-        agentId ? getAgentWithTenant(supabase, agentId).catch(() => null) : Promise.resolve(null),
-        getClientVoiceSettings(clientId).catch(() => null),
-      ]);
-      if (agentInfo?.voice_persona) {
-        voiceModel = resolveVoiceModel(agentInfo.voice_persona);
-      }
-      if (voiceSettings?.provider === "elevenlabs" && voiceSettings.voiceId) {
-        // Deepgram's streaming Speak WS doesn't cover a tenant's custom
-        // cloned ElevenLabs voice — fall back to the original buffered
-        // synth-then-send path for this session only.
-        useBufferedTts = true;
-      } else {
-        ensureSpeakStream();
-      }
-    } catch (err) {
-      console.warn(`[Server] Voice setup failed for ${sessionId}, using defaults:`, err);
-    }
-  })();
 
   // Shared barge-in trigger — invoked either by the client's own VAD
   // sending {type:"barge_in"}, or by the server-side RMS fallback below.
@@ -155,11 +156,12 @@ wss.on("connection", async (ws: WebSocket, request) => {
     console.log(`[Server] Barge-in (${reason}) — generation now ${generation}.`);
   }
 
-  // Initialize Deepgram Live stream wrapper (16kHz — browser mic default)
-  const dg = new DeepgramLiveWrapper((text, isFinal) => {
-    // Diagnostic: log every transcript Deepgram produces, not just finals,
-    // so we can tell "Deepgram is receiving audio but never finalizing" apart
-    // from "no audio is reaching Deepgram at all."
+  // STT message handler — provider-agnostic (see onSttTranscript below),
+  // shared by whichever LiveSttConnection `stt` currently points at.
+  function onSttTranscript(text: string, isFinal: boolean) {
+    // Diagnostic: log every transcript the provider produces, not just
+    // finals, so we can tell "STT is receiving audio but never finalizing"
+    // apart from "no audio is reaching STT at all."
     console.log(`[STT ${isFinal ? "FINAL" : "interim"}] "${text}"`);
 
     ws.send(
@@ -172,7 +174,102 @@ wss.on("connection", async (ws: WebSocket, request) => {
     if (isFinal) {
       void onFinalTranscript(text);
     }
-  }, { sampleRate: 16000 });
+  }
+
+  // Eagerly opens the DEFAULT (Deepgram) STT connection — the real
+  // provider/language isn't known until voiceSetupPromise resolves (needs
+  // clientId/agentId, see below). This preserves the "don't lose early
+  // audio" latency optimization for the common (Deepgram) case;
+  // voiceSetupPromise tears this down and reopens with the resolved
+  // provider only when it actually differs — same pattern as
+  // lib/telephony/stream-handler.ts's constructor/setupVoiceForCall().
+  let stt: LiveSttConnection = createLiveStt("deepgram", { sampleRate: 16000, language: "en-IN", onTranscript: onSttTranscript });
+
+  /**
+   * Speaks the agent's configured opening line (Agent Builder's `greeting`
+   * field) the moment voice setup resolves, instead of the agent only ever
+   * responding once the user speaks first. Sends the same reply_text/
+   * reply_audio(_chunk) message shapes a normal turn would, tagged with
+   * their own turnId, so it shows up in the test drawer's transcript too.
+   */
+  async function speakGreeting(text: string): Promise<void> {
+    void announceGreeting({ sessionId, userId: DEMO.userId, clientId, text });
+    const turnId = nanoid(8);
+    ws.send(JSON.stringify({ type: "reply_text", turnId, text }));
+
+    if (useBufferedTts) {
+      const audio = await synthesize(text, { clientId });
+      ws.send(JSON.stringify({ type: "reply_audio", turnId, ttsMs: 0, audio: Buffer.from(audio).toString("base64"), mime: "audio/mpeg" }));
+      return;
+    }
+
+    const myGeneration = generation;
+    const { stream: speakStream, ready: speakStreamReady } = ensureSpeakStream();
+    speakStream.setAudioHandler((audioChunk) => {
+      if (myGeneration !== generation) return; // barge-in happened mid-greeting
+      isSpeaking = true;
+      ws.send(JSON.stringify({ type: "reply_audio_chunk", turnId, audio: audioChunk.toString("base64"), sampleRate: BROWSER_TTS_SAMPLE_RATE }));
+    });
+    await speakStreamReady;
+    if (myGeneration !== generation) return;
+    speakStream.sendText(text);
+    speakStream.flush();
+  }
+
+  // Resolved once per connection (agent voice persona / tenant ElevenLabs
+  // override / speech provider+language / greeting), same rationale as
+  // stream-handler.ts's setupVoiceForCall() — avoids a per-turn DB round
+  // trip, and kicked off here (not awaited yet) so it overlaps with
+  // ensureSeeded()/STT connect below.
+  const voiceSetupPromise = (async () => {
+    try {
+      const [agentInfo, voiceSettings] = await Promise.all([
+        agentId ? getAgentWithTenant(supabase, agentId).catch(() => null) : Promise.resolve(null),
+        getClientVoiceSettings(clientId).catch(() => null),
+      ]);
+      if (agentInfo?.voice_persona) {
+        voiceModel = resolveVoiceModel(agentInfo.voice_persona);
+      }
+      greeting = agentInfo?.greeting ?? null;
+
+      if (voiceSettings?.provider === "elevenlabs" && voiceSettings.voiceId) {
+        // Neither streaming Speak WS (Deepgram or Gnani) covers a tenant's
+        // custom cloned ElevenLabs voice — fall back to the original
+        // buffered synth-then-send path for this session only.
+        useBufferedTts = true;
+      } else {
+        const speechConfig = await resolveSpeechConfig(clientId, agentId, agentInfo);
+        speechProvider = speechConfig.provider;
+        language = speechConfig.language;
+
+        if (speechProvider === "gnani") {
+          // Agent's own voice_persona wins; falls back to the tenant's
+          // business_settings.voice_persona (resolveSpeechConfig already
+          // carried that through), then to the DEFAULT_GNANI_VOICE default.
+          const gnani = parseGnaniPersona(agentInfo?.voice_persona ?? speechConfig.voicePersona);
+          gnaniVoice = gnani.id;
+          gnaniModel = gnani.model;
+
+          // The eagerly-opened default (Deepgram) STT connection above was
+          // already started before this resolved — swap it for Gnani's,
+          // same "fast start, then swap only if needed" pattern as
+          // stream-handler.ts's setupVoiceForCall(). Only Gnani-routed test
+          // calls pay this one reconnect.
+          stt.close();
+          stt = createLiveStt("gnani", { sampleRate: 16000, language, onTranscript: onSttTranscript });
+          await stt.connect();
+        }
+
+        ensureSpeakStream();
+      }
+    } catch (err) {
+      console.warn(`[Server] Voice setup failed for ${sessionId}, using defaults:`, err);
+    }
+
+    if (greeting?.trim()) {
+      await speakGreeting(greeting.trim()).catch((err) => console.error(`[Server] speakGreeting failed for ${sessionId}:`, err));
+    }
+  })();
 
   async function onFinalTranscript(text: string) {
     if (!text.trim() || isBusy) return;
@@ -211,7 +308,16 @@ wss.on("connection", async (ws: WebSocket, request) => {
         userId: DEMO.userId,
         clientId,
         agentId,
+        patientId,
         transcript: text,
+        // Missing here entirely until now — buildLLMContext's language-
+        // matching rule (lib/agent/context.ts) only fires when this is set,
+        // so the browser test drawer always replied in English regardless
+        // of what language the caller actually spoke, even though STT
+        // (Gnani, when configured) was already transcribing it correctly.
+        // lib/telephony/stream-handler.ts already threaded this through for
+        // real calls; this brings the test drawer in line with it.
+        language,
         sttConfidence: 0.9,
         acousticFeatures,
         rawAudioPcm16k,
@@ -330,18 +436,19 @@ wss.on("connection", async (ws: WebSocket, request) => {
   let audioChunkCount = 0;
   let audioByteCount = 0;
 
-  // Start connecting to Deepgram immediately (not awaited yet) and register
-  // every ws event handler in this same synchronous tick — before awaiting
-  // anything. Node's EventEmitter drops events fired before a listener is
-  // attached, and a real client starts sending audio the instant the socket
-  // opens; if `ensureSeeded()`/`dg.connect()` were awaited first (as this used
-  // to do), any audio sent during that window — a real network round trip to
-  // Deepgram, not instant — was silently lost. DeepgramLiveWrapper.sendAudio()
-  // already buffers audio while its state is "connecting" (used for its own
-  // reconnect logic), so it's safe to start receiving before `connect()`
-  // resolves — connect() sets state="connecting" synchronously as its very
-  // first action, before this line yields to the event loop.
-  const dgConnectPromise = dg.connect();
+  // Start connecting to the default STT provider immediately (not awaited
+  // yet) and register every ws event handler in this same synchronous tick
+  // — before awaiting anything. Node's EventEmitter drops events fired
+  // before a listener is attached, and a real client starts sending audio
+  // the instant the socket opens; if `ensureSeeded()`/`stt.connect()` were
+  // awaited first (as this used to do), any audio sent during that window
+  // — a real network round trip, not instant — was silently lost.
+  // DeepgramLiveWrapper.sendAudio() already buffers audio while its state
+  // is "connecting" (used for its own reconnect logic), so it's safe to
+  // start receiving before `connect()` resolves — connect() sets
+  // state="connecting" synchronously as its very first action, before this
+  // line yields to the event loop.
+  const sttConnectPromise = stt.connect();
 
   // Handle incoming messages from the client (usually raw audio buffers).
   // Discriminate on `isBinary`, not `Buffer.isBuffer(message)` — this ws
@@ -357,9 +464,9 @@ wss.on("connection", async (ws: WebSocket, request) => {
       audioChunkCount++;
       audioByteCount += message.length;
       if (audioChunkCount === 1) {
-        console.log(`[Server] First audio chunk received (${message.length} bytes, dg state=${dg.getState()}).`);
+        console.log(`[Server] First audio chunk received (${message.length} bytes, sttProvider=${stt.provider}).`);
       } else if (audioChunkCount % 50 === 0) {
-        console.log(`[Server] ${audioChunkCount} audio chunks received (${audioByteCount} bytes total, dg state=${dg.getState()}).`);
+        console.log(`[Server] ${audioChunkCount} audio chunks received (${audioByteCount} bytes total, sttProvider=${stt.provider}).`);
       }
       // Server-side RMS barge-in fallback — this path otherwise depends
       // entirely on the browser's client-side VAD sending {type:"barge_in"};
@@ -377,12 +484,12 @@ wss.on("connection", async (ws: WebSocket, request) => {
         }
       }
 
-      // It's raw binary audio -> pump to Deepgram, and accumulate for
-      // turn-level acoustic feature extraction.
+      // It's raw binary audio -> pump to STT, and accumulate for turn-level
+      // acoustic feature extraction.
       try {
-        dg.sendAudio(message);
+        stt.sendAudio(message);
       } catch (err) {
-        console.error(`[Server] dg.sendAudio threw on chunk ${audioChunkCount}:`, err);
+        console.error(`[Server] stt.sendAudio threw on chunk ${audioChunkCount}:`, err);
       }
       turnAudioChunks.push(message);
     } else {
@@ -409,22 +516,22 @@ wss.on("connection", async (ws: WebSocket, request) => {
 
   ws.on("close", (code, reason) => {
     console.log(`[Server] Client disconnected (session ${sessionId}), code=${code}, reason="${reason.toString()}", audioChunksReceived=${audioChunkCount}.`);
-    dg.close();
+    stt.close();
     currentSpeakStream?.close();
   });
 
   ws.on("error", (err) => {
     console.error("[Server] Connection error:", err);
-    dg.close();
+    stt.close();
     currentSpeakStream?.close();
   });
 
-  // Now that every handler above is attached and Deepgram is already
-  // connecting, it's safe to await the slower setup steps.
+  // Now that every handler above is attached and the default STT provider
+  // is already connecting, it's safe to await the slower setup steps.
   try {
     await ensureSeeded();
-    await dgConnectPromise;
-    ws.send(JSON.stringify({ type: "system", message: "Connected to Deepgram STT engine", clientId }));
+    await sttConnectPromise;
+    ws.send(JSON.stringify({ type: "system", message: "Connected to STT engine", clientId }));
   } catch (err) {
     console.error("[Server] Failed to connect to Deepgram:", err);
     ws.send(JSON.stringify({ type: "error", message: "Failed to initialize STT" }));

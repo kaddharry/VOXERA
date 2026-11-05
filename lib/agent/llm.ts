@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";
-import { TOOLS, dispatchToolCall } from "./tools";
+import { TOOLS, dispatchToolCall, getToolsForAgent } from "./tools";
 import { ClauseChunker } from "./clause-chunker";
 
 export interface LLMReply {
@@ -76,6 +76,17 @@ export async function generateReply(args: {
    * latency/tokens) for one-off generation tasks like drafting a prompt,
    * as opposed to an actual live conversational turn. Defaults to true. */
   useTools?: boolean;
+  /** An Agent Builder agent's tool allowlist (agents."enabledTools",
+   * migration_v29.sql). When provided (even as []), the tool set offered to
+   * the model is filtered down to exactly these names via getToolsForAgent
+   * instead of the legacy demo path's full RESERVATION_TOOLS — see
+   * lib/agent/orchestrator.ts's useTools call sites for why this exists. */
+  enabledTools?: string[];
+  /** Threaded through to dispatchToolCall's ToolCallContext so an
+   * appointment tool can verify which patient it's acting on before
+   * writing anything — see lib/agent/tools.ts's resolveVerifiedPatient. */
+  patientId?: string;
+  callerNumber?: string;
   /** When provided, the completion is streamed and this fires with each
    * sanitized, sentence-level clause as soon as it's ready — letting a
    * caller start TTS on clause 1 while the LLM is still generating later
@@ -189,11 +200,15 @@ export async function generateReply(args: {
         const reasoningOpt = provider.reasoningEffort ? { reasoning_effort: provider.reasoningEffort } : {};
 
         for (let i = 0; i < 3; i++) {
+          // args.enabledTools undefined = legacy demo path, full
+          // RESERVATION_TOOLS (unchanged behavior); an array (even empty)
+          // means a real Agent Builder agent, filtered to its own allowlist.
+          const toolsForThisCall = args.enabledTools !== undefined ? getToolsForAgent(args.enabledTools) : TOOLS;
           const baseParams = {
             model: provider.model,
             messages,
             max_tokens: args.maxOutputTokens ?? CONFIG.llm.maxOutputTokens,
-            ...(useTools ? { tools: TOOLS as any, tool_choice: "auto" as const } : {}),
+            ...(useTools && toolsForThisCall.length > 0 ? { tools: toolsForThisCall as any, tool_choice: "auto" as const } : {}),
             ...reasoningOpt,
           };
 
@@ -241,7 +256,13 @@ export async function generateReply(args: {
               } catch {}
 
               console.log(`[LLM] Invoking Tool: ${name} with args`, parsedArgs);
-              const resultStr = await dispatchToolCall(name, parsedArgs, args.clientId, args.sessionId, args.userId);
+              const resultStr = await dispatchToolCall(name, parsedArgs, {
+                clientId: args.clientId,
+                sessionId: args.sessionId,
+                userId: args.userId,
+                patientId: args.patientId,
+                callerNumber: args.callerNumber,
+              });
 
               messages.push({
                 role: "tool",
@@ -387,8 +408,8 @@ function offlineFallback(userBlock: string): string {
 
   if (/book|schedule|appointment/.test(lc)) {
     console.log("[LLM] Offline fallback triggered mock tool invocation for check_availability & create_booking");
-    dispatchToolCall("check_availability", { date: "2026-10-10", time: "19:00" }, "offline-test").then(() => {
-        dispatchToolCall("create_booking", { userId: "U-123", date: "2026-10-10", time: "19:00", partySize: 4 }, "offline-test");
+    dispatchToolCall("check_availability", { date: "2026-10-10", time: "19:00" }, { clientId: "offline-test" }).then(() => {
+        dispatchToolCall("create_booking", { userId: "U-123", date: "2026-10-10", time: "19:00", partySize: 4 }, { clientId: "offline-test" });
     });
     return "Let me check our calendar for that time. Yes, we have a slot available. I've locked that in for you!";
   }
