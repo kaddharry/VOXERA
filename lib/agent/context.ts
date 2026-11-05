@@ -21,6 +21,23 @@ import { getEmotionPersona, formatPersonaBlock } from "../emotion/persona";
 // the original 24000 for latency/rate-limit reasons.
 const BUDGET_CHARS = 16000;
 
+/** Human labels for the language-matching rule below — same code set as
+ * lib/tts/gnani.ts's GnaniLanguage, kept as a local lookup rather than an
+ * import since this is only used for prompt text here, not a typed contract. */
+const LANGUAGE_LABELS: Record<string, string> = {
+  "hi-IN": "Hindi",
+  "hi-en": "Hinglish (Hindi and English, code-mixed)",
+  "ta-IN": "Tamil",
+  "te-IN": "Telugu",
+  "kn-IN": "Kannada",
+  "ml-IN": "Malayalam",
+  "mr-IN": "Marathi",
+  "pa-IN": "Punjabi",
+  "bn-IN": "Bengali",
+  "gu-IN": "Gujarati",
+  auto: "the caller's own language — detect it from what they say and match it",
+};
+
 // Matches natural hand-off phrasing so we can tell the model "you already
 // offered this" instead of letting it repeat the offer verbatim every turn.
 const HANDOFF_OFFER_RE = /\b(someone|somebody)\s+from\s+the\s+team\b|\bgrab\s+someone\b|\bteammate\s+to\s+jump\s+in\b|\bconnect\s+you\s+with\b/i;
@@ -65,8 +82,12 @@ export function buildLLMContext(args: {
    * "never overrides CORE RULES/grounding" treatment — this is who the
    * caller IS, not an instruction for how to behave. */
   patientContext?: string;
+  /** Resolved call language (lib/speech/resolve.ts) — e.g. "en-IN", "hi-IN",
+   * "hi-en". Drives an explicit language-matching rule below for non-English
+   * calls; unset/English adds nothing (today's behavior, unchanged). */
+  language?: string;
 }): LLMContext {
-  const { retrieved, emotion, policy, userTurn, customInstructions, personaLock, inlineKnowledgeBase, patientContext } = args;
+  const { retrieved, emotion, policy, userTurn, customInstructions, personaLock, inlineKnowledgeBase, patientContext, language } = args;
 
   // Uses full record `text`, not the 180-char `summary` — `summary` exists
   // to keep conversational-memory listings compact, but knowledge-base
@@ -191,6 +212,16 @@ export function buildLLMContext(args: {
       "detail), answer it strictly from CLIENT/EVIDENCE/USER_PROFILE per rule 1, but SAY it in the register " +
       "EMOTIONAL PERSONA specifies. If a question is about how the caller feels or what's going on with them, " +
       "that's the EMOTIONAL PERSONA's territory and those blocks have nothing relevant to add.",
+    ...(language && language !== "en-IN" && language !== "en-US" && language !== "en"
+      ? [
+          `9. LANGUAGE: This call is in ${LANGUAGE_LABELS[language] ?? language}. Reply in that same language/` +
+            "register, matching how the caller actually talks — if they're code-mixing Hindi and English " +
+            "(Hinglish), reply the same natural code-mixed way a real bilingual person would, don't force " +
+            "everything into pure Hindi or fall back into pure English. Keep numbers, times, and proper nouns " +
+            "(names, brand/product names) exactly as the caller would expect to hear them — don't translate a " +
+            "name. If the caller switches language mid-call, follow them.",
+        ]
+      : []),
     "",
     customInstructions?.trim()
       ? "=== AGENT-SPECIFIC INSTRUCTIONS (from this agent's creator) ===\n" +

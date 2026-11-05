@@ -19,6 +19,10 @@ export interface AgentRecord {
   system_prompt: string | null;
   greeting: string | null;
   voice_persona: string | null;
+  /** NULL = inherit the tenant's business_settings default. See lib/speech/resolve.ts. */
+  speech_provider: string | null;
+  /** NULL = inherit the tenant default. Ignored when speech_provider resolves to "deepgram". */
+  language: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -33,11 +37,13 @@ export interface AgentFields {
   system_prompt?: string | null;
   greeting?: string | null;
   voice_persona?: string | null;
+  speech_provider?: string | null;
+  language?: string | null;
   type?: string | null;
 }
 
 const AGENT_COLUMNS =
-  "id, tenant_id, name, type, status, description, system_prompt, greeting, voice_persona, created_at, updated_at";
+  "id, tenant_id, name, type, status, description, system_prompt, greeting, voice_persona, speech_provider, language, created_at, updated_at";
 
 function unwrapTenant(row: any): string | undefined {
   const t = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
@@ -118,6 +124,8 @@ export async function createAgent(db: SupabaseClient, tenantId: string, fields: 
       system_prompt: fields.system_prompt ?? null,
       greeting: fields.greeting ?? null,
       voice_persona: fields.voice_persona ?? "female-friendly",
+      speech_provider: fields.speech_provider ?? null,
+      language: fields.language ?? null,
     })
     .select(AGENT_COLUMNS)
     .single();

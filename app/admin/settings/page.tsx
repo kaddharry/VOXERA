@@ -2,6 +2,9 @@
 
 import { useEffect, useState, useRef } from "react";
 import { Check, Upload, Sparkles, MessageSquare, Phone, Volume2, Calendar, PhoneCall, Trash2, Bot, Settings2 } from "lucide-react";
+import { GNANI_LANGUAGES } from "../agents/types";
+import { GnaniVoicePicker } from "../agents/GnaniVoicePicker";
+import { parseGnaniPersona, formatGnaniPersona } from "@/lib/tts/gnani-voices";
 
 const SETTINGS_TABS = [
   { id: "general", label: "General", icon: Settings2 },
@@ -38,6 +41,12 @@ export default function SettingsPage() {
   const [selectedVoice, setSelectedVoice] = useState("female-friendly");
   const [voiceProvider, setVoiceProvider] = useState<string | null>(null);
   const [customVoiceId, setCustomVoiceId] = useState<string | null>(null);
+
+  // Account-wide default speech provider/language (lib/speech/resolve.ts) —
+  // what an agent uses when it hasn't set its own in the Agent Builder.
+  const [speechProvider, setSpeechProvider] = useState<"deepgram" | "gnani">("deepgram");
+  const [speechLanguage, setSpeechLanguage] = useState("hi-en");
+  const [gnaniVoicePersona, setGnaniVoicePersona] = useState("gnani:timbre-v2.5:Nalini");
   
   const [greeting, setGreeting] = useState("Welcome to Hotel Paradise. How may I assist you today?");
   
@@ -86,9 +95,22 @@ export default function SettingsPage() {
     fetch("/api/settings/voice")
       .then((res) => res.json())
       .then((data) => {
-        if (data.voice_persona) setSelectedVoice(data.voice_persona);
+        // voice_persona does double duty: a Deepgram persona key normally,
+        // or a "gnani:<model>:<voiceId>" composite when speech_provider is
+        // "gnani" (see lib/tts/gnani-voices.ts) — route it to the right
+        // picker's state instead of feeding the Gnani string to the
+        // Deepgram persona picker.
+        if (data.voice_persona) {
+          if (typeof data.voice_persona === "string" && data.voice_persona.startsWith("gnani:")) {
+            setGnaniVoicePersona(data.voice_persona);
+          } else {
+            setSelectedVoice(data.voice_persona);
+          }
+        }
         if (data.voice_provider) setVoiceProvider(data.voice_provider);
         if (data.custom_voice_id) setCustomVoiceId(data.custom_voice_id);
+        if (data.speech_provider === "gnani") setSpeechProvider("gnani");
+        if (data.language) setSpeechLanguage(data.language);
       })
       .catch((err) => console.error("Failed to load voice settings:", err));
 
@@ -225,6 +247,26 @@ export default function SettingsPage() {
       });
     } catch (err) {
       console.error("Failed to select voice persona:", err);
+    }
+  };
+
+  const handleSpeechProviderChange = async (provider: "deepgram" | "gnani", language: string, voicePersona?: string) => {
+    setSpeechProvider(provider);
+    if (provider === "gnani") setSpeechLanguage(language);
+    if (voicePersona) setGnaniVoicePersona(voicePersona);
+
+    try {
+      const formData = new FormData();
+      formData.append("action", "select-speech-provider");
+      formData.append("speech_provider", provider);
+      formData.append("language", language);
+      formData.append("gnani_voice_persona", voicePersona ?? gnaniVoicePersona);
+      await fetch("/api/settings/voice", {
+        method: "POST",
+        body: formData,
+      });
+    } catch (err) {
+      console.error("Failed to save speech provider default:", err);
     }
   };
 
@@ -450,7 +492,66 @@ export default function SettingsPage() {
           <p className="text-[14px] text-[var(--color-text-muted)] mb-6">
             Choose a default voice persona or upload a custom audio sample to clone a branded voice.
           </p>
-          
+
+          {/* Account-wide speech provider default — what any agent uses
+              unless it picks its own provider in the Agent Builder. */}
+          <div className="bg-[var(--color-bg-base)] border border-[var(--color-border-subtle)] rounded-xl p-6 mb-6">
+            <h3 className="text-[13px] font-bold uppercase tracking-wider text-[var(--color-text-primary)] mb-2">
+              Default speech provider
+            </h3>
+            <p className="text-[13px] text-[var(--color-text-muted)] mb-4">
+              Applies to any agent that hasn't chosen its own provider. Gnani covers Hindi, Hinglish, and
+              9 other Indian languages for both listening and speaking on calls; Deepgram is English only.
+            </p>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <button
+                onClick={() => handleSpeechProviderChange("deepgram", speechLanguage)}
+                className={`px-4 py-3 rounded-xl border text-left text-[13px] font-semibold transition-all ${
+                  speechProvider === "deepgram"
+                    ? "border-[var(--color-border-active)] bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
+                    : "border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-active)]"
+                }`}
+              >
+                Deepgram (English)
+              </button>
+              <button
+                onClick={() => handleSpeechProviderChange("gnani", speechLanguage)}
+                className={`px-4 py-3 rounded-xl border text-left text-[13px] font-semibold transition-all ${
+                  speechProvider === "gnani"
+                    ? "border-[var(--color-border-active)] bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
+                    : "border-[var(--color-border-subtle)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-active)]"
+                }`}
+              >
+                Gnani (Indian languages)
+              </button>
+            </div>
+            {speechProvider === "gnani" && (
+              <>
+                <select
+                  value={speechLanguage}
+                  onChange={(e) => handleSpeechProviderChange("gnani", e.target.value)}
+                  className="w-full px-4 py-2.5 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg text-[13px] text-[var(--color-text-primary)] focus:ring-1 focus:ring-[var(--color-accent-cyan)] mb-4"
+                >
+                  {GNANI_LANGUAGES.map((l) => (
+                    <option key={l.id} value={l.id}>{l.label}</option>
+                  ))}
+                </select>
+                <GnaniVoicePicker
+                  voice={parseGnaniPersona(gnaniVoicePersona).id}
+                  model={parseGnaniPersona(gnaniVoicePersona).model}
+                  language={speechLanguage}
+                  onChange={(voiceId, voiceModel) =>
+                    handleSpeechProviderChange(
+                      "gnani",
+                      speechLanguage,
+                      formatGnaniPersona({ id: voiceId, model: voiceModel as "timbre-v2.5" | "timbre-v3.0" })
+                    )
+                  }
+                />
+              </>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
             {VOICE_PERSONAS.map((persona) => (
               <button

@@ -26,11 +26,20 @@ export async function GET() {
 
     const { data: settings } = await supabaseServer
       .from("business_settings")
-      .select("voice_provider, custom_voice_id, voice_persona, greeting")
+      .select("voice_provider, custom_voice_id, voice_persona, greeting, speech_provider, language")
       .eq("tenant_id", tenant.id)
       .single();
 
-    return NextResponse.json(settings || { voice_provider: null, custom_voice_id: null, voice_persona: "female-friendly", greeting: null });
+    return NextResponse.json(
+      settings || {
+        voice_provider: null,
+        custom_voice_id: null,
+        voice_persona: "female-friendly",
+        greeting: null,
+        speech_provider: "deepgram",
+        language: null,
+      }
+    );
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
@@ -82,6 +91,22 @@ export async function POST(request: NextRequest) {
           voice_persona: persona,
         })
         .eq("tenant_id", tenant.id);
+
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "select-speech-provider") {
+      const speechProvider = formData.get("speech_provider") as string; // "deepgram" | "gnani"
+      const language = (formData.get("language") as string) || null;
+      const gnaniVoicePersona = formData.get("gnani_voice_persona") as string | null; // "gnani:<model>:<voiceId>"
+      const update: Record<string, unknown> = {
+        speech_provider: speechProvider === "gnani" ? "gnani" : "deepgram",
+        language: speechProvider === "gnani" ? language : null,
+      };
+      if (speechProvider === "gnani" && gnaniVoicePersona) {
+        update.voice_persona = gnaniVoicePersona;
+      }
+      await supabaseServer.from("business_settings").update(update).eq("tenant_id", tenant.id);
 
       return NextResponse.json({ success: true });
     }
