@@ -24,6 +24,12 @@ export interface AgentRecord {
   speech_provider: string | null;
   /** NULL = inherit the tenant default. Ignored when speech_provider resolves to "deepgram". */
   language: string | null;
+  /** migration_v29.sql — explicit allowlist of tool names (see
+   * lib/agent/tools.ts's getToolsForAgent) this agent may call during a
+   * live turn. Defaults to [] for every agent, including every agent that
+   * existed before this column did — an agent gets a tool only once a
+   * hospital admin opts it in, never implicitly. */
+  enabledTools: string[];
   created_at: string;
   updated_at: string;
 }
@@ -41,12 +47,16 @@ export interface AgentFields {
   speech_provider?: string | null;
   language?: string | null;
   type?: string | null;
+  enabledTools?: string[];
 }
 
 const BASE_AGENT_COLUMNS =
   "id, tenant_id, name, type, status, description, system_prompt, greeting, voice_persona, created_at, updated_at";
-/** migration_v27.sql adds these two — see lib/speech/resolve.ts. */
-const AGENT_COLUMNS = `${BASE_AGENT_COLUMNS}, speech_provider, language`;
+/** migration_v27.sql adds speech_provider/language (see lib/speech/resolve.ts);
+ * migration_v29.sql adds "enabledTools". Both tiers fall back together to
+ * BASE_AGENT_COLUMNS if either migration hasn't run yet — see
+ * withAgentColumnFallback below. */
+const AGENT_COLUMNS = `${BASE_AGENT_COLUMNS}, speech_provider, language, "enabledTools"`;
 
 function unwrapTenant(row: any): string | undefined {
   const t = Array.isArray(row.tenants) ? row.tenants[0] : row.tenants;
@@ -57,11 +67,14 @@ function unwrapTenant(row: any): string | undefined {
  * simply won't have `speech_provider`/`language` keys at all), so every
  * caller still gets a complete, consistently-shaped AgentRecord either way —
  * same reasoning as lib/db/patients.ts's withDefaults() for migration_v28. */
-function withSpeechDefaults<T extends Record<string, unknown>>(row: T): T & { speech_provider: string | null; language: string | null } {
+function withSpeechDefaults<T extends Record<string, unknown>>(
+  row: T,
+): T & { speech_provider: string | null; language: string | null; enabledTools: string[] } {
   return {
     ...row,
     speech_provider: (row.speech_provider as string | null | undefined) ?? null,
     language: (row.language as string | null | undefined) ?? null,
+    enabledTools: (row.enabledTools as string[] | null | undefined) ?? [],
   };
 }
 
@@ -86,7 +99,7 @@ async function withAgentColumnFallback<T>(
 }
 
 const MIGRATION_WARNING =
-  '[lib/db/agents] "speech_provider"/"language" columns not found — run sql/migration_v27.sql. Resolving without them in the meantime.';
+  '[lib/db/agents] "speech_provider"/"language"/"enabledTools" columns not found — run sql/migration_v27.sql and sql/migration_v29.sql. Resolving without them in the meantime.';
 
 /** Used by the orchestrator/server.ts to resolve an agentId into its custom
  * prompt and the tenant clientId that scopes its knowledge base. Logs the
@@ -162,14 +175,16 @@ export async function createAgent(db: SupabaseClient, tenantId: string, fields: 
     voice_persona: fields.voice_persona ?? "female-friendly",
     speech_provider: fields.speech_provider ?? null,
     language: fields.language ?? null,
+    enabledTools: fields.enabledTools ?? [],
   };
 
   let { data, error } = await db.from("agents").insert(payload).select(AGENT_COLUMNS).single();
   if (error && isMissingColumnError(error)) {
-    console.warn('[lib/db/agents] "speech_provider"/"language" columns not found — run sql/migration_v27.sql. Creating agent without them in the meantime.');
-    const { speech_provider: _speechProvider, language: _language, ...basePayload } = payload;
+    console.warn('[lib/db/agents] "speech_provider"/"language"/"enabledTools" columns not found — run sql/migration_v27.sql and sql/migration_v29.sql. Creating agent without them in the meantime.');
+    const { speech_provider: _speechProvider, language: _language, enabledTools: _enabledTools, ...basePayload } = payload;
     void _speechProvider;
     void _language;
+    void _enabledTools;
     ({ data, error } = await db.from("agents").insert(basePayload).select(BASE_AGENT_COLUMNS).single());
   }
   if (error || !data) {
@@ -188,15 +203,15 @@ export async function updateAgent(
   const payload = { ...fields, updated_at: new Date().toISOString() };
   let { data, error } = await db.from("agents").update(payload).eq("id", agentId).eq("tenant_id", tenantId).select(AGENT_COLUMNS).single();
   if (error && isMissingColumnError(error)) {
-    if (fields.speech_provider !== undefined || fields.language !== undefined) {
+    if (fields.speech_provider !== undefined || fields.language !== undefined || fields.enabledTools !== undefined) {
       // The caller explicitly asked to change one of the missing columns —
       // nothing to fall back to without silently dropping that part of the
       // request, same posture as lib/db/patients.ts's updatePatient for
       // condition/riskLevel: fail loudly rather than pretend it saved.
-      console.error(`[lib/db/agents] updateAgent(${agentId}) failed: "speech_provider"/"language" columns don't exist yet — run sql/migration_v27.sql before editing them.`);
+      console.error(`[lib/db/agents] updateAgent(${agentId}) failed: "speech_provider"/"language"/"enabledTools" columns don't exist yet — run sql/migration_v27.sql and sql/migration_v29.sql before editing them.`);
       return null;
     }
-    console.warn('[lib/db/agents] "speech_provider"/"language" columns not found — run sql/migration_v27.sql. Updating agent without them in the meantime.');
+    console.warn('[lib/db/agents] "speech_provider"/"language"/"enabledTools" columns not found — run sql/migration_v27.sql and sql/migration_v29.sql. Updating agent without them in the meantime.');
     ({ data, error } = await db.from("agents").update(payload).eq("id", agentId).eq("tenant_id", tenantId).select(BASE_AGENT_COLUMNS).single());
   }
   if (error || !data) {

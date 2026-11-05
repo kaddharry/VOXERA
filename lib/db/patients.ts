@@ -128,6 +128,26 @@ export async function getPatientById(db: SupabaseClient, patientId: string): Pro
   return withDefaults(data as unknown as Record<string, unknown>);
 }
 
+/** Patients by id, scoped to clientId — backs the staff-directory slide-over
+ * (app/admin/staff/page.tsx), which already has a provider's patient ids
+ * (lib/db/appointments.ts's listDistinctPatientIdsForProvider) and needs
+ * their full records. Returns [] immediately for an empty id list rather
+ * than issuing a `.in("id", [])` query. */
+export async function listPatientsByIds(db: SupabaseClient, ids: string[], clientId: string): Promise<PatientRecord[]> {
+  if (ids.length === 0) return [];
+  const { data, error, migrationPending } = await withPatientColumnFallback((columns) =>
+    db.from("patients").select(columns).eq("clientId", clientId).in("id", ids),
+  );
+  if (migrationPending) {
+    console.warn("[lib/db/patients] \"condition\"/\"riskLevel\" columns not found — run sql/migration_v28.sql. Showing patients without them in the meantime.");
+  }
+  if (error || !data) {
+    if (error) console.error("[lib/db/patients] listPatientsByIds failed:", error.message);
+    return [];
+  }
+  return (data as unknown as Record<string, unknown>[]).map(withDefaults);
+}
+
 export async function createPatient(db: SupabaseClient, clientId: string, fields: PatientFields): Promise<PatientRecord | null> {
   const payload: Record<string, unknown> = {
     id: nanoid(12),
