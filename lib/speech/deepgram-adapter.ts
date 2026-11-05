@@ -4,11 +4,14 @@ import type { LiveSttConnection, LiveSttOptions, TtsEngine, TtsSynthOpts } from 
 
 /**
  * Pure wrapper around the existing Deepgram STT/TTS code — delegates every
- * call, no behavior change. DeepgramLiveWrapper's `language` is NOT
- * configurable here (lib/deepgram/live.ts hardcodes "en" by design — see the
- * plan's decision to keep Deepgram English-only for now); `opts.language` is
- * accepted on the interface only so Gnani and Deepgram share one call site in
- * resolve.ts/stream-handler.ts, it has no effect for Deepgram.
+ * call, no behavior change beyond one thing: `opts.language` now turns on
+ * Deepgram's Hindi/English code-switching (nova-3 + language=multi) for
+ * this one connection when it's anything other than English — see
+ * DeepgramLiveOptions.language's doc in lib/deepgram/live.ts for why this
+ * replaced the old "always English, full stop" behavior. TTS stays
+ * English-only regardless (DeepgramTtsAdapter below) — that part of the
+ * plan's original decision is unchanged, only the STT side had a real,
+ * live-reproduced mistranscription bug.
  */
 export class DeepgramSttAdapter implements LiveSttConnection {
   public readonly provider = "deepgram" as const;
@@ -18,6 +21,7 @@ export class DeepgramSttAdapter implements LiveSttConnection {
     this.wrapper = new DeepgramLiveWrapper(opts.onTranscript, {
       sampleRate: opts.sampleRate,
       onSpeechStarted: opts.onSpeechStarted,
+      language: opts.language,
     });
   }
 

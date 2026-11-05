@@ -616,6 +616,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
         sessionId: input.sessionId,
         userId: input.userId,
         abortSignal: opts.abortSignal,
+        language: input.language,
         // Reservation tools (check/create/modify/cancel_booking) used to be
         // a single global TOOLS array with no per-agent scoping — every
         // custom Agent Builder agent (a resume bot, an FAQ agent, anything)
@@ -691,6 +692,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       enabledTools: resolvedAgent ? resolvedAgent.enabledTools ?? [] : undefined,
       patientId: input.patientId,
       callerNumber: input.callerNumber,
+      language: input.language,
     });
     guarded = guardOutput({
       reply: llmReply.text,

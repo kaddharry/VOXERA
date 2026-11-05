@@ -11,6 +11,15 @@ export interface LLMReply {
   provider?: string;
 }
 
+/** Same "English" code set as lib/emotion/detect.ts's ENGLISH_LANGUAGE_CODES
+ * (not imported from there to avoid coupling this module to the emotion
+ * package for one constant) — undefined/unset is treated as English, same
+ * as everywhere else this distinction is made. */
+const ENGLISH_LANGUAGE_CODES = new Set(["en", "en-IN", "en-US", "English"]);
+function isEnglishLanguage(language: string | undefined): boolean {
+  return !language || ENGLISH_LANGUAGE_CODES.has(language);
+}
+
 /** Accumulates OpenAI-compatible streamed chunk deltas into the same
  * `message` shape the non-streaming code path already works with (content +
  * tool_calls), so everything downstream of a completion call (the tool-loop
@@ -87,6 +96,18 @@ export async function generateReply(args: {
    * writing anything — see lib/agent/tools.ts's resolveVerifiedPatient. */
   patientId?: string;
   callerNumber?: string;
+  /** Resolved call language (lib/speech/resolve.ts) — e.g. "en-IN", "hi-IN",
+   * "hi-en", "auto". When set to anything non-English, the fast/no-reasoning
+   * provider config (CONFIG.llm.providers' `reasoningEffort: "none"`,
+   * chosen for English voice-turn latency) is bumped up a notch instead —
+   * live-reproduced: qwen3.6-27b at reasoning_effort "none" produced
+   * genuinely incoherent Hindi ("कसक और लालच भरने की शक्यता का खुलासा किया
+   * गया है" — nonsense) replying to a plain symptom report, the kind of
+   * word-salad hallucination that effort="none" is documented (see that
+   * field's own comment in config.ts) to trade away for speed on the common
+   * English case. Non-English generation needs that reasoning headroom back
+   * more than it needs the extra latency savings. */
+  language?: string;
   /** When provided, the completion is streamed and this fires with each
    * sanitized, sentence-level clause as soon as it's ready — letting a
    * caller start TTS on clause 1 while the LLM is still generating later
@@ -197,7 +218,19 @@ export async function generateReply(args: {
         // writing the actual reply — see CONFIG.llm.providers' groq entry
         // for the live-verified failure mode this fixes. A no-op extra
         // field for providers/models that don't support it.
-        const reasoningOpt = provider.reasoningEffort ? { reasoning_effort: provider.reasoningEffort } : {};
+        //
+        // For a non-English call, "none" gets bumped to "low" — see
+        // args.language's doc above for the live-reproduced garbled-Hindi
+        // failure this avoids. Only ever raises effort, never lowers it
+        // (a provider with no reasoningEffort configured at all, or already
+        // above "none", is untouched) — this is strictly "give the model a
+        // bit more room to get non-English generation right," not a general
+        // reasoning-level override.
+        const effectiveReasoningEffort =
+          provider.reasoningEffort === "none" && !isEnglishLanguage(args.language)
+            ? "low"
+            : provider.reasoningEffort;
+        const reasoningOpt = effectiveReasoningEffort ? { reasoning_effort: effectiveReasoningEffort } : {};
 
         for (let i = 0; i < 3; i++) {
           // args.enabledTools undefined = legacy demo path, full
