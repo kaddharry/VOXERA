@@ -184,6 +184,17 @@ wss.on("connection", async (ws: WebSocket, request) => {
   // provider only when it actually differs — same pattern as
   // lib/telephony/stream-handler.ts's constructor/setupVoiceForCall().
   let stt: LiveSttConnection = createLiveStt("deepgram", { sampleRate: 16000, language: "en-IN", onTranscript: onSttTranscript });
+  // Kicked off immediately (not awaited yet) so it's already in flight by
+  // the time voiceSetupPromise below might need to swap providers — ws's
+  // WebSocket throws/emits an error ("WebSocket was closed before the
+  // connection was established") if .close() is called on a socket that's
+  // still mid-handshake, which an unhandled rejection on this promise would
+  // otherwise crash the whole process over (live-reproduced: resolveSpeech-
+  // Config resolving to Gnani before Deepgram's real network handshake to
+  // api.deepgram.com finished). The Gnani-swap branch below awaits this
+  // first (swallowing any failure, since it's discarding the connection
+  // either way) so close() is never called on a not-yet-open socket.
+  let sttConnectPromise: Promise<void> = stt.connect();
 
   /**
    * Speaks the agent's configured opening line (Agent Builder's `greeting`
@@ -254,10 +265,14 @@ wss.on("connection", async (ws: WebSocket, request) => {
           // already started before this resolved — swap it for Gnani's,
           // same "fast start, then swap only if needed" pattern as
           // stream-handler.ts's setupVoiceForCall(). Only Gnani-routed test
-          // calls pay this one reconnect.
+          // calls pay this one reconnect. Must wait for the eager connect to
+          // actually settle (success or failure) before closing it — see
+          // sttConnectPromise's doc comment above for the crash this avoids.
+          await sttConnectPromise.catch(() => {});
           stt.close();
           stt = createLiveStt("gnani", { sampleRate: 16000, language, onTranscript: onSttTranscript });
-          await stt.connect();
+          sttConnectPromise = stt.connect();
+          await sttConnectPromise;
         }
 
         ensureSpeakStream();
@@ -436,19 +451,17 @@ wss.on("connection", async (ws: WebSocket, request) => {
   let audioChunkCount = 0;
   let audioByteCount = 0;
 
-  // Start connecting to the default STT provider immediately (not awaited
-  // yet) and register every ws event handler in this same synchronous tick
-  // — before awaiting anything. Node's EventEmitter drops events fired
-  // before a listener is attached, and a real client starts sending audio
-  // the instant the socket opens; if `ensureSeeded()`/`stt.connect()` were
-  // awaited first (as this used to do), any audio sent during that window
-  // — a real network round trip, not instant — was silently lost.
-  // DeepgramLiveWrapper.sendAudio() already buffers audio while its state
-  // is "connecting" (used for its own reconnect logic), so it's safe to
-  // start receiving before `connect()` resolves — connect() sets
-  // state="connecting" synchronously as its very first action, before this
-  // line yields to the event loop.
-  const sttConnectPromise = stt.connect();
+  // The default STT connection was already kicked off above (sttConnectPromise,
+  // declared alongside `stt`) — not awaited yet, so every ws event handler
+  // below gets registered in this same synchronous tick, before awaiting
+  // anything. Node's EventEmitter drops events fired before a listener is
+  // attached, and a real client starts sending audio the instant the socket
+  // opens; if `ensureSeeded()`/`sttConnectPromise` were awaited first (as
+  // this used to do), any audio sent during that window — a real network
+  // round trip, not instant — was silently lost. DeepgramLiveWrapper.
+  // sendAudio() already buffers audio while its state is "connecting" (used
+  // for its own reconnect logic), so it's safe to start receiving before
+  // `connect()` resolves.
 
   // Handle incoming messages from the client (usually raw audio buffers).
   // Discriminate on `isBinary`, not `Buffer.isBuffer(message)` — this ws

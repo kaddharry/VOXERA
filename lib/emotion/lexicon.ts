@@ -208,13 +208,47 @@ export const LEXICON: Array<{
   // be short enough to risk colliding with unrelated English/names (short
   // Hindi roots like "dar"/"mar" are NOT used bare, same discipline as
   // BUG-E6's "sick" lesson).
-  { kw: /\b(?:dard|takleef|bukhar|ulti|kamzori|sujan)\b/ig, label: "distress", vad: { v: -0.7, a: 0.5, d: -0.4 }, w: 0.9 },
-  { kw: /\b(?:pareshan\w*|ghabra\w*)\b/ig, label: "fear", vad: { v: -0.5, a: 0.5, d: -0.3 }, w: 0.7 },
-  { kw: /\b(?:samajh nahi|pata nahi)\b/ig, label: "confusion", vad: { v: -0.2, a: 0.1, d: -0.2 }, w: 0.7 },
-  { kw: /\b(?:shukriya|dhanyav?ad)\b/ig, label: "gratitude", vad: { v: 0.7, a: 0.2, d: 0.1 }, w: 0.8 },
+  { kw: /\b(?:dard|takleef|bukhar|ulti|kamzori|sujan|jalan|khujli|chakkar|kamzor)\b/ig, label: "distress", vad: { v: -0.7, a: 0.5, d: -0.4 }, w: 0.9 },
+  { kw: /\b(?:pareshan\w*|ghabra\w*|dar lag|darr lag)\b/ig, label: "fear", vad: { v: -0.5, a: 0.5, d: -0.3 }, w: 0.7 },
+  { kw: /\b(?:samajh nahi|pata nahi|samajh nahi aa raha|kya bola|kya bol rahe)\b/ig, label: "confusion", vad: { v: -0.2, a: 0.1, d: -0.2 }, w: 0.7 },
+  { kw: /\b(?:shukriya|dhanyav?ad|bahut accha laga)\b/ig, label: "gratitude", vad: { v: 0.7, a: 0.2, d: 0.1 }, w: 0.8 },
   // Self-harm in Hindi/Hinglish — same severity class and "err toward
   // over-triggering" discipline as the English pattern (BUG-E14).
   { kw: /\b(?:marne ka man|marna chahta|jeena nahi chahta|khud ko khatam|zindagi khatam)\b/ig, label: "distress", vad: { v: -0.95, a: 0.9, d: -0.6 }, w: 1.5 },
+
+  // BUG (language audit, 2026-11): the Hinglish/Devanagari sections below
+  // used to cover only 5 of the 12 labels (distress-symptoms, fear,
+  // confusion, gratitude, self-harm) — nothing for anger, frustration,
+  // sadness, disappointment, joy, or excitement in Hindi at all. Live-
+  // reproduced: a patient saying "मुझे बिल्कुल भी अच्छा सा नहीं लग रहा है"
+  // (I'm not feeling good at all) and later a calm clinical description of
+  // redness/swelling both fell through the lexicon entirely to the 4-class
+  // XLM-EMO engine (xlm-emo-label-map.ts — no `distress` output class) or
+  // to a bare neutral default, visibly mislabeling the turn (e.g. "RESPONDED
+  // TO: anger" for a plain symptom report) and feeding the wrong persona
+  // block into the LLM, which measurably correlates with the model then
+  // producing garbled/hallucinated Hindi text ("कसक और लालच" — nonsense —
+  // instead of acknowledging redness/pain). Filling out the same breadth the
+  // English lexicon has lets the deliberately-more-reliable lexicon win
+  // outright (see detectTextEmotion's doc) for ordinary Hindi/Hinglish
+  // phrasing instead of falling through to the narrower/weaker ML engine.
+  { kw: /\b(?:gussa|ghussa|naraz|chidh|bahut gussa|gussa aa raha)\b/ig, label: "anger", vad: { v: -0.6, a: 0.7, d: 0.3 }, w: 0.8 },
+  { kw: /\b(?:bahut der|bahut time|bar bar|baar baar|fir se|phir se|itni der se wait|kitni baar bataun)\b/ig, label: "frustration", vad: { v: -0.6, a: 0.6, d: 0.2 }, w: 0.8 },
+  { kw: /\b(?:udaas|dukhi|dil toot|mann nahi lag raha|accha nahi lag raha|theek nahi lag raha|accha nahi mehsoos|bura lag raha)\b/ig, label: "sadness", vad: { v: -0.7, a: -0.3, d: -0.2 }, w: 0.8 },
+  { kw: /\b(?:nirasha|niraash|ummeed nahi thi|aisa nahi socha tha)\b/ig, label: "disappointment", vad: { v: -0.5, a: -0.1, d: -0.2 }, w: 0.8 },
+  { kw: /\b(?:khush|accha laga|accha lag raha|badhiya|mast|theek lag raha|bahut accha)\b/ig, label: "joy", vad: { v: 0.7, a: 0.4, d: 0.2 }, w: 0.8 },
+  { kw: /\b(?:bahut khush|josh|zabardast|kamaal|shaandar)\b/ig, label: "excitement", vad: { v: 0.8, a: 0.7, d: 0.3 }, w: 0.8 },
+  // Clinical trend phrases — mirrors the dedicated English "getting
+  // worse"/"feeling better" entries above, since a post-op check-in call's
+  // whole purpose is catching a declining patient and these are extremely
+  // common ways a Hindi-speaking patient actually reports that.
+  { kw: /\b(?:pehle se zyada dard|aur zyada dard|dard badh gaya|zyada takleef ho rahi|theek nahi ho raha|aaram nahi mil raha)\b/ig, label: "distress", vad: { v: -0.7, a: 0.5, d: -0.4 }, w: 1.0 },
+  { kw: /\b(?:theek ho raha|aaram mil raha|behtar mehsoos|pehle se accha|ab theek hai)\b/ig, label: "joy", vad: { v: 0.6, a: -0.2, d: 0.3 }, w: 0.8 },
+  // Redness specifically — the exact symptom word missing from the original
+  // distress list above (only दर्द/तकलीफ/सूजन etc.), which is why a plain
+  // "there's some redness near my knee" report scored no lexicon match at
+  // all in testing.
+  { kw: /\b(?:lalpan|laali|lalima|redness)\b/ig, label: "distress", vad: { v: -0.6, a: 0.4, d: -0.3 }, w: 0.8 },
 
   // ── Devanagari-script Hindi ──────────────────────────────────────────────
   // Complementary to the Hinglish (Latin-script) entries above — only
@@ -226,9 +260,22 @@ export const LEXICON: Array<{
   // into an English sentence. Same word list as the Hinglish section,
   // written in-script; see devanagariWord()'s comment above for why these
   // can't use the ordinary \b(?:...)\b the rest of this file uses.
-  { kw: devanagariWord("दर्द|तकलीफ|बुखार|उल्टी|कमजोरी|सूजन"), label: "distress", vad: { v: -0.7, a: 0.5, d: -0.4 }, w: 0.9 },
+  { kw: devanagariWord("दर्द|तकलीफ|बुखार|उल्टी|कमजोरी|सूजन|जलन|खुजली|चक्कर"), label: "distress", vad: { v: -0.7, a: 0.5, d: -0.4 }, w: 0.9 },
   { kw: devanagariWord("परेशान|घबराहट|घबरा"), label: "fear", vad: { v: -0.5, a: 0.5, d: -0.3 }, w: 0.7 },
   { kw: devanagariWord("समझ नहीं|पता नहीं"), label: "confusion", vad: { v: -0.2, a: 0.1, d: -0.2 }, w: 0.7 },
   { kw: devanagariWord("शुक्रिया|धन्यवाद"), label: "gratitude", vad: { v: 0.7, a: 0.2, d: 0.1 }, w: 0.8 },
   { kw: devanagariWord("मरने का मन|मरना चाहता|जीना नहीं चाहता|खुद को खत्म|जिंदगी खत्म"), label: "distress", vad: { v: -0.95, a: 0.9, d: -0.6 }, w: 1.5 },
+
+  // Same anger/frustration/sadness/disappointment/joy/excitement/clinical-
+  // trend/redness breadth as the Hinglish section above, in-script — see the
+  // BUG comment there for why this expansion exists.
+  { kw: devanagariWord("गुस्सा|नाराज़|नाराज|चिढ़"), label: "anger", vad: { v: -0.6, a: 0.7, d: 0.3 }, w: 0.8 },
+  { kw: devanagariWord("बार-बार|बार बार|फिर से"), label: "frustration", vad: { v: -0.6, a: 0.6, d: 0.2 }, w: 0.7 },
+  { kw: devanagariWord("उदास|दुखी|अच्छा नहीं लग रहा|ठीक नहीं लग रहा|मन नहीं लग रहा|बुरा लग रहा"), label: "sadness", vad: { v: -0.7, a: -0.3, d: -0.2 }, w: 0.8 },
+  { kw: devanagariWord("निराशा|निराश|उम्मीद नहीं थी"), label: "disappointment", vad: { v: -0.5, a: -0.1, d: -0.2 }, w: 0.8 },
+  { kw: devanagariWord("खुश|अच्छा लगा|अच्छा लग रहा|बढ़िया|मस्त|ठीक लग रहा"), label: "joy", vad: { v: 0.7, a: 0.4, d: 0.2 }, w: 0.8 },
+  { kw: devanagariWord("बहुत खुश|जोश|ज़बरदस्त|जबरदस्त|कमाल|शानदार"), label: "excitement", vad: { v: 0.8, a: 0.7, d: 0.3 }, w: 0.8 },
+  { kw: devanagariWord("पहले से ज़्यादा दर्द|पहले से ज्यादा दर्द|और ज़्यादा दर्द|दर्द बढ़ गया|ठीक नहीं हो रहा|आराम नहीं मिल रहा"), label: "distress", vad: { v: -0.7, a: 0.5, d: -0.4 }, w: 1.0 },
+  { kw: devanagariWord("ठीक हो रहा|आराम मिल रहा|बेहतर महसूस|पहले से अच्छा|अब ठीक है"), label: "joy", vad: { v: 0.6, a: -0.2, d: 0.3 }, w: 0.8 },
+  { kw: devanagariWord("लालपन|लाली|लालिमा|रेडनेस"), label: "distress", vad: { v: -0.6, a: 0.4, d: -0.3 }, w: 0.8 },
 ];

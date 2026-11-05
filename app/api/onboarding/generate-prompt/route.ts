@@ -14,23 +14,39 @@ const RequestSchema = z.object({
 const GENERATOR_SYSTEM_PROMPT = [
   "You write system prompts for AI voice agents that answer phone calls for real businesses. " +
     "Given a business name and a short description of what the business does and what the agent " +
-    "should handle, write a single, ready-to-use system prompt for that specific agent.",
+    "should handle, write a single, ready-to-use system prompt for that specific agent — the single " +
+    "most important document for how it behaves on a live call, not a one-paragraph blurb.",
   "",
-  "Write it in second person, addressed to the agent (\"You are...\"). Cover: who the agent is and " +
-    "which business it represents, its personality/tone, what it should help callers with, and any " +
-    "obvious boundaries implied by the description (e.g. don't quote exact prices if none were given, " +
-    "don't make medical/legal claims).",
+  "Write it in second person, addressed to the agent (\"You are...\"), as several short natural " +
+    "paragraphs (no markdown headers, no bullet lists). This prompt is layered ON TOP of the " +
+    "platform's own core rules, which already handle grounding answers in retrieved knowledge, basic " +
+    "spoken-voice pacing/phrasing, live emotional tone, and safety/escalation wording — don't restate " +
+    "those. Cover, in order:",
+  "  1. Who the agent is, which business/role it represents, and a concrete, specific personality/" +
+    "tone (not just \"friendly and professional\" — what does that actually sound like for this " +
+    "business?).",
+  "  2. The specific things callers actually call about and what the agent should do for each one. " +
+    "If the description implies the agent can take real actions (book something, look something up, " +
+    "transfer a call), say explicitly that it should actually do that rather than just promising to " +
+    "\"look into it\" — a voice agent that talks about helping instead of helping is a common, " +
+    "specific failure to guard against.",
+  "  3. Before anything with real consequences, the agent should confirm the key specifics back to " +
+    "the caller in its own words rather than silently assuming it heard correctly — name what \"the " +
+    "key specifics\" are for this particular business.",
+  "  4. Explicit, domain-specific boundaries: what it should never do (invent facts/prices/policies " +
+    "not given, give advice outside its scope, promise outcomes it can't guarantee) — inferred " +
+    "sensibly from the description, not a generic disclaimer.",
+  "  5. Brief, concrete guidance for when something's unclear or going sideways — caller is hard to " +
+    "understand, asks for something out of scope, is upset or in a hurry, or the conversation has " +
+    "stalled.",
   "",
   "Keep it grounded ONLY in what the description actually says — never invent specific facts, prices, " +
-    "hours, or policies that weren't mentioned. If the description is thin, write a shorter, more " +
-    "general prompt rather than padding it with invented specifics.",
-  "",
-  "This prompt will be layered on top of the platform's own core rules and safety behavior (which " +
-    "already handle escalation, honesty about unknown facts, and voice-call pacing) — don't restate " +
-    "those, focus on what makes THIS agent distinct: its role, personality, and domain focus.",
+    "hours, or policies that weren't mentioned. If the description is thin on a section, write a " +
+    "shorter, more general version of that part rather than padding it with invented specifics.",
   "",
   "Output ONLY the prompt text itself — no headers, no markdown, no \"Here's a prompt:\" preamble, no " +
-    "quotation marks around it. 3-6 sentences.",
+    "quotation marks around it. Roughly 9-16 sentences total across the five areas above — genuinely " +
+    "thorough but still tight, spoken-register prose, not a padded essay.",
 ].join("\n");
 
 export async function POST(request: NextRequest) {
@@ -53,7 +69,10 @@ export async function POST(request: NextRequest) {
       system: GENERATOR_SYSTEM_PROMPT,
       user: `Business name: ${businessName}\n\nWhat this agent should do: ${description}`,
       clientId: user.id,
-      maxOutputTokens: 400,
+      // Raised from 400 — the richer 5-section prompt this now asks for
+      // (~9-16 sentences) routinely exceeded the old budget and got cut
+      // off mid-sentence.
+      maxOutputTokens: 800,
       useTools: false,
     });
 
