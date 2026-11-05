@@ -62,6 +62,12 @@ const BASE_TASK_COLUMNS =
   '"programmeId", "programmeStepLabel"';
 const TASK_COLUMNS = BASE_TASK_COLUMNS + ', "scheduledDate", "scheduledMinute", "archivedAt"';
 const V23_FIELDS = ["scheduledDate", "scheduledMinute", "archivedAt"] as const;
+/** migration_v31.sql — the appointment-calendar's discriminator columns.
+ * Stripped from an insert payload (alongside V23_FIELDS) on the same
+ * missing-column fallback below, so deploying this code before running
+ * v31 degrades a reminder/waitlist task to a plain "manual" one instead
+ * of failing the insert outright. */
+const V31_FIELDS = ["kind", "appointmentId", "waitlistId"] as const;
 
 /**
  * True when Postgres/PostgREST rejected a query because a column doesn't
@@ -79,6 +85,7 @@ export function isMissingColumnError(error: { code?: string; message?: string } 
 function withoutV23Fields<T extends Record<string, unknown>>(row: T): T {
   const copy = { ...row };
   for (const f of V23_FIELDS) delete copy[f];
+  for (const f of V31_FIELDS) delete copy[f];
   return copy;
 }
 
@@ -109,6 +116,11 @@ export interface CreateFollowUpFields {
   retryDelayMinutes?: number;
   finalAction?: "needs_review" | "completed" | "cancelled";
   rangeGroupId?: string | null;
+  /** migration_v31.sql — defaults to "manual" (a plain patient-initiated
+   * follow-up) when omitted, same as the column's own DB default. */
+  kind?: "manual" | "appointment_reminder" | "waitlist_offer";
+  appointmentId?: string | null;
+  waitlistId?: string | null;
 }
 
 export async function listFollowUpTasks(db: SupabaseClient, clientId: string): Promise<FollowUpTaskRecord[]> {
@@ -177,6 +189,9 @@ export async function createFollowUpTask(
       finalAction: fields.finalAction ?? "needs_review",
       rangeGroupId: fields.rangeGroupId ?? null,
       createdAt: Date.now(),
+      ...(fields.kind !== undefined && { kind: fields.kind }),
+      ...(fields.appointmentId !== undefined && { appointmentId: fields.appointmentId }),
+      ...(fields.waitlistId !== undefined && { waitlistId: fields.waitlistId }),
     },
   ]);
   const data = rows?.[0];
@@ -293,6 +308,49 @@ export async function setFollowUpTaskStatus(
     .single();
   if (error || !data) return null;
   return data as unknown as FollowUpTaskRecord;
+}
+
+/* ------------------------------------------------------------------ */
+/* Appointment reminders/waitlist (lib/scheduler/appointment-          */
+/* reminders.ts) — need migration_v31.sql                              */
+/* ------------------------------------------------------------------ */
+
+/** Bulk-cancels specific tasks by id — mirrors applyDoNotContactRequest's
+ * bulk-cancel pattern (lib/scheduler/dispatcher.ts) exactly, scoped down to
+ * named ids instead of "every task for this patient" since an
+ * appointment's reminder tasks need cancelling without touching any other
+ * schedule the same patient might have. Only "scheduled"/"paused" tasks are
+ * touched — one already "calling" is mid-flight and left alone, same rule
+ * as setFollowUpTaskStatus above. */
+export async function cancelFollowUpTasksByIds(db: SupabaseClient, taskIds: string[], clientId: string, lastOutcome: string): Promise<void> {
+  const ids = taskIds.filter((id): id is string => !!id);
+  if (ids.length === 0) return;
+  await db
+    .from("follow_up_tasks")
+    .update({ status: "cancelled", cancelledAt: Date.now(), lastOutcome })
+    .in("id", ids)
+    .eq("clientId", clientId)
+    .in("status", ["scheduled", "paused"]);
+}
+
+/** Minimal lookup for routing a finished call's outcome back to the
+ * appointment/waitlist entry it was about (app/api/telephony/status/
+ * route.ts, lib/scheduler/appointment-reminders.ts) — deliberately not
+ * the full FollowUpTaskRecord/TASK_COLUMNS, just the v31 discriminator
+ * columns plus clientId for scoping. Returns null (not throws) if v31
+ * hasn't been run yet, so a plain "manual" follow-up task's outcome
+ * handling is completely unaffected either way. */
+export async function getFollowUpTaskRoutingInfo(
+  db: SupabaseClient,
+  taskId: string,
+): Promise<{ kind: "manual" | "appointment_reminder" | "waitlist_offer"; appointmentId: string | null; waitlistId: string | null; clientId: string } | null> {
+  const { data, error } = await db
+    .from("follow_up_tasks")
+    .select('"clientId", kind, "appointmentId", "waitlistId"')
+    .eq("id", taskId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data as unknown as { kind: "manual" | "appointment_reminder" | "waitlist_offer"; appointmentId: string | null; waitlistId: string | null; clientId: string };
 }
 
 /* ------------------------------------------------------------------ */

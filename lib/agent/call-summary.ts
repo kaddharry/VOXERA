@@ -23,6 +23,18 @@ export interface CallSummary {
    * cancels remaining follow-ups when this is true — grounded strictly in
    * what was actually said, same discipline as flaggedConcerns. */
   requestedDoNotContact: boolean;
+  /** True only when this was a reminder call about a specific appointment
+   * (lib/scheduler/appointment-reminders.ts's scheduleAppointmentReminders)
+   * and the patient explicitly confirmed they'll attend — not merely
+   * acknowledging the reminder. app/api/telephony/status/route.ts applies
+   * this via applyAppointmentCallOutcome. */
+  appointmentConfirmed: boolean;
+  /** True only when the patient explicitly asked to cancel THIS appointment
+   * during the reminder call (not a general "don't contact me again",
+   * which is requestedDoNotContact above, and not a reschedule request —
+   * the agent's reschedule_appointment tool handles that live, during the
+   * call itself). */
+  appointmentCancelRequested: boolean;
   /** How the patient felt over the whole call, computed from the per-turn
    * emotion readings (lib/emotion/call-emotion.ts) — absent when no turn
    * had an emotion reading. */
@@ -56,7 +68,12 @@ const SUMMARY_SYSTEM_PROMPT =
   'confidently tell which of those two it is from the transcript alone>", ' +
   '"requestedDoNotContact": <true ONLY if the patient explicitly asked to stop being called/contacted ' +
   "altogether (e.g. 'stop calling me', 'take me off your list', 'don't contact me again') — NOT true for an " +
-  'ordinary "call me back later" or a single hang-up, false otherwise>}';
+  'ordinary "call me back later" or a single hang-up, false otherwise>, ' +
+  '"appointmentConfirmed": <true ONLY if this was a reminder call about a specific upcoming appointment and ' +
+  "the patient explicitly confirmed they will attend (e.g. 'yes I'll be there', 'confirmed'), false otherwise " +
+  "or if this call wasn't about an appointment at all>, " +
+  '"appointmentCancelRequested": <true ONLY if the patient explicitly asked to cancel that appointment during ' +
+  'this call (not merely to reschedule it), false otherwise>}';
 
 type LlmSummary = Omit<CallSummary, "automatedSafetySignals" | "callEmotion">;
 
@@ -79,6 +96,8 @@ function parseSummary(raw: string): LlmSummary | null {
         recommendedAction: parsed.recommendedAction,
         followUpOutcome: outcome === "resolved" || outcome === "needs_retry" ? outcome : "needs_review",
         requestedDoNotContact: parsed.requestedDoNotContact === true,
+        appointmentConfirmed: parsed.appointmentConfirmed === true,
+        appointmentCancelRequested: parsed.appointmentCancelRequested === true,
       };
     }
     return null;
