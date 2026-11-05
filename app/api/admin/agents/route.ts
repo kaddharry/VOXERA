@@ -11,6 +11,8 @@ const CreateAgentSchema = z.object({
   system_prompt: z.string().max(6000).optional(),
   greeting: z.string().max(500).optional(),
   voice_persona: z.string().max(60).optional(),
+  speech_provider: z.enum(["deepgram", "gnani"]).nullable().optional(),
+  language: z.string().max(20).nullable().optional(),
 });
 
 export async function GET() {
