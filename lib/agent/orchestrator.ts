@@ -880,3 +880,42 @@ export async function recordInterruptedReply(opts: {
     interrupted: true,
   });
 }
+
+/**
+ * Records an agent's scripted opening line (Agent Builder's `greeting`
+ * field) into the same places a normal LLM-generated reply would land —
+ * STM (so the model has it in context if the caller refers back to it) and
+ * session_logs/the live transcript SSE feed (so call history and the Live
+ * Dashboard show it as the first line of the conversation, not a gap).
+ *
+ * Deliberately NOT routed through generateReply()/handleTurn() — a
+ * configured greeting is static text the hospital wrote, not something to
+ * regenerate per call. The caller (server.ts for the browser test drawer,
+ * stream-handler.ts for real calls) is responsible for actually speaking
+ * it through whichever TTS engine that call resolved — this only handles
+ * the bookkeeping, identically for both call paths.
+ */
+export async function announceGreeting(opts: { sessionId: string; userId: string; clientId: string; text: string }): Promise<void> {
+  const trimmed = opts.text.trim();
+  if (!trimmed) return;
+
+  const agentTurn: Utterance = {
+    id: nanoid(8),
+    role: "agent",
+    text: trimmed,
+    ts: Date.now(),
+  };
+  await stm.push(opts.sessionId, agentTurn, opts.clientId);
+
+  const evBase = { sessionId: opts.sessionId, userId: opts.userId, clientId: opts.clientId };
+  void logSessionEvent(makeEvent(evBase, "utterance", {
+    utteranceId: agentTurn.id,
+    role: agentTurn.role,
+    text: agentTurn.text,
+    isGreeting: true,
+  }));
+  void emitSessionEvent(opts.sessionId, "transcript", {
+    role: "agent",
+    text: agentTurn.text,
+  });
+}
