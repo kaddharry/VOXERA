@@ -47,7 +47,7 @@ describe("BUG-E4 — genuine waiting complaints still register", () => {
     ).toBe("frustration");
   });
 
-  it.todo(
-    "should detect frustration in \"I'm sick of this\" (blocked by existing 'sick' slang collision)"
-  );
+  it("detects frustration in \"I'm sick of this\" (BUG-E6 fixed the 'sick' slang collision)", () => {
+    expect(detectTextEmotionLexicon("I'm sick of this").label).toBe("frustration");
+  });
 });

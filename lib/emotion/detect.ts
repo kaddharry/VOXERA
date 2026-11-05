@@ -41,13 +41,25 @@ export function detectTextEmotionLexicon(text: string): EmotionSignal & { matche
   let hasNegMatch = false;
   let hasPosMatch = false;
 
-  // A negation cue ("not", "n't", "never", "no", "hardly", "barely") in the
-  // ~20 chars right before a match flips the read entirely — the lexicon had
-  // no negation handling at all, so "I'm not feeling good" matched the
-  // "good" keyword and scored as pure JOY. Flip positive labels to their
-  // negative counterpart on negation; drop negated negative-label matches
-  // ("not angry") rather than guess a specific replacement label.
-  const NEGATION_RE = /\b(?:not|n't|never|no|hardly|barely)\s+(?:\w+\s+){0,2}$/i;
+  // A negation cue ("not", a contraction like "don't"/"isn't"/"can't",
+  // "never", "no", "hardly", "barely") in the ~20 chars right before a match
+  // flips the read entirely — the lexicon had no negation handling at all,
+  // so "I'm not feeling good" matched the "good" keyword and scored as pure
+  // JOY. Flip positive labels to their negative counterpart on negation;
+  // drop negated negative-label matches ("not angry") rather than guess a
+  // specific replacement label.
+  //
+  // BUG-E5 fix: the contraction alternative used to be the bare token "n't",
+  // which can never match — \b requires a word-boundary immediately before
+  // the "n", but every real contraction ("don't", "isn't", "can't"...) has a
+  // letter there, not a boundary. That silently disabled negation for the
+  // single most common way people negate a feeling in speech. Spelling out
+  // the actual contraction bases (do/does/did/is/was/are/were/wo/would/
+  // could/should/have/has/had/ca/ai + "n't") fixes the match without
+  // over-matching ordinary words that merely end in "-nt" ("patient",
+  // "recent", "moment", "important") the way a generic \w*n't would.
+  const NEGATION_RE =
+    /\b(?:not|cannot|(?:do|does|did|is|was|are|were|wo|would|could|should|have|has|had|ca|ai)n'?t|never|no|hardly|barely)\s+(?:[\w']+\s+){0,2}$/i;
   const POS_TO_NEG: Partial<Record<EmotionLabel, EmotionLabel>> = {
     joy: "sadness",
     gratitude: "disappointment",
@@ -254,7 +266,12 @@ export async function detectTextEmotionLocal(text: string): Promise<EmotionSigna
     vad,
     source: "text",
     at: Date.now(),
-    isMixed: false,
+    // BUG-E6b: hardcoded false regardless of what the lexicon actually
+    // found — silently dropped the mixed-emotion signal whenever this path
+    // ever gets used (see classifier.ts's header for why it's currently
+    // unreachable in production, but deliberately kept for a future
+    // tertiary-fallback use).
+    isMixed: lexSignal.isMixed,
   };
 }
 
@@ -368,7 +385,21 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
   // Lexicon wins outright on a real keyword match — deliberate, hand-tuned
   // evidence beats a generic classifier's guess, and is the ONLY way to
   // reach the 5 labels the ML model structurally can't express.
-  if (lexiconResult.matchedKeywords.length > 0) {
+  //
+  // BUG-E16: this used to check matchedKeywords.length alone, but
+  // detectTextEmotionLexicon's punctuation heuristics (repeated "?" ->
+  // confusion, repeated "!" -> excitement when no negative keyword is
+  // present) can set a non-neutral label WITHOUT adding to
+  // matchedKeywords — punctuation isn't a "keyword". A word-sparse,
+  // punctuation-heavy utterance ("!!!!", "??????") then fell through to
+  // the ONNX fallback despite the lexicon already having a deliberate,
+  // documented answer for it — and the fallback isn't just a different
+  // opinion, it can flip the valence sign entirely: "!!!!" alone reads as
+  // EXCITEMENT (positive) by the lexicon's own design, but came back
+  // ANGER (negative) once routed to ONNX. Trusting any non-neutral lexicon
+  // label here, not just a keyword match, keeps the lexicon's own
+  // punctuation-only verdict instead of discarding it.
+  if (lexiconResult.matchedKeywords.length > 0 || lexiconResult.label !== "neutral") {
     return {
       primary: lexiconResult,
       lexicon: lexiconResult,
@@ -376,7 +407,9 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
       localOnnx: { signal: null, latencyMs: 0, errored: false },
       selection: {
         engine: "lexicon",
-        reason: `Lexicon matched keyword(s) [${lexiconResult.matchedKeywords.join(", ")}] → label=${lexiconResult.label}`,
+        reason: lexiconResult.matchedKeywords.length > 0
+          ? `Lexicon matched keyword(s) [${lexiconResult.matchedKeywords.join(", ")}] → label=${lexiconResult.label}`
+          : `Lexicon's punctuation-only heuristic → label=${lexiconResult.label} (no keyword match)`,
       },
     };
   }
@@ -448,6 +481,16 @@ export async function detectTextEmotion(text: string): Promise<TextEmotionResult
  * (see fuseEmotion). The lexicon's single-keyword matches score ~0.55. */
 const TEXT_LABEL_AUTHORITY_CONFIDENCE = 0.5;
 
+const FUSION_POSITIVE_LABELS = new Set<EmotionLabel>(["joy", "gratitude", "excitement", "calm"]);
+const FUSION_NEGATIVE_LABELS = new Set<EmotionLabel>([
+  "anger", "frustration", "sadness", "distress", "fear", "disappointment", "confusion",
+]);
+function fusionValenceBucket(label: EmotionLabel): "positive" | "negative" | "neutral" {
+  if (FUSION_POSITIVE_LABELS.has(label)) return "positive";
+  if (FUSION_NEGATIVE_LABELS.has(label)) return "negative";
+  return "neutral";
+}
+
 export function fuseEmotion(
   text: EmotionSignal,
   audio: EmotionSignal | null
@@ -508,7 +551,24 @@ export function fuseEmotion(
   }
 
   const intensity = clamp(Math.sqrt(vad.v * vad.v + vad.a * vad.a + vad.d * vad.d) / Math.sqrt(3));
-  const confidence = clamp((audio.confidence + text.confidence) / 2 + 0.05);
+
+  // BUG-E8 fix: a flat +0.05 used to be added to the text/audio average
+  // unconditionally, so two signals that flatly DISAGREE (words say "great",
+  // voice says "angry") could come out of fusion MORE confident than either
+  // engine was on its own — the opposite of what sensor fusion should do.
+  // Only corroborate (small bonus) when the two sources land in the same
+  // broad valence bucket. On disagreement this used to clamp to
+  // Math.min(audio, text) — that over-corrected: a confidently-read neutral
+  // text signal (e.g. the small-talk guard's 0.9) got dragged all the way
+  // down to a weak, noisy reconstructed audio read (e.g. 0.3) just because
+  // the two didn't land in the same bucket, discarding almost all of the
+  // text signal's real certainty. The plain average without the bonus still
+  // fixes the original complaint (can never exceed either input) without
+  // that overcorrection.
+  const agree = fusionValenceBucket(text.label) === fusionValenceBucket(audio.label);
+  const confidence = agree
+    ? clamp((audio.confidence + text.confidence) / 2 + 0.05)
+    : clamp((audio.confidence + text.confidence) / 2);
 
   return {
     label,

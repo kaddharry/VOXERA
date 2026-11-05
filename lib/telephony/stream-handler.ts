@@ -427,6 +427,16 @@ export class TelephonyStreamHandler {
       this.triggerBargeIn(isFinal ? "caller spoke" : `caller started speaking: "${text.trim()}"`);
     }
     if (!isFinal) return;
+    // BUG-E7: when the merge branch below fires, the caller's two
+    // transcript fragments get concatenated into one `text`, but the pause
+    // between them (the agent still composing its reply) is commonly well
+    // past isolateLastUtterance's default utterance-boundary cutoff — which
+    // would then (wrongly, since we KNOW structurally this is one
+    // utterance) drop the earlier fragment's audio while wordCount below
+    // still counts both fragments' words. Tracked here so the turnPcm
+    // isolation a few lines down can opt into "span from first speech"
+    // mode specifically for this case.
+    let wasMerged = false;
     if (this.isBusy) {
       // Once the agent is talking, an interruption goes through barge-in
       // (triggerBargeIn frees the turn before this transcript arrives).
@@ -442,6 +452,7 @@ export class TelephonyStreamHandler {
       this.generation++;
       this.currentAbortController?.abort();
       text = merged;
+      wasMerged = true;
     }
     this.isBusy = true;
     this.currentTurnText = text;
@@ -466,8 +477,10 @@ export class TelephonyStreamHandler {
     try {
       // Issue #14: Extract acoustic features from accumulated PCM
       // Only the caller's own latest utterance — not the silence while the
-      // agent spoke or the line waited (see isolateLastUtterance).
-      const turnPcm = isolateLastUtterance(Buffer.concat(this.turnAudioChunks));
+      // agent spoke or the line waited (see isolateLastUtterance). On a
+      // merged turn, span from the very first speech instead of applying
+      // the normal utterance-gap cutoff — see BUG-E7 note above.
+      const turnPcm = isolateLastUtterance(Buffer.concat(this.turnAudioChunks), { fromFirstSpeech: wasMerged });
       const wordCount = text.split(/\s+/).filter(Boolean).length;
       const acousticFeatures = turnPcm.length > 0
         ? extractAcousticFeatures(turnPcm, wordCount)

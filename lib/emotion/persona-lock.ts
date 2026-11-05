@@ -105,9 +105,15 @@ export async function resolvePersonaLock(sessionId: string, emotion: EmotionCont
   // real distress must never wait on a 4-turn streak before the agent's
   // tone catches up.
   if (flags.increasing_distress || current.label === "distress") {
+    const existingBeforeOverride = await loadState(sessionId);
     const state: PersonaLockState = { lockedLabel: "distress", lockedSign: currentSign, pendingSign: null, pendingStreak: 0 };
     await saveState(sessionId, state);
-    return { label: "distress", justShifted: true, pendingStreak: 0, pendingSign: null };
+    // BUG-E11 fix: this used to hardcode justShifted: true on every turn
+    // distress holds, not just the turn that actually entered it — the
+    // field is documented as "this turn just committed a lock CHANGE",
+    // which should be false on the 2nd/3rd/... consecutive distressed turn.
+    const justShifted = existingBeforeOverride?.lockedLabel !== "distress";
+    return { label: "distress", justShifted, pendingStreak: 0, pendingSign: null };
   }
 
   const existing = await loadState(sessionId);

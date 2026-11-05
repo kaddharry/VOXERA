@@ -29,12 +29,22 @@ const PLOT_W = WIDTH - PAD_X * 2;
 const PLOT_H = HEIGHT - PAD_Y * 2;
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
 
-function dotColor(label: string, confidence: number): string {
+// BUG-E13: "sadness" was missing from this switch entirely — a valid
+// EmotionLabel the lexicon/fusion engine produces regularly (context.ts's
+// own NEGATIVE set groups it with anger/frustration/distress), but with no
+// case here it silently fell to `default` and rendered as a neutral cyan
+// dot with "Neutral tone" in the callout — exactly the live symptom
+// reported: a point quoting "I feel very low... I can't do anything by
+// myself" displaying as neutral. Grouped with anger/frustration/distress
+// (the "upset" red bucket), matching context.ts's own NEGATIVE-label
+// grouping, not with the lower-intensity "confused/anxious" amber bucket.
+export function dotColor(label: string, confidence: number): string {
   if (confidence < LOW_CONFIDENCE_THRESHOLD) return "#71717a"; // zinc-500 — low-confidence/unknown reads stay visually muted
   switch (label) {
     case "anger":
     case "frustration":
     case "distress":
+    case "sadness":
       return "#f87171"; // red-400
     case "fear":
     case "confusion":
@@ -53,7 +63,7 @@ function dotColor(label: string, confidence: number): string {
 /** Plain-English read of the label, for a hospital staff member who has
  * never heard of "valence" or "confidence" — the whole point of this
  * callout is to replace ML jargon with "here's roughly how they felt". */
-function plainLanguage(label: string, confidence: number): string {
+export function plainLanguage(label: string, confidence: number): string {
   if (confidence < LOW_CONFIDENCE_THRESHOLD) return "Unclear — not enough signal to read the mood here";
   switch (label) {
     case "anger":
@@ -62,6 +72,8 @@ function plainLanguage(label: string, confidence: number): string {
       return "Sounded frustrated";
     case "distress":
       return "Sounded distressed";
+    case "sadness":
+      return "Sounded sad or down";
     case "fear":
       return "Sounded anxious or fearful";
     case "confusion":
@@ -96,8 +108,18 @@ export function ValenceTimeline({ points }: { points: ValencePoint[] }) {
     return <div className="text-[13px] text-[var(--color-text-muted)] italic px-1">No emotion data recorded for this session.</div>;
   }
 
-  const minTs = points[0].ts;
-  const maxTs = points[points.length - 1].ts;
+  // BUG-E9: this component used to trust `points` to already be sorted
+  // ascending by `ts` and read min/max off the first/last element. The
+  // caller's events come from a DB query ordered by `ts` alone with no
+  // secondary tiebreaker, and several session-log writes land within the
+  // same millisecond (fire-and-forget calls from the same turn) — ties can
+  // come back in any order, and on an unsorted or tied input the computed
+  // min/max could be wrong (even producing a negative `span`), stacking
+  // points on top of each other instead of spreading them left to right.
+  const points_ = [...points].sort((a, b) => a.ts - b.ts);
+
+  const minTs = points_[0].ts;
+  const maxTs = points_[points_.length - 1].ts;
   const span = Math.max(1, maxTs - minTs);
 
   const toXY = (p: ValencePoint) => {
@@ -106,7 +128,7 @@ export function ValenceTimeline({ points }: { points: ValencePoint[] }) {
     return { x, y };
   };
 
-  const dots = points.map((p) => ({ ...toXY(p), point: p }));
+  const dots = points_.map((p) => ({ ...toXY(p), point: p }));
   const path = dots.map((d, i) => `${i === 0 ? "M" : "L"} ${d.x.toFixed(1)} ${d.y.toFixed(1)}`).join(" ");
   const zeroY = PAD_Y + PLOT_H / 2;
 
