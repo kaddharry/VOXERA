@@ -44,6 +44,16 @@ describe("buildConnectTwiml", () => {
     expect(xml).toContain("<Say");
     expect(xml.toLowerCase()).toContain("please hold");
   });
+
+  it("configures an absolute stream lifecycle callback when provided", () => {
+    const xml = buildConnectTwiml(
+      "wss://voice.example/api/telephony/stream",
+      { callSid: "CA000" },
+      "https://app.example/api/telephony/stream-status",
+    );
+    expect(xml).toContain("statusCallback=\"https://app.example/api/telephony/stream-status\"");
+    expect(xml).toContain("statusCallbackMethod=\"POST\"");
+  });
 });
 
 describe("buildWaitTwiml", () => {
