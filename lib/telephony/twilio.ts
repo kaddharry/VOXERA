@@ -41,7 +41,11 @@ export function validateTwilioSignature(
  * Twilio-documented mechanism: they arrive in the `start` event's
  * `start.customParameters`, which the stream handler now reads instead.
  */
-export function buildConnectTwiml(wsUrl: string, customParams: Record<string, string>): string {
+export function buildConnectTwiml(
+  wsUrl: string,
+  customParams: Record<string, string>,
+  statusCallbackUrl?: string,
+): string {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
 
@@ -52,7 +56,10 @@ export function buildConnectTwiml(wsUrl: string, customParams: Record<string, st
   );
 
   const connect = response.connect();
-  const stream = connect.stream({ url: wsUrl });
+  const stream = connect.stream({
+    url: wsUrl,
+    ...(statusCallbackUrl && { statusCallback: statusCallbackUrl, statusCallbackMethod: "POST" as const }),
+  });
   for (const [name, value] of Object.entries(customParams)) {
     if (value) stream.parameter({ name, value });
   }

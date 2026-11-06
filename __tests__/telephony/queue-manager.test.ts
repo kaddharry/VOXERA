@@ -5,8 +5,9 @@
  * Run: npm run test:run
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { CallQueueManager } from "../../lib/queue/manager";
+import { redis } from "../../lib/redis/client";
 
 // Use a fresh instance per test — reset mock state
 let q: CallQueueManager;
@@ -64,6 +65,15 @@ describe("CallQueueManager — active call tracking", () => {
     await q.markCallStarted();
     await q.markCallStarted();
     expect(await q.getActiveCallCount()).toBe(2);
+  });
+
+  it("rolls back the active slot if recording the handled metric fails", async () => {
+    const incr = vi.spyOn(redis, "incr");
+    const originalIncr = redis.incr.bind(redis);
+    incr.mockImplementationOnce((key) => originalIncr(key)).mockImplementationOnce(async () => { throw new Error("metric write failed"); });
+    await expect(q.markCallStarted()).rejects.toThrow("metric write failed");
+    expect(await q.getActiveCallCount()).toBe(0);
+    incr.mockRestore();
   });
 
   it("markCallEnded decrements active count, never below 0", async () => {

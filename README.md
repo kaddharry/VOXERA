@@ -156,7 +156,7 @@ If you add a new environment variable during development, you **must** add a dum
 
 ## 8. Docker Build Instructions
 
-We use a multi-stage Dockerfile that outputs a minimal Next.js standalone build.
+We use a multi-stage Dockerfile that runs the full Next.js build behind the custom Node server (required for the integrated raw WebSocket upgrade).
 To build the image:
 ```bash
 docker build -t voxera:latest .
@@ -174,6 +174,10 @@ docker run -p 3000:3000 --env-file .env.local voxera:latest
 - Next.js telemetry is disabled in the Dockerfile.
 - The build process runs `npm run build` during the image creation. This means dummy environment variables are provided inside the Dockerfile strictly so static prerendering succeeds.
 - When running the container in the cloud, you must inject your live `.env.local` variables via your provider's secrets manager.
+
+### Vercel and telephony readiness
+
+The Docker/custom-server setup below is a single persistent Node deployment, not a Vercel deployment. VOXERA's phone media stream and follow-up scheduler require persistent processes, while the current queue/Pub/Sub implementation is process-local. See [the production deployment assessment](docs/production-deployment.md) for the Vercel + voice service + worker recommendation, confirmed repository findings, environment-variable ownership, migration order, and the production smoke checklist. Do not point Twilio Media Streams at Vercel until the actual Vercel WebSocket runtime, duration, shared-state, and repeated-call smoke tests have passed.
 
 ---
 

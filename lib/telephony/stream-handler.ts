@@ -164,6 +164,7 @@ export class TelephonyStreamHandler {
   private currentTurnText = "";
   private hasEnded = false; // prevent double-invocation of onCallEnded
   private slotTaken = false;
+  private slotReleaseStarted = false;
 
   // Issue #14: PCM accumulator for acoustic feature extraction
   private turnAudioChunks: Buffer[] = [];
@@ -255,7 +256,10 @@ export class TelephonyStreamHandler {
     // back despite the agent generating real replies. Same bug class
     // server.ts's realtime demo path already documents fixing.
     this.ws.on("message", (data: Buffer) => this.onTwilioMessage(data));
-    this.ws.on("close", () => this.onCallEnded());
+    this.ws.on("close", (code: number, reason: Buffer) => {
+      console.info(JSON.stringify({ service: "telephony", event: "websocket_closed", timestamp: new Date().toISOString(), callSid: this.callSid, streamSid: this.streamSid, sessionId: this.sessionId, closeCode: code, closeReason: reason.toString() }));
+      this.onCallEnded();
+    });
     this.ws.on("error", (err) => {
       console.error(`[TelephonyStream] WebSocket error on ${this.callSid}:`, err);
       this.onCallEnded();
@@ -267,8 +271,25 @@ export class TelephonyStreamHandler {
   private async init() {
     await callQueue.markCallStarted();
     this.slotTaken = true;
+    // If the socket closed while Redis/local state was acquiring the slot,
+    // onCallEnded() ran before the slot existed. Release it here exactly once.
+    if (this.hasEnded) {
+      await this.releaseCallSlot();
+      return;
+    }
     await this.stt.connect();
     console.log(`[TelephonyStream] STT ready for session: ${this.sessionId}`);
+  }
+
+  private async releaseCallSlot(): Promise<void> {
+    if (!this.slotTaken || this.slotReleaseStarted) return;
+    this.slotReleaseStarted = true;
+    this.slotTaken = false;
+    try {
+      await callQueue.markCallEnded();
+    } catch (err) {
+      console.error(JSON.stringify({ service: "telephony", event: "slot_release_failed", timestamp: new Date().toISOString(), callSid: this.callSid, sessionId: this.sessionId, error: err instanceof Error ? err.message : String(err) }));
+    }
   }
   private async onInitFailed(err: unknown) {
     console.error(`[TelephonyStream] Initialisation failed for ${this.callSid}:`, err);
@@ -280,9 +301,7 @@ export class TelephonyStreamHandler {
       // may have failed before connecting
     }
 
-    if (this.slotTaken) {
-      await callQueue.markCallEnded();
-    }
+    await this.releaseCallSlot();
 
     const endedAt = Date.now();
 
@@ -550,7 +569,7 @@ export class TelephonyStreamHandler {
       // while the caller is still mid-word, so this is quick) and the
       // caller's sentence becomes the next turn.
       if (isBackchannel(text)) return;
-      this.triggerBargeIn(isFinal ? "caller spoke" : `caller started speaking: "${text.trim()}"`);
+      this.triggerBargeIn(isFinal ? "caller spoke" : "caller speech started");
     }
     if (!isFinal) return;
     // BUG-E7: when the merge branch below fires, the caller's two
@@ -574,7 +593,7 @@ export class TelephonyStreamHandler {
       // answering the fragment. Cancel the half-built reply and answer the
       // whole sentence instead.
       const merged = `${this.currentTurnText} ${text.trim()}`;
-      console.log(`[TelephonyStream] Caller continued before the reply started (${this.callSid}) — answering the whole sentence: "${merged}"`);
+      console.info(JSON.stringify({ service: "telephony", event: "caller_turn_merged", timestamp: new Date().toISOString(), callSid: this.callSid, streamSid: this.streamSid, clientId: this.clientId, agentId: this.agentId ?? null, patientId: this.patientId ?? null, sessionId: this.sessionId }));
       this.generation++;
       this.currentAbortController?.abort();
       text = merged;
@@ -584,7 +603,7 @@ export class TelephonyStreamHandler {
     this.currentTurnText = text;
     const myGeneration = this.generation;
 
-    console.log(`[TelephonyStream] Transcript (${this.callSid}): "${text}"`);
+    console.info(JSON.stringify({ service: "telephony", event: "transcript_received", timestamp: new Date().toISOString(), callSid: this.callSid, streamSid: this.streamSid, clientId: this.clientId, agentId: this.agentId ?? null, patientId: this.patientId ?? null, sessionId: this.sessionId, final: isFinal, characterCount: text.length }));
 
     const abortController = new AbortController();
     this.currentAbortController = abortController;
@@ -859,7 +878,7 @@ export class TelephonyStreamHandler {
 
     console.log(`[TelephonyStream] Call ended: ${this.callSid}, duration: ${durationMs}ms`);
 
-    await callQueue.markCallEnded();
+    await this.releaseCallSlot();
     this.stt.close();
     this.currentSpeakStream?.close();
 
