@@ -17,7 +17,21 @@ const TARGET_SAMPLE_RATE = 16000;
 // ~100ms per WS frame at 16kHz — batches the AudioWorklet's 128-sample
 // (2.7ms) render quanta into chunks actually useful for streaming STT.
 const SEND_CHUNK_SAMPLES = 1600;
-const WS_BASE_URL = process.env.NEXT_PUBLIC_REALTIME_WS_URL || "ws://localhost:3001";
+/**
+ * Defaults to a same-origin WebSocket pointed at the deployed app's own
+ * /api/test-agent/stream route (app/api/test-agent/stream/route.ts) —
+ * works both on Vercel and for a plain `next dev`/self-hosted deployment.
+ * NEXT_PUBLIC_REALTIME_WS_URL overrides this for local dev against the
+ * standalone server.ts process (`npm run server` / `npm run dev:full`),
+ * which has lower latency locally since it skips the Vercel Functions
+ * WebSocket path entirely.
+ */
+function resolveRealtimeWsUrl(): string {
+  if (process.env.NEXT_PUBLIC_REALTIME_WS_URL) return process.env.NEXT_PUBLIC_REALTIME_WS_URL;
+  if (typeof window === "undefined") return "ws://localhost:3001";
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/api/test-agent/stream`;
+}
 
 type CallStatus = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "error";
 
@@ -617,9 +631,10 @@ export function TestAgentDrawer() {
 
       const selectedAgent = agents.find((a) => a.id === selectedAgentId);
       const effectiveAgentId = selectedAgent?.id ?? (selectedAgentId || undefined);
+      const wsBaseUrl = resolveRealtimeWsUrl();
       const wsUrl = effectiveAgentId
-        ? `${WS_BASE_URL}?agentId=${encodeURIComponent(effectiveAgentId)}`
-        : WS_BASE_URL;
+        ? `${wsBaseUrl}?agentId=${encodeURIComponent(effectiveAgentId)}`
+        : wsBaseUrl;
       setActiveAgentName(selectedAgent?.name ?? null);
 
       const ws = new WebSocket(wsUrl);
@@ -634,7 +649,7 @@ export function TestAgentDrawer() {
       };
 
       ws.onerror = () => {
-        setError(`Couldn't reach the realtime voice server at ${WS_BASE_URL}. Make sure it's running: npm run server`);
+        setError(`Couldn't reach the realtime voice server at ${wsBaseUrl}. Make sure it's running: npm run server`);
         setStatus("error");
         endCall();
       };
