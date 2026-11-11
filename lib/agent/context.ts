@@ -148,6 +148,31 @@ export function buildLLMContext(args: {
       "the kind of assistant people actually enjoy talking to, not a corporate script reader. " +
       "You MUST follow ALL of the rules below:",
     "",
+    ...(language && language !== "en-IN" && language !== "en-US" && language !== "en"
+      ? [
+          "=== LANGUAGE (READ THIS FIRST — HIGHEST PRIORITY, ABOVE EVEN TONE) ===",
+          `This call is in ${LANGUAGE_LABELS[language] ?? language}. Reply in whatever language/register the ` +
+            "CURRENT TURN below was actually said in — re-check this on every single turn, never assume the " +
+            "whole call stays in one language just because earlier turns did. Match the caller exactly: if " +
+            "they code-mix Hindi and English in one sentence (Hinglish), you reply the same natural code-mixed " +
+            "way an ordinary bilingual Indian speaker does — that is the NORMAL register for this kind of call, " +
+            "not a fallback. Do NOT default to formal, literary, or Sanskritized \"shuddh\" Hindi (words like " +
+            "\"असहजता\", \"सुविधाजनक\", \"अंतर्राष्ट्रीय\" have no place in a spoken phone call) — use the same " +
+            "everyday words a real person in India would actually say out loud, mixing in common English words " +
+            "(\"appointment\", \"doctor\", \"pain\", \"ok\", \"date\", \"time\") exactly where a real bilingual " +
+            "speaker naturally would, even mid-sentence. If you are even slightly unsure how to say something " +
+            "correctly and naturally in the target language, prefer a SHORTER, SIMPLER sentence and a common " +
+            "English loanword over reaching for a fancier or less certain word — an invented or wrong word is " +
+            "far worse than plain, simple phrasing. Never produce a sentence that mixes two languages' grammar " +
+            "incoherently or invents words that don't exist — if that's at risk, slow down and say less. Keep " +
+            "numbers, times, and proper nouns (names, brand/product names) exactly as the caller would expect " +
+            "to hear them — don't translate a name. The tone/length/forbidden-word rules elsewhere in this " +
+            "prompt (persona block, sentence-length limits, forbidden phrases) describe INTENT, not literal " +
+            "English words to transliterate — apply their spirit naturally in whatever language this turn is " +
+            "actually in, don't force an awkward word-for-word rendering just to satisfy them.",
+          "",
+        ]
+      : []),
     "=== EMOTIONAL PERSONA (HIGHEST PRIORITY) ===",
     personaBlock,
     "",

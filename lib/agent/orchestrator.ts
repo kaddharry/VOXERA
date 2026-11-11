@@ -63,6 +63,14 @@ export interface TurnInput {
    * CONTEXT" block (lib/agent/context.ts), additive alongside the agent's
    * own system_prompt, never overriding CORE RULES/grounding. */
   patientId?: string;
+  /** The caller's phone number, as captured by the telephony layer
+   * (lib/telephony/stream-handler.ts). Threaded through to
+   * dispatchToolCall (lib/agent/tools.ts) so an appointment tool can
+   * verify which patient it's talking to on a real inbound call (where
+   * patientId above is unset) before writing anything — see
+   * resolveVerifiedPatient's doc there. Not set for text-only callers
+   * (e.g. /api/turn, admin "try-call") since there's no real phone number. */
+  callerNumber?: string;
   /** Resolved speech language for this call (lib/speech/resolve.ts) — e.g.
    * "en-IN", "hi-IN", "hi-en". Drives which emotion-detection model
    * detectTextEmotion() uses (lib/emotion/detect.ts); unset/English leaves
@@ -212,12 +220,12 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       })
     : Promise.resolve(undefined);
   let customInstructions: string | undefined;
-  let resolvedAgent: { id: string; name: string; voicePersona?: string | null } | undefined;
+  let resolvedAgent: { id: string; name: string; voicePersona?: string | null; enabledTools?: string[] } | undefined;
   function applyAgentInfo(agentInfo: Awaited<typeof agentInfoPromise>) {
     if (agentInfo) {
       input.clientId = agentInfo.tenant_auth_user_id;
       customInstructions = agentInfo.system_prompt ?? undefined;
-      resolvedAgent = { id: agentInfo.id, name: agentInfo.name, voicePersona: agentInfo.voice_persona };
+      resolvedAgent = { id: agentInfo.id, name: agentInfo.name, voicePersona: agentInfo.voice_persona, enabledTools: agentInfo.enabledTools };
     }
   }
 
@@ -608,19 +616,25 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
         sessionId: input.sessionId,
         userId: input.userId,
         abortSignal: opts.abortSignal,
-        // Reservation tools (check/create/modify/cancel_booking) are a
-        // single global TOOLS array with no per-agent scoping — every
+        language: input.language,
+        // Reservation tools (check/create/modify/cancel_booking) used to be
+        // a single global TOOLS array with no per-agent scoping — every
         // custom Agent Builder agent (a resume bot, an FAQ agent, anything)
         // got the exact same restaurant-booking tools as the hardcoded demo
         // agent, regardless of what that business actually does. Live-
         // reproduced: a resume agent, given a question it had no real
         // grounding to answer, called create_booking with entirely
         // fabricated customer data and attempted to send a confirmation
-        // email. Custom agents have no booking system built for their
-        // tenants at all right now, so this was pure risk with no matching
-        // feature — restrict tools to the hardcoded demo path
-        // (resolvedAgent is only set once an Agent Builder agent resolves).
-        useTools: !resolvedAgent,
+        // email. Fixed by migration_v29.sql's agents."enabledTools"
+        // allowlist (see lib/agent/tools.ts's getToolsForAgent): a custom
+        // agent only gets tools a hospital admin explicitly turned on for
+        // it (Agent Builder's Tools tab), defaulting to none for every
+        // agent, old or new — the hardcoded demo path (resolvedAgent unset)
+        // keeps its original unconditional tool access unchanged.
+        useTools: !resolvedAgent || (resolvedAgent.enabledTools?.length ?? 0) > 0,
+        enabledTools: resolvedAgent ? resolvedAgent.enabledTools ?? [] : undefined,
+        patientId: input.patientId,
+        callerNumber: input.callerNumber,
         // Live-observed dashboard gap: the "transcript" SSE event for the
         // agent's turn only ever fired once, with the FULL final text,
         // after the whole reply (and every clause of real audio) had
@@ -672,9 +686,13 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       clientId: input.clientId,
       sessionId: input.sessionId,
       userId: input.userId,
-      // See the streaming branch above for why this is scoped to the
-      // hardcoded demo path only.
-      useTools: !resolvedAgent,
+      // See the streaming branch above for how tool access is now scoped
+      // per-agent via enabledTools rather than an all-or-nothing flag.
+      useTools: !resolvedAgent || (resolvedAgent.enabledTools?.length ?? 0) > 0,
+      enabledTools: resolvedAgent ? resolvedAgent.enabledTools ?? [] : undefined,
+      patientId: input.patientId,
+      callerNumber: input.callerNumber,
+      language: input.language,
     });
     guarded = guardOutput({
       reply: llmReply.text,
@@ -862,5 +880,44 @@ export async function recordInterruptedReply(opts: {
     role: "agent",
     text: agentTurn.text,
     interrupted: true,
+  });
+}
+
+/**
+ * Records an agent's scripted opening line (Agent Builder's `greeting`
+ * field) into the same places a normal LLM-generated reply would land —
+ * STM (so the model has it in context if the caller refers back to it) and
+ * session_logs/the live transcript SSE feed (so call history and the Live
+ * Dashboard show it as the first line of the conversation, not a gap).
+ *
+ * Deliberately NOT routed through generateReply()/handleTurn() — a
+ * configured greeting is static text the hospital wrote, not something to
+ * regenerate per call. The caller (server.ts for the browser test drawer,
+ * stream-handler.ts for real calls) is responsible for actually speaking
+ * it through whichever TTS engine that call resolved — this only handles
+ * the bookkeeping, identically for both call paths.
+ */
+export async function announceGreeting(opts: { sessionId: string; userId: string; clientId: string; text: string }): Promise<void> {
+  const trimmed = opts.text.trim();
+  if (!trimmed) return;
+
+  const agentTurn: Utterance = {
+    id: nanoid(8),
+    role: "agent",
+    text: trimmed,
+    ts: Date.now(),
+  };
+  await stm.push(opts.sessionId, agentTurn, opts.clientId);
+
+  const evBase = { sessionId: opts.sessionId, userId: opts.userId, clientId: opts.clientId };
+  void logSessionEvent(makeEvent(evBase, "utterance", {
+    utteranceId: agentTurn.id,
+    role: agentTurn.role,
+    text: agentTurn.text,
+    isGreeting: true,
+  }));
+  void emitSessionEvent(opts.sessionId, "transcript", {
+    role: "agent",
+    text: agentTurn.text,
   });
 }

@@ -13,6 +13,7 @@ const CreateAgentSchema = z.object({
   voice_persona: z.string().max(60).optional(),
   speech_provider: z.enum(["deepgram", "gnani"]).nullable().optional(),
   language: z.string().max(20).nullable().optional(),
+  enabledTools: z.array(z.string()).optional(),
 });
 
 export async function GET() {

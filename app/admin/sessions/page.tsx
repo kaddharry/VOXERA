@@ -8,6 +8,7 @@ import { ValenceTimeline, type ValencePoint } from "@/components/admin/ValenceTi
 import { describeCallEmotion, type CallEmotion } from "@/lib/emotion/call-emotion";
 import type { CallInsights } from "@/lib/insights/call-insights";
 import { CallInsightsCard } from "@/components/admin/CallInsightsCard";
+import { matchUtteranceForEvent } from "@/lib/insights/timeline-match";
 
 /** A real, LLM-generated post-call read for a clinician — see
  * lib/agent/call-summary.ts. Grounded strictly in the transcript, never
@@ -19,6 +20,10 @@ interface CallSummary {
   followUpOutcome: "resolved" | "needs_retry" | "needs_review";
   requestedDoNotContact: boolean;
   callEmotion?: CallEmotion;
+  /** Deterministic, non-LLM safety signals from the emotion engine itself
+   * (lib/agent/call-summary.ts's buildAutomatedSafetySignals) — optional
+   * here only for rows saved before this field existed. */
+  automatedSafetySignals?: string[];
   /** Post-call findings (lib/insights/analyze-call.ts). */
   insights?: CallInsights;
 }
@@ -207,35 +212,18 @@ export default function SessionsPage() {
   );
   const escalationTs = useMemo(() => new Set(escalationEvents.map((e) => e.ts)), [escalationEvents]);
 
-  // Emotion events and transcript turns aren't logged at identical
-  // timestamps, so linking them is a nearest-in-time match rather than an
-  // exact one — correct for this app's event cadence (a turn and its
-  // derived emotion read land within the same few hundred ms of each
-  // other), not a general-purpose alignment algorithm. Returns the whole
-  // utterance event (not just its ts) so the chart can quote it directly.
-  function nearestUtterance(ts: number): SessionEvent | null {
-    if (utteranceEvents.length === 0) return null;
-    let best = utteranceEvents[0];
-    let bestDiff = Math.abs(best.ts - ts);
-    for (const u of utteranceEvents) {
-      const diff = Math.abs(u.ts - ts);
-      if (diff < bestDiff) {
-        best = u;
-        bestDiff = diff;
-      }
-    }
-    // Further than ~4s from any transcribed turn isn't really "what was
-    // being said at that moment" anymore — better to show nothing than a
-    // misleadingly-attributed quote.
-    return bestDiff <= 4000 ? best : null;
-  }
-
   const valencePoints: ValencePoint[] = useMemo(
     () =>
       emotionEvents.map((e) => {
         const p = e.payload as Record<string, unknown>;
         const vad = p.vad as { v?: number } | undefined;
-        const turn = nearestUtterance(e.ts);
+        // BUG-E12: this used to pair by nearest timestamp alone, which can
+        // attribute a point's quote to a different, time-adjacent turn than
+        // the one that actually produced its label — orchestrator.ts
+        // already writes a `utteranceId` onto both sides specifically to
+        // prevent that; use it first, falling back to nearest-time only for
+        // older rows that predate the field.
+        const turn = matchUtteranceForEvent(e, utteranceEvents);
         return {
           ts: e.ts,
           v: vad?.v ?? 0,
@@ -454,6 +442,29 @@ export default function SessionsPage() {
                           <span className="font-semibold text-[var(--color-text-primary)]">Whole-call emotion:</span>{" "}
                           {describeCallEmotion(selectedCall.summary.callEmotion)}
                         </p>
+                      )}
+
+                      {/* BUG-E17: deterministic, non-LLM signals from the emotion
+                          engine — kept visually and structurally separate from
+                          "Flagged Concerns" below (which is the LLM's own read of
+                          the transcript) so a clinician can tell "the system
+                          detected this automatically" apart from "the AI summary
+                          happened to mention this". Red, not amber, and shown
+                          first — this is the one that should never be missed. */}
+                      {!!selectedCall.summary.automatedSafetySignals?.length && (
+                        <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3.5">
+                          <h4 className="mb-1.5 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide text-red-400">
+                            <AlertTriangle className="h-3.5 w-3.5" /> Automated Safety Signal
+                          </h4>
+                          <ul className="list-disc space-y-1 pl-4 text-[13px] text-[var(--color-text-primary)]">
+                            {selectedCall.summary.automatedSafetySignals.map((c, i) => (
+                              <li key={i}>{c}</li>
+                            ))}
+                          </ul>
+                          <p className="mt-1.5 text-[11px] text-[var(--color-text-muted)]">
+                            Detected directly by the call's emotion-detection engine, independent of the summary below.
+                          </p>
+                        </div>
                       )}
 
                       {selectedCall.summary.flaggedConcerns.length > 0 && (

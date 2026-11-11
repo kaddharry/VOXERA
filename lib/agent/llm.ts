@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";
-import { TOOLS, dispatchToolCall } from "./tools";
+import { TOOLS, dispatchToolCall, getToolsForAgent } from "./tools";
 import { ClauseChunker } from "./clause-chunker";
 
 export interface LLMReply {
@@ -9,6 +9,15 @@ export interface LLMReply {
   model: string;
   usedLive: boolean;
   provider?: string;
+}
+
+/** Same "English" code set as lib/emotion/detect.ts's ENGLISH_LANGUAGE_CODES
+ * (not imported from there to avoid coupling this module to the emotion
+ * package for one constant) — undefined/unset is treated as English, same
+ * as everywhere else this distinction is made. */
+const ENGLISH_LANGUAGE_CODES = new Set(["en", "en-IN", "en-US", "English"]);
+function isEnglishLanguage(language: string | undefined): boolean {
+  return !language || ENGLISH_LANGUAGE_CODES.has(language);
 }
 
 /** Accumulates OpenAI-compatible streamed chunk deltas into the same
@@ -76,6 +85,29 @@ export async function generateReply(args: {
    * latency/tokens) for one-off generation tasks like drafting a prompt,
    * as opposed to an actual live conversational turn. Defaults to true. */
   useTools?: boolean;
+  /** An Agent Builder agent's tool allowlist (agents."enabledTools",
+   * migration_v29.sql). When provided (even as []), the tool set offered to
+   * the model is filtered down to exactly these names via getToolsForAgent
+   * instead of the legacy demo path's full RESERVATION_TOOLS — see
+   * lib/agent/orchestrator.ts's useTools call sites for why this exists. */
+  enabledTools?: string[];
+  /** Threaded through to dispatchToolCall's ToolCallContext so an
+   * appointment tool can verify which patient it's acting on before
+   * writing anything — see lib/agent/tools.ts's resolveVerifiedPatient. */
+  patientId?: string;
+  callerNumber?: string;
+  /** Resolved call language (lib/speech/resolve.ts) — e.g. "en-IN", "hi-IN",
+   * "hi-en", "auto". When set to anything non-English, the fast/no-reasoning
+   * provider config (CONFIG.llm.providers' `reasoningEffort: "none"`,
+   * chosen for English voice-turn latency) is bumped up a notch instead —
+   * live-reproduced: qwen3.6-27b at reasoning_effort "none" produced
+   * genuinely incoherent Hindi ("कसक और लालच भरने की शक्यता का खुलासा किया
+   * गया है" — nonsense) replying to a plain symptom report, the kind of
+   * word-salad hallucination that effort="none" is documented (see that
+   * field's own comment in config.ts) to trade away for speed on the common
+   * English case. Non-English generation needs that reasoning headroom back
+   * more than it needs the extra latency savings. */
+  language?: string;
   /** When provided, the completion is streamed and this fires with each
    * sanitized, sentence-level clause as soon as it's ready — letting a
    * caller start TTS on clause 1 while the LLM is still generating later
@@ -186,14 +218,30 @@ export async function generateReply(args: {
         // writing the actual reply — see CONFIG.llm.providers' groq entry
         // for the live-verified failure mode this fixes. A no-op extra
         // field for providers/models that don't support it.
-        const reasoningOpt = provider.reasoningEffort ? { reasoning_effort: provider.reasoningEffort } : {};
+        //
+        // For a non-English call, "none" gets bumped to "low" — see
+        // args.language's doc above for the live-reproduced garbled-Hindi
+        // failure this avoids. Only ever raises effort, never lowers it
+        // (a provider with no reasoningEffort configured at all, or already
+        // above "none", is untouched) — this is strictly "give the model a
+        // bit more room to get non-English generation right," not a general
+        // reasoning-level override.
+        const effectiveReasoningEffort =
+          provider.reasoningEffort === "none" && !isEnglishLanguage(args.language)
+            ? "low"
+            : provider.reasoningEffort;
+        const reasoningOpt = effectiveReasoningEffort ? { reasoning_effort: effectiveReasoningEffort } : {};
 
         for (let i = 0; i < 3; i++) {
+          // args.enabledTools undefined = legacy demo path, full
+          // RESERVATION_TOOLS (unchanged behavior); an array (even empty)
+          // means a real Agent Builder agent, filtered to its own allowlist.
+          const toolsForThisCall = args.enabledTools !== undefined ? getToolsForAgent(args.enabledTools) : TOOLS;
           const baseParams = {
             model: provider.model,
             messages,
             max_tokens: args.maxOutputTokens ?? CONFIG.llm.maxOutputTokens,
-            ...(useTools ? { tools: TOOLS as any, tool_choice: "auto" as const } : {}),
+            ...(useTools && toolsForThisCall.length > 0 ? { tools: toolsForThisCall as any, tool_choice: "auto" as const } : {}),
             ...reasoningOpt,
           };
 
@@ -241,7 +289,13 @@ export async function generateReply(args: {
               } catch {}
 
               console.log(`[LLM] Invoking Tool: ${name} with args`, parsedArgs);
-              const resultStr = await dispatchToolCall(name, parsedArgs, args.clientId, args.sessionId, args.userId);
+              const resultStr = await dispatchToolCall(name, parsedArgs, {
+                clientId: args.clientId,
+                sessionId: args.sessionId,
+                userId: args.userId,
+                patientId: args.patientId,
+                callerNumber: args.callerNumber,
+              });
 
               messages.push({
                 role: "tool",
@@ -387,8 +441,8 @@ function offlineFallback(userBlock: string): string {
 
   if (/book|schedule|appointment/.test(lc)) {
     console.log("[LLM] Offline fallback triggered mock tool invocation for check_availability & create_booking");
-    dispatchToolCall("check_availability", { date: "2026-10-10", time: "19:00" }, "offline-test").then(() => {
-        dispatchToolCall("create_booking", { userId: "U-123", date: "2026-10-10", time: "19:00", partySize: 4 }, "offline-test");
+    dispatchToolCall("check_availability", { date: "2026-10-10", time: "19:00" }, { clientId: "offline-test" }).then(() => {
+        dispatchToolCall("create_booking", { userId: "U-123", date: "2026-10-10", time: "19:00", partySize: 4 }, { clientId: "offline-test" });
     });
     return "Let me check our calendar for that time. Yes, we have a slot available. I've locked that in for you!";
   }

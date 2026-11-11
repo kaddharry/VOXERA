@@ -55,6 +55,18 @@ export class GnaniSpeakStream {
    * would let a slow clause pile up several more behind it, which would
    * make barge-in latency worse, not better. */
   private queuedText: string | null = null;
+  /** Safety net: if the server's "complete"/"error" for an in-flight
+   * request is ever lost (dropped by the network, or arrives as a frame
+   * that doesn't parse as JSON and hits connect()'s catch) `busy` would
+   * otherwise stay true forever, silently queuing every later sendText()
+   * and muting the agent for the rest of the call on an otherwise-healthy
+   * connection. Same "don't trust a single signal to definitely fire"
+   * pattern already used for Deepgram's UtteranceEnd fallback (see
+   * lib/deepgram/live.ts's UTTERANCE_END_FALLBACK_MS) — generous relative
+   * to a normal synthesis turnaround so it never fires on a merely slow
+   * (not lost) response. */
+  private static readonly COMPLETE_FALLBACK_MS = 8000;
+  private completeFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   public setAudioHandler(cb: SpeakChunkCallback): void {
     this.onAudioChunk = cb;
@@ -113,16 +125,34 @@ export class GnaniSpeakStream {
         break;
       }
       case "complete":
+        this.clearCompleteFallback();
         this.busy = false;
         this.sendQueuedIfAny();
         break;
       case "error":
         console.warn("[Gnani Speak] Server error:", msg.message);
+        this.clearCompleteFallback();
         this.busy = false;
         this.sendQueuedIfAny();
         break;
       // "start" — informational, no-op.
     }
+  }
+
+  private clearCompleteFallback(): void {
+    if (this.completeFallbackTimer) {
+      clearTimeout(this.completeFallbackTimer);
+      this.completeFallbackTimer = null;
+    }
+  }
+
+  /** Fires when no complete/error arrived within COMPLETE_FALLBACK_MS of a
+   * request going out — see that constant's doc comment. */
+  private forceComplete(): void {
+    console.warn(`[Gnani Speak] No complete/error received within ${GnaniSpeakStream.COMPLETE_FALLBACK_MS}ms — forcing the stream unstuck instead of muting the rest of the call.`);
+    this.completeFallbackTimer = null;
+    this.busy = false;
+    this.sendQueuedIfAny();
   }
 
   private sendQueuedIfAny(): void {
@@ -136,6 +166,8 @@ export class GnaniSpeakStream {
   private sendRequest(text: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.busy = true;
+    this.clearCompleteFallback();
+    this.completeFallbackTimer = setTimeout(() => this.forceComplete(), GnaniSpeakStream.COMPLETE_FALLBACK_MS);
     this.ws.send(
       JSON.stringify({
         text,
@@ -200,6 +232,7 @@ export class GnaniSpeakStream {
     if (this.closed) return;
     this.closed = true;
     this.queuedText = null;
+    this.clearCompleteFallback();
     if (this.ws) {
       try {
         this.ws.close();

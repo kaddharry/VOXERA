@@ -4,6 +4,7 @@ import { generateCallSummary } from "../../../../lib/agent/call-summary";
 import { analyzeCall, saveCallInsights } from "../../../../lib/insights/analyze-call";
 import { hasPatientSpoken } from "../../../../lib/logging/session-logger";
 import { handleFollowUpCallOutcome, applyDoNotContactRequest, readAnsweredBy } from "../../../../lib/scheduler/dispatcher";
+import { applyAppointmentCallOutcome } from "../../../../lib/scheduler/appointment-reminders";
 import type { TwilioCallStatus } from "../../../../lib/scheduler/policy";
 import { updateDemoRequestStatusByCallSid } from "../../../../lib/db/demo-requests";
 
@@ -159,6 +160,19 @@ export async function POST(req: NextRequest) {
               );
             }
             await settleFollowUp({ followUpOutcome: summary.followUpOutcome, doNotContactRequested: summary.requestedDoNotContact });
+
+            // Reminder-call outcome -> the appointment/waitlist entry it was
+            // actually about (no-op for an ordinary follow-up call). After
+            // settleFollowUp so a slow/failed apply here can never delay the
+            // scheduler's own retry decision.
+            if (followUpTaskId) {
+              await applyAppointmentCallOutcome(supabase, {
+                taskId: followUpTaskId,
+                sessionId: updatedCall.sessionId,
+                appointmentConfirmed: summary.appointmentConfirmed,
+                appointmentCancelRequested: summary.appointmentCancelRequested,
+              }).catch((err) => console.error(`[Telephony/Status] applyAppointmentCallOutcome failed for ${callSid}:`, err));
+            }
 
             // Self-learning pipeline: knowledge gaps and emotional failure
             // points for this call. After the follow-up is settled, so it

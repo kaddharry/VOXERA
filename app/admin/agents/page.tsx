@@ -14,15 +14,16 @@ import {
   Wand2,
   PenLine,
   AlertCircle,
+  CalendarClock,
 } from "lucide-react";
 import { CreateAgentDialog } from "./CreateAgentDialog";
-import { BLANK_DRAFT, GNANI_LANGUAGES, type Agent, type Draft, type GeneratedAgentDraft } from "./types";
+import { APPOINTMENT_TOOL_OPTIONS, BLANK_DRAFT, GNANI_LANGUAGES, type Agent, type Draft, type GeneratedAgentDraft } from "./types";
 import { VoicePicker } from "./VoicePicker";
 import { GnaniVoicePicker } from "./GnaniVoicePicker";
 import { parseGnaniPersona, formatGnaniPersona } from "@/lib/tts/gnani-voices";
 import { KnowledgeTab } from "./KnowledgeTab";
 
-type Tab = "persona" | "prompt" | "knowledge";
+type Tab = "persona" | "prompt" | "knowledge" | "tools";
 type PromptMode = "manual" | "ai";
 
 const AVATAR_COLORS = [
@@ -117,6 +118,7 @@ export default function AgentBuilderPage() {
       voice_persona: agent.voice_persona ?? "female-friendly",
       speech_provider: agent.speech_provider ?? null,
       language: agent.language ?? null,
+      enabledTools: agent.enabledTools ?? [],
     });
   };
 
@@ -139,6 +141,7 @@ export default function AgentBuilderPage() {
       voice_persona: "female-friendly",
       speech_provider: null,
       language: null,
+      enabledTools: [],
     });
   };
 
@@ -348,7 +351,7 @@ export default function AgentBuilderPage() {
 
               {/* Tabs */}
               <div className="flex flex-none items-center gap-1 px-6 pt-2 border-b border-[var(--color-border-subtle)]">
-                {(["persona", "prompt", "knowledge"] as Tab[]).map((t) => (
+                {(["persona", "prompt", "knowledge", "tools"] as Tab[]).map((t) => (
                   <button
                     key={t}
                     onClick={() => setTab(t)}
@@ -358,7 +361,7 @@ export default function AgentBuilderPage() {
                         : "border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]"
                     }`}
                   >
-                    {t === "persona" ? "Persona" : t === "prompt" ? "Prompt" : "Knowledge"}
+                    {t === "persona" ? "Persona" : t === "prompt" ? "Prompt" : t === "knowledge" ? "Knowledge" : "Tools"}
                   </button>
                 ))}
               </div>
@@ -478,6 +481,59 @@ export default function AgentBuilderPage() {
 
                 {tab === "knowledge" && (
                   <KnowledgeTab />
+                )}
+
+                {tab === "tools" && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <CalendarClock className="w-4 h-4 text-[var(--color-accent-cyan)]" />
+                      <span className="text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
+                        Appointment Booking Tools
+                      </span>
+                    </div>
+                    <p className="text-[12.5px] text-[var(--color-text-muted)] -mt-4">
+                      Off by default for every agent. Turn on only what this agent should be able to do live
+                      on a call — it can check availability and book/reschedule/cancel/confirm appointments
+                      on the Calendar, scoped to the patient it has already identified on the call.
+                    </p>
+
+                    <div className="flex flex-col gap-2">
+                      {APPOINTMENT_TOOL_OPTIONS.map((opt) => {
+                        const checked = draft.enabledTools.includes(opt.id);
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() =>
+                              setDraft((d) => ({
+                                ...d,
+                                enabledTools: checked ? d.enabledTools.filter((t) => t !== opt.id) : [...d.enabledTools, opt.id],
+                              }))
+                            }
+                            className={`flex items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition-all ${
+                              checked
+                                ? "border-[var(--color-accent-violet)]/50 bg-[var(--color-accent-violet)]/10"
+                                : "border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)]"
+                            }`}
+                          >
+                            <span
+                              className={`mt-0.5 flex h-4 w-4 flex-none items-center justify-center rounded border ${
+                                checked
+                                  ? "border-[var(--color-accent-violet)] bg-[var(--color-accent-violet)] text-white"
+                                  : "border-[var(--color-border-subtle)]"
+                              }`}
+                            >
+                              {checked && <Check className="h-3 w-3" />}
+                            </span>
+                            <span className="min-w-0">
+                              <div className="text-[13px] font-semibold text-[var(--color-text-primary)]">{opt.label}</div>
+                              <div className="text-[12px] text-[var(--color-text-muted)] mt-0.5">{opt.description}</div>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
                 )}
 
                 {tab === "prompt" && (

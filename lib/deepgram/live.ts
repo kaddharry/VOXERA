@@ -5,6 +5,55 @@ export type TranscriptCallback = (text: string, isFinal: boolean) => void;
 
 export type ConnectionState = "disconnected" | "connecting" | "connected";
 
+/**
+ * Builds the Deepgram live-listen query params — pulled out of connect() so
+ * the model/language/hint logic (BUG-E19) is unit-testable without mocking
+ * a WebSocket connection or DEEPGRAM_API_KEY.
+ */
+export function buildListenParams(sampleRate: number, opts?: { codeSwitching?: boolean }): URLSearchParams {
+  // BUG-E19: opt-in Hindi/English code-switching (see CONFIG.deepgram
+  // .sttHindiCodeSwitching's doc comment for why this isn't the default).
+  // Off: unchanged nova-2/en, exactly today's production behavior. `opts`
+  // lets tests override without fighting CONFIG's `as const` readonly-ness.
+  const codeSwitching = opts?.codeSwitching ?? CONFIG.deepgram.sttHindiCodeSwitching;
+  const params = new URLSearchParams({
+    model: codeSwitching ? "nova-3" : "nova-2",
+    ...(codeSwitching ? { language: "multi" } : { language: "en" }),
+    smart_format: "true",
+    encoding: "linear16",
+    sample_rate: String(sampleRate),
+    channels: "1",
+    interim_results: "true",
+    // `is_final` on a Results message means "this word group is finalized
+    // and won't be re-transcribed" — it does NOT mean the caller stopped
+    // talking. Treating every is_final segment as a complete turn (the
+    // previous behavior) meant an ordinary mid-sentence thinking pause
+    // ("...tell me about your <pause> experience in Salesforce?") got
+    // split into two separate turns, the first answered as if it were a
+    // complete (fragment) question. `endpointing: 900` still controls how
+    // eagerly each word group gets marked is_final — kept as-is. The real
+    // "caller is done talking" signal is UtteranceEnd, which requires
+    // vad_events=true to be emitted at all; handleTranscript() below now
+    // buffers is_final segments and only fires a turn-triggering callback
+    // on UtteranceEnd, using utterance_end_ms as the silence gap for that
+    // decision specifically.
+    endpointing: String(CONFIG.stt.endpointingMs),
+    utterance_end_ms: String(CONFIG.stt.utteranceEndMs),
+    vad_events: "true",
+  });
+  if (codeSwitching) {
+    // Deepgram's docs example repeats this param: language_hint=hi&language_hint=en
+    // — URLSearchParams needs .append() for that (the object constructor
+    // above can't hold two values under one key). Biases detection toward
+    // these two languages without restricting to only them.
+    params.append("language_hint", "hi");
+    params.append("language_hint", "en");
+    // Recommended by Deepgram's code-switching docs for streaming.
+    params.set("endpointing", "100");
+  }
+  return params;
+}
+
 export interface DeepgramLiveOptions {
   /** Sample rate in Hz. Use 16000 for browser audio, 8000 for Twilio telephony. */
   sampleRate?: number;
@@ -16,6 +65,32 @@ export interface DeepgramLiveOptions {
    * caller might layer on top. Useful as a barge-in trigger that's immune to
    * the false-trigger/miss-trigger tradeoffs of a fixed RMS cutoff. */
   onSpeechStarted?: () => void;
+  /** Resolved call language (lib/speech/resolve.ts) — e.g. "en-IN", "hi-IN",
+   * "hi-en", "auto". BUG-E19 used to gate Hindi/English code-switching
+   * (nova-3 + language=multi) behind a single global config flag
+   * (CONFIG.deepgram.sttHindiCodeSwitching) that defaulted off for EVERY
+   * call regardless of what language that call was actually configured
+   * for — live-reproduced: a tenant/agent explicitly configured for Hindi
+   * or Hinglish but left on the Deepgram provider still got nova-2+en STT,
+   * silently mistranscribing (or failing to transcribe at all) non-English
+   * speech. When this is set to anything other than English, code-switching
+   * is turned on for THIS call only — an English-configured call (unset, or
+   * "en"/"en-IN"/"en-US") is completely unaffected, so there's no latency/
+   * cost change for the common English case. */
+  language?: string;
+}
+
+const ENGLISH_LANGUAGE_CODES = new Set(["en", "en-IN", "en-US", "English"]);
+
+/** Whether this call's resolved language should turn on Deepgram's Hindi/
+ * English code-switching (nova-3 + language=multi) — see
+ * DeepgramLiveOptions.language's doc above. "auto" and every non-English
+ * Indian-language code VOXERA supports (lib/tts/gnani.ts's GnaniLanguage)
+ * all route through this, since nova-3's code-switching is Hindi+English
+ * specifically (not a true multi-language model) — it's still the closest
+ * available improvement over a hard English-only model for any of them. */
+function wantsCodeSwitching(language: string | undefined): boolean {
+  return !!language && !ENGLISH_LANGUAGE_CODES.has(language);
 }
 
 /**
@@ -57,6 +132,7 @@ export class DeepgramLiveWrapper {
   private static readonly UTTERANCE_END_FALLBACK_MS = 2500;
   private utteranceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private onSpeechStarted: (() => void) | null = null;
+  private readonly codeSwitching: boolean;
 
   constructor(onTranscript?: TranscriptCallback, opts?: DeepgramLiveOptions) {
     if (onTranscript) {
@@ -65,6 +141,10 @@ export class DeepgramLiveWrapper {
     this.sampleRate = opts?.sampleRate ?? 16000;
     this.maxReconnects = opts?.maxReconnects ?? 3;
     this.onSpeechStarted = opts?.onSpeechStarted ?? null;
+    // Per-call override — see DeepgramLiveOptions.language's doc. Falls
+    // back to the global CONFIG default (still off) when no language was
+    // passed in at all, same as buildListenParams' own default behavior.
+    this.codeSwitching = opts?.language !== undefined ? wantsCodeSwitching(opts.language) : CONFIG.deepgram.sttHindiCodeSwitching;
   }
 
   public getState(): ConnectionState {
@@ -78,31 +158,7 @@ export class DeepgramLiveWrapper {
     const key = process.env.DEEPGRAM_API_KEY;
     if (!key) throw new Error("DEEPGRAM_API_KEY is not set");
 
-    const params = new URLSearchParams({
-      model: "nova-2",
-      language: "en",
-      smart_format: "true",
-      encoding: "linear16",
-      sample_rate: String(this.sampleRate),
-      channels: "1",
-      interim_results: "true",
-      // `is_final` on a Results message means "this word group is finalized
-      // and won't be re-transcribed" — it does NOT mean the caller stopped
-      // talking. Treating every is_final segment as a complete turn (the
-      // previous behavior) meant an ordinary mid-sentence thinking pause
-      // ("...tell me about your <pause> experience in Salesforce?") got
-      // split into two separate turns, the first answered as if it were a
-      // complete (fragment) question. `endpointing: 900` still controls how
-      // eagerly each word group gets marked is_final — kept as-is. The real
-      // "caller is done talking" signal is UtteranceEnd, which requires
-      // vad_events=true to be emitted at all; handleTranscript() below now
-      // buffers is_final segments and only fires a turn-triggering callback
-      // on UtteranceEnd, using utterance_end_ms as the silence gap for that
-      // decision specifically.
-      endpointing: String(CONFIG.stt.endpointingMs),
-      utterance_end_ms: String(CONFIG.stt.utteranceEndMs),
-      vad_events: "true",
-    });
+    const params = buildListenParams(this.sampleRate, { codeSwitching: this.codeSwitching });
     const url = `wss://api.deepgram.com/v1/listen?${params.toString()}`;
 
     await new Promise<void>((resolve, reject) => {

@@ -50,7 +50,7 @@ export default function Nav() {
       >
         <div className="vxl-nav-left-group">
           <Link href="/" aria-label="Voxera home" className="vxl-logo">
-            <Image src="/images/voxera-mark.png" alt="Voxera" width={52} height={40} className="vxl-logo-mark" priority />
+            <Image src="/images/voxera-mark.png" alt="Voxera" width={36} height={28} className="vxl-logo-mark" priority />
           </Link>
 
           <div className="vxl-nav-links">

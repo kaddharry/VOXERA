@@ -119,7 +119,16 @@ export class CallQueueManager {
 
   public async markCallStarted(): Promise<void> {
     await redis.incr("voxera:active_calls");
-    await redis.incr("voxera:total_handled");
+    try {
+      await redis.incr("voxera:total_handled");
+    } catch (err) {
+      // The active counter is the acquired resource. Roll it back if updating
+      // the secondary metric fails, so callers never acquire an untracked slot.
+      await redis.decr("voxera:active_calls").catch((rollbackError) => {
+        console.error("[QueueManager] Failed to roll back active call slot:", rollbackError);
+      });
+      throw err;
+    }
   }
 
   public async markCallEnded(): Promise<void> {

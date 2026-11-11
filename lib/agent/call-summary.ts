@@ -23,16 +23,40 @@ export interface CallSummary {
    * cancels remaining follow-ups when this is true — grounded strictly in
    * what was actually said, same discipline as flaggedConcerns. */
   requestedDoNotContact: boolean;
+  /** True only when this was a reminder call about a specific appointment
+   * (lib/scheduler/appointment-reminders.ts's scheduleAppointmentReminders)
+   * and the patient explicitly confirmed they'll attend — not merely
+   * acknowledging the reminder. app/api/telephony/status/route.ts applies
+   * this via applyAppointmentCallOutcome. */
+  appointmentConfirmed: boolean;
+  /** True only when the patient explicitly asked to cancel THIS appointment
+   * during the reminder call (not a general "don't contact me again",
+   * which is requestedDoNotContact above, and not a reschedule request —
+   * the agent's reschedule_appointment tool handles that live, during the
+   * call itself). */
+  appointmentCancelRequested: boolean;
   /** How the patient felt over the whole call, computed from the per-turn
    * emotion readings (lib/emotion/call-emotion.ts) — absent when no turn
    * had an emotion reading. */
   callEmotion?: CallEmotion;
+  /** BUG-E17: deterministic safety signals from the emotion engine itself
+   * (policy escalations, sustained/increasing distress) — built by
+   * buildAutomatedSafetySignals(), independent of the LLM's own read of the
+   * transcript. Always populated when the underlying data says so, even if
+   * the LLM's `flaggedConcerns` missed it. Empty array, never omitted, so a
+   * reader can tell "checked, nothing found" from "wasn't checked". */
+  automatedSafetySignals: string[];
 }
 
 const SUMMARY_SYSTEM_PROMPT =
   "You are reviewing the transcript of a completed check-in phone call for a clinician to read afterward. " +
   "Summarize ONLY what is actually in the transcript below — never infer or invent a symptom, event, or " +
-  "detail that wasn't actually said. Respond with ONLY a JSON object, no other text, in exactly this shape: " +
+  "detail that wasn't actually said. The transcript may be followed by an AUTOMATED SIGNALS section — " +
+  "deterministic output from the call's emotion-detection engine (not written by you), listing things it " +
+  "flagged during the live call. Treat it as a hint about where to look in the transcript, not as ground " +
+  "truth on its own: if it names a signal you can't actually find grounds for in the transcript text, don't " +
+  "invent a quote to match it, but a recommendedAction/followUpOutcome that contradicts a real automated " +
+  "escalation without explaining why from the transcript is a mistake. Respond with ONLY a JSON object, no other text, in exactly this shape: " +
   '{"sentimentTrajectory": "<one sentence on how the caller\'s mood moved through the call, e.g. \'started ' +
   "flat, warmed up once reassured about recovery timeline'\", \"flaggedConcerns\": [\"<any red-flag symptom " +
   "or concerning statement actually mentioned, verbatim-grounded — empty array if none>\"], " +
@@ -44,9 +68,16 @@ const SUMMARY_SYSTEM_PROMPT =
   'confidently tell which of those two it is from the transcript alone>", ' +
   '"requestedDoNotContact": <true ONLY if the patient explicitly asked to stop being called/contacted ' +
   "altogether (e.g. 'stop calling me', 'take me off your list', 'don't contact me again') — NOT true for an " +
-  'ordinary "call me back later" or a single hang-up, false otherwise>}';
+  'ordinary "call me back later" or a single hang-up, false otherwise>, ' +
+  '"appointmentConfirmed": <true ONLY if this was a reminder call about a specific upcoming appointment and ' +
+  "the patient explicitly confirmed they will attend (e.g. 'yes I'll be there', 'confirmed'), false otherwise " +
+  "or if this call wasn't about an appointment at all>, " +
+  '"appointmentCancelRequested": <true ONLY if the patient explicitly asked to cancel that appointment during ' +
+  'this call (not merely to reschedule it), false otherwise>}';
 
-function parseSummary(raw: string): CallSummary | null {
+type LlmSummary = Omit<CallSummary, "automatedSafetySignals" | "callEmotion">;
+
+function parseSummary(raw: string): LlmSummary | null {
   try {
     // Model output occasionally wraps JSON in a code fence despite the
     // "ONLY a JSON object" instruction — strip that defensively rather than
@@ -65,6 +96,8 @@ function parseSummary(raw: string): CallSummary | null {
         recommendedAction: parsed.recommendedAction,
         followUpOutcome: outcome === "resolved" || outcome === "needs_retry" ? outcome : "needs_review",
         requestedDoNotContact: parsed.requestedDoNotContact === true,
+        appointmentConfirmed: parsed.appointmentConfirmed === true,
+        appointmentCancelRequested: parsed.appointmentCancelRequested === true,
       };
     }
     return null;
@@ -104,22 +137,89 @@ export async function generateCallSummary(sessionId: string, clientId: string): 
 
   if (!transcript.trim()) return null;
 
+  // BUG-E17: fetched and merged in unconditionally below, independent of
+  // what the LLM does or doesn't mention — see buildAutomatedSafetySignals's
+  // own doc comment for why.
+  const automatedSafetySignals = await loadAutomatedSafetySignals(sessionId).catch((err) => {
+    console.warn(`[CallSummary] Failed to load automated safety signals for ${sessionId}:`, err);
+    return [] as string[];
+  });
+  const userPrompt =
+    automatedSafetySignals.length > 0
+      ? `${transcript}\n\nAUTOMATED SIGNALS (from the emotion-detection engine, not written by you):\n${automatedSafetySignals.map((s) => `- ${s}`).join("\n")}`
+      : transcript;
+
   try {
     const reply = await generateReply({
       system: SUMMARY_SYSTEM_PROMPT,
-      user: transcript,
+      user: userPrompt,
       clientId,
       useTools: false,
       maxOutputTokens: 400,
     });
-    const summary = parseSummary(reply.text);
-    if (!summary) return null;
+    const llmSummary = parseSummary(reply.text);
+    if (!llmSummary) return null;
     const callEmotion = await loadCallEmotion(sessionId).catch(() => null);
-    return callEmotion ? { ...summary, callEmotion } : summary;
+    return {
+      ...llmSummary,
+      automatedSafetySignals,
+      ...(callEmotion ? { callEmotion } : {}),
+    };
   } catch (err) {
     console.error(`[CallSummary] generateReply failed for session ${sessionId}:`, err);
     return null;
   }
+}
+
+/**
+ * BUG-E17: generateCallSummary() previously sent only the raw transcript to
+ * the LLM — the clinician-facing "Flagged Concerns" list depended entirely
+ * on the LLM re-reading the transcript correctly, with no cross-check
+ * against the emotion engine's own (deterministic, now far more reliable
+ * post-audit) signals. A real policy escalation or sustained-distress
+ * reading could happen during the live call and still never make it into
+ * the post-call summary if the LLM's free-text pass missed it. This
+ * function is pure and deterministic — independent of the LLM — so its
+ * output can be merged into the final summary unconditionally rather than
+ * hoping the model mentions it.
+ */
+export function buildAutomatedSafetySignals(
+  escalationRows: Array<{ payload: Record<string, unknown> }>,
+  emotionRows: Array<{ payload: Record<string, unknown> }>
+): string[] {
+  const signals: string[] = [];
+  const seenReasons = new Set<string>();
+
+  for (const row of escalationRows) {
+    const reason = row.payload.reason;
+    if (typeof reason === "string" && reason.trim() && !seenReasons.has(reason)) {
+      seenReasons.add(reason);
+      signals.push(`Automated policy escalation triggered: ${reason}`);
+    }
+  }
+
+  const hadIncreasingDistress = emotionRows.some((row) => {
+    const flags = row.payload.flags as Record<string, unknown> | undefined;
+    return flags?.increasing_distress === true;
+  });
+  if (hadIncreasingDistress) {
+    signals.push(
+      "The emotion-detection engine flagged sustained/increasing distress at one or more points during this call."
+    );
+  }
+
+  return signals;
+}
+
+async function loadAutomatedSafetySignals(sessionId: string): Promise<string[]> {
+  const [{ data: escalationRows }, { data: emotionRows }] = await Promise.all([
+    supabase.from("session_logs").select("payload").eq("sessionId", sessionId).eq("type", "escalation"),
+    supabase.from("session_logs").select("payload").eq("sessionId", sessionId).eq("type", "emotion"),
+  ]);
+  return buildAutomatedSafetySignals(
+    (escalationRows as Array<{ payload: Record<string, unknown> }>) ?? [],
+    (emotionRows as Array<{ payload: Record<string, unknown> }>) ?? []
+  );
 }
 
 /** The call-level emotion from the session's per-turn emotion events. A

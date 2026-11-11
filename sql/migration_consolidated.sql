@@ -226,7 +226,11 @@ CREATE TABLE IF NOT EXISTS public.call_logs (
   "endedAt" bigint,
   "durationMs" bigint,
   "sessionId" text,
-  "queueWaitMs" bigint DEFAULT 0
+  "queueWaitMs" bigint DEFAULT 0,
+  "streamSid" text,
+  "streamStatus" text,
+  "streamError" text,
+  "streamStatusAt" bigint
 );
 
 CREATE INDEX IF NOT EXISTS idx_call_logs_client ON public.call_logs ("clientId");

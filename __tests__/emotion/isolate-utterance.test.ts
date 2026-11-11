@@ -42,6 +42,33 @@ describe("isolateLastUtterance", () => {
     expect(fixed.speakingRateWPM).toBeGreaterThan(180);
     expect(fixed.pauseDurationMs).toBeLessThan(500);
   });
+
+  describe("fromFirstSpeech (BUG-E7's telephony merge-path fix)", () => {
+    it("by default still drops an earlier fragment across a long gap (unchanged behavior)", () => {
+      const turn = Buffer.concat([tone(1800), silence(2000), tone(1300)]);
+      const utterance = isolateLastUtterance(turn);
+      // Only the trailing ~1300ms fragment, same as before this option existed.
+      expect(durationMs(utterance)).toBeLessThan(1700);
+    });
+
+    it("with fromFirstSpeech, spans back across that same gap to the first fragment", () => {
+      const turn = Buffer.concat([tone(1800), silence(2000), tone(1300)]);
+      const utterance = isolateLastUtterance(turn, { fromFirstSpeech: true });
+      // Both fragments plus the gap between them, give or take edge padding.
+      expect(durationMs(utterance)).toBeGreaterThan(1800 + 2000 + 1300 - 300);
+    });
+
+    it("gives a plausible speaking rate for a merged turn once wordCount covers both fragments", () => {
+      // Mirrors stream-handler.ts's merge scenario: "I'm really worried that
+      // something" (6 words) ... 2s thinking pause ... "went wrong in the
+      // surgery" (5 words) = 11 words total.
+      const turn = Buffer.concat([tone(1800), silence(2000), tone(1300)]);
+      const merged = extractAcousticFeatures(isolateLastUtterance(turn, { fromFirstSpeech: true }), 11);
+      const unmerged = extractAcousticFeatures(isolateLastUtterance(turn), 11);
+      expect(merged.speakingRateWPM).toBeLessThan(250); // physically plausible
+      expect(merged.speakingRateWPM).toBeLessThan(unmerged.speakingRateWPM); // strictly better than the old behavior
+    });
+  });
 });
 
 describe("upsample8kTo16kFloat32", () => {

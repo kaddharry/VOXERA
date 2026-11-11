@@ -18,6 +18,7 @@ import {
   Radio,
   MessageSquare,
   Lightbulb,
+  CalendarDays,
 } from "lucide-react";
 
 // Bulk Calls is reachable from Hospital Setup rather than being a top-level
@@ -25,6 +26,8 @@ import {
 const BASE_NAV_ITEMS = [
   { href: "/admin", icon: LayoutDashboard, label: "Overview" },
   { href: "/admin/patients", icon: UserCheck, label: "Patients" },
+  { href: "/admin/calendar", icon: CalendarDays, label: "Appointments" },
+  { href: "/admin/staff", icon: Users, label: "Staff" },
   { href: "/admin/live_dashboard", icon: Radio, label: "Live Calls" },
   { href: "/admin/sessions", icon: MessageSquare, label: "Calls & Insights" },
   { href: "/admin/learning", icon: Lightbulb, label: "Agent Learning" },

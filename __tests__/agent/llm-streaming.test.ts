@@ -146,9 +146,7 @@ describe("generateReply — streaming mode (onClause)", () => {
     expect(dispatchToolCallMock).toHaveBeenCalledWith(
       "check_availability",
       { date: "2026-10-10", time: "19:00" },
-      "c1",
-      undefined,
-      undefined
+      { clientId: "c1", sessionId: undefined, userId: undefined, patientId: undefined, callerNumber: undefined }
     );
     // Only the final, non-tool-call completion's content should ever reach onClause.
     expect(clauses).toEqual(["Yes, that slot is available."]);
