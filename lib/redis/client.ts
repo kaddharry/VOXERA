@@ -1,26 +1,24 @@
 import { EventEmitter } from "events";
+import Redis from "ioredis";
 
 /**
- * In-process cache/queue/pub-sub store, standing in for what used to be a
- * real Redis instance (ioredis). The product decided not to run Redis at
- * all — a single app instance's own memory is enough for session STM,
- * rate-limit counters, and the call queue, and it removes an entire class
- * of "Redis unreachable" failures (MaxRetriesPerRequestError, ECONNREFUSED
- * loops) that showed up as "Failed to load analytics" with nothing
- * actually wrong with the analytics query itself.
+ * In-process cache/queue/pub-sub store, standing in for a real Redis
+ * instance when `REDIS_URL` isn't set. Kept as the default for local dev
+ * (`npm run dev`) so nobody needs a Redis instance just to run the app, and
+ * kept as-is (not refactored) because several tests
+ * (__tests__/realtime/local-store-pubsub.test.ts,
+ * __tests__/scaling/redis-scaling.test.ts) instantiate this class directly
+ * and depend on its exact in-process, globalThis-shared semantics,
+ * including the static `reset()`.
  *
- * Known tradeoff, not an oversight: this only shares state within ONE
- * Node process's memory. `npm run dev:full` / the production custom-server
- * entrypoint both run the Next.js request handlers and the Twilio
- * WebSocket stream handler in that same single process, so pub/sub between
- * a real call's live transcript/emotion events and the dashboard's SSE
- * subscriber still works there. It stops working the moment any part of
- * this runs as genuinely separate processes — multiple app instances
- * behind a load balancer, or Vercel-style serverless functions where each
- * invocation gets its own isolated process. If VOXERA moves to that kind
- * of deployment, this file is where a real shared store (Redis or
- * otherwise) needs to come back — not every call site that uses `redis`/
- * `redisSub`.
+ * Known tradeoff: this only shares state within ONE Node process's memory.
+ * It stops working the moment any part of the app runs as genuinely
+ * separate processes — multiple app instances behind a load balancer, or
+ * Vercel serverless functions where each invocation can get its own
+ * isolated process. That's why the exported `redis`/`redisSub`/
+ * `createSubscriber()` below switch to real `ioredis` (see bottom of file)
+ * whenever `REDIS_URL` is configured — production (Vercel) sets it,
+ * `npm run dev` typically doesn't.
  *
  * "One process" is not the same as "one copy of this module", though. The
  * custom server (custom-server.ts, run by tsx) imports this file through
@@ -198,9 +196,54 @@ class LocalStore extends EventEmitter {
 // ─── Export Clients ──────────────────────────────────────────────────────────
 // Two instances (not one) so the pub/sub "subscriber" role stays separate
 // from the "publisher/command" role, same shape callers already expect —
-// they both read/write the same static in-process store under the hood.
+// locally they both read/write the same static in-process store under the
+// hood; in production they're the same real Redis connection pair.
+//
+// Real `ioredis` already implements the exact command surface every call
+// site uses (get/set/incr/decr/hset/hget/hdel/zadd/zrem/zrange/zrank/zcard/
+// publish/subscribe/unsubscribe/on("message")) with the same argument
+// order, so no adapter/wrapper is needed — callers never branch on which
+// backend is live.
+//
+// `lazyConnect: true` matters on Vercel: this module is reachable from
+// routes that never touch Redis (most admin/API pages import something
+// that transitively imports this file). Without it, every cold start would
+// pay a TLS handshake to Redis before serving an unrelated request.
+const REDIS_SHARED_KEY = Symbol.for("voxera.ioredis.shared");
 
-const redis = new LocalStore();
-const redisSub = new LocalStore();
+function sharedIoredis(): { redis: Redis; redisSub: Redis } | null {
+  const url = process.env.REDIS_URL;
+  if (!url) return null;
+  const g = globalThis as typeof globalThis & { [REDIS_SHARED_KEY]?: { redis: Redis; redisSub: Redis } };
+  if (!g[REDIS_SHARED_KEY]) {
+    const client = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 3 });
+    client.on("error", (err) => console.error("[Redis] Connection error:", err));
+    // A dedicated connection for the module-scope subscriptions set up by
+    // lib/db/supabase.ts (circuit breaker) and lib/queue/manager.ts (slot
+    // availability) — a client in subscribe mode can't also run commands.
+    const sub = client.duplicate({ lazyConnect: true });
+    sub.on("error", (err) => console.error("[Redis] Subscriber connection error:", err));
+    g[REDIS_SHARED_KEY] = { redis: client, redisSub: sub };
+  }
+  return g[REDIS_SHARED_KEY];
+}
 
-export { redis, redisSub, LocalStore };
+const shared = sharedIoredis();
+const redis: Redis | LocalStore = shared?.redis ?? new LocalStore();
+const redisSub: Redis | LocalStore = shared?.redisSub ?? new LocalStore();
+
+/**
+ * A fresh, isolated pub/sub subscriber — one real Redis connection
+ * (`.duplicate()`) when `REDIS_URL` is set, otherwise an in-memory
+ * `LocalStore`. Use this (not `new LocalStore()` directly) for any
+ * per-connection subscriber that must also receive messages published by
+ * *other* instances/processes — e.g. the live session SSE route, where a
+ * viewer's subscription needs to see events published by whichever
+ * serverless invocation is handling that call's Twilio WebSocket.
+ */
+function createSubscriber(): Redis | LocalStore {
+  if (shared) return shared.redis.duplicate({ lazyConnect: true });
+  return new LocalStore();
+}
+
+export { redis, redisSub, LocalStore, createSubscriber };
