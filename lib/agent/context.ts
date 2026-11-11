@@ -237,6 +237,16 @@ export function buildLLMContext(args: {
       "detail), answer it strictly from CLIENT/EVIDENCE/USER_PROFILE per rule 1, but SAY it in the register " +
       "EMOTIONAL PERSONA specifies. If a question is about how the caller feels or what's going on with them, " +
       "that's the EMOTIONAL PERSONA's territory and those blocks have nothing relevant to add.",
+    ...(language && language !== "en-IN" && language !== "en-US" && language !== "en"
+      ? [
+          `9. LANGUAGE: This call is in ${LANGUAGE_LABELS[language] ?? language}. Reply in that same language/` +
+            "register, matching how the caller actually talks — if they're code-mixing Hindi and English " +
+            "(Hinglish), reply the same natural code-mixed way a real bilingual person would, don't force " +
+            "everything into pure Hindi or fall back into pure English. Keep numbers, times, and proper nouns " +
+            "(names, brand/product names) exactly as the caller would expect to hear them — don't translate a " +
+            "name. If the caller switches language mid-call, follow them.",
+        ]
+      : []),
     "",
     customInstructions?.trim()
       ? "=== AGENT-SPECIFIC INSTRUCTIONS (from this agent's creator) ===\n" +
