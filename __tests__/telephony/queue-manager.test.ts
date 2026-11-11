@@ -70,7 +70,7 @@ describe("CallQueueManager — active call tracking", () => {
   it("rolls back the active slot if recording the handled metric fails", async () => {
     const incr = vi.spyOn(redis, "incr");
     const originalIncr = redis.incr.bind(redis);
-    incr.mockImplementationOnce((key) => originalIncr(key)).mockImplementationOnce(async () => { throw new Error("metric write failed"); });
+    incr.mockImplementationOnce((key: string) => originalIncr(key)).mockImplementationOnce(async () => { throw new Error("metric write failed"); });
     await expect(q.markCallStarted()).rejects.toThrow("metric write failed");
     expect(await q.getActiveCallCount()).toBe(0);
     incr.mockRestore();

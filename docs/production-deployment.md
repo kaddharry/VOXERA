@@ -25,6 +25,37 @@ For one test call, retain the matching Twilio Call SID and capture:
 
 Interpretation: Twilio handshake error 31920 or `stream-error` before the handshake log points to URL/routing/upgrade; handshake and `start` followed by close 1011 points to initialization; a Deepgram error before 1011 confirms STT credentials/network/init as the immediate failure. Logs now include lifecycle context without logging credentials, audio, or transcripts.
 
+## Decision actually implemented: everything on Vercel, free (Hobby) plan
+
+Superseding the "Option 3" recommendation below for now — the product has
+no deployment budget, so the app runs entirely on Vercel's free Hobby plan
+rather than splitting across a separate voice service/worker. This is a
+deliberate, accepted tradeoff, not an oversight:
+
+- **Twilio Media Stream WebSocket runs as a Vercel Function**
+  (`app/api/telephony/stream/route.ts`, using `upgradeWebSocket` from
+  `@vercel/functions`, now GA/public-beta) instead of `custom-server.ts`'s
+  raw Node `upgrade` handler. `custom-server.ts` is kept only for local dev
+  and optional self-hosting — Vercel's build never runs it.
+  - **Hard limit accepted:** every Vercel Function on Hobby is killed at
+    300 seconds, no paid toggle available on Hobby. `maxDuration = 300` is
+    set explicitly on that route. **Any call longer than 5 minutes will be
+    disconnected mid-conversation.** Moving to Pro (800s, or 1800s with the
+    extended-duration beta) is the only way to raise this.
+- **Follow-up scheduler** moved from `custom-server.ts`'s in-process
+  `setInterval` loop to a Vercel Schedule (cron) hitting
+  `/api/cron/dispatch` (see `vercel.json`), which calls
+  `runScheduledDispatch()` in `lib/scheduler/dispatcher.ts`.
+  - **Precision tradeoff accepted:** today's sub-minute wake-timer
+    precision is gone. Follow-up calls fire within the Schedule's interval
+    window (`*/15 * * * *` as configured — tighten it in the Vercel
+    dashboard if the account allows more than every 15 minutes).
+- **Redis** (`lib/redis/client.ts`) now backs onto real `ioredis` when
+  `REDIS_URL` is set (e.g. an Upstash free-tier instance), required because
+  Vercel Functions are separate processes that can't share the old
+  in-memory store. Falls back to the original in-memory emulation when
+  `REDIS_URL` is unset, so local dev needs no Redis.
+
 ## Architecture recommendation
 
 Option 3 is recommended for production: Vercel for the web and short HTTP APIs, a persistent voice process for the Twilio media socket, a separately restartable worker for schedules and long jobs, managed shared Redis for coordination/queues, and Supabase/Postgres as source of truth. This matches the process assumptions already present in the code. Keep the existing single-process Docker/custom-server path available during migration.
@@ -94,11 +125,15 @@ Configure only variables actually used by the selected feature. Never put servic
 
 **Worker:** Supabase URL/service role key, Twilio credentials for outbound dispatch/status reconciliation, LLM keys for post-call analysis, and shared Redis connection settings once queue integration is deployed.
 
-The new URL settings and callback columns are code-prepared but the SQL migration is **not applied**. `sql/migration_v32.sql` must be reviewed and run in the Supabase environment before stream callback persistence is enabled in production.
+**Vercel (as actually deployed, free Hobby plan):** everything above under "Vercel web and HTTP webhooks", plus:
+- `REDIS_URL` — an Upstash (or other) Redis connection string, `rediss://...`. Required for the call queue, circuit breaker, and live-dashboard pub/sub to work correctly once more than one Function instance is running; without it the app silently falls back to a non-shared in-memory store (fine for local dev, incorrect in production).
+- `CRON_SECRET` — any random string, also set as the project's Cron secret in the Vercel dashboard. Verified by `/api/cron/dispatch` to reject non-Vercel callers.
+
+The stream callback columns, tenant MCP connections, and reusable custom tool registry are code-prepared but their migrations are **not applied**. Review and run `sql/migration_v32.sql`, `sql/migration_v33.sql`, and `sql/migration_v34.sql` in the Supabase environment before enabling stream callback persistence, MCP connections, or custom tools in production. MCP and custom tool credentials require a strong `CREDENTIALS_ENCRYPTION_KEY` shared by the web and voice services.
 
 ## Deployment sequence
 
-1. **Prepare Supabase:** back up/check schema, review and apply migrations in order including `sql/migration_v32.sql`, verify RLS and tenant scoping, then smoke-test service-role and user-scoped paths.
+1. **Prepare Supabase:** back up/check schema, review and apply migrations in order including `sql/migration_v32.sql`, `sql/migration_v33.sql`, and `sql/migration_v34.sql`, verify RLS and tenant scoping, then smoke-test service-role and user-scoped paths.
 2. **Prepare Redis:** provision a managed Redis-compatible service with TLS and separate credentials per environment. Replace `lib/redis/client.ts` with a shared implementation that supports the current command surface and subscription semantics before separating processes. Do not use local memory for multi-instance production.
 3. **Deploy voice Node service:** build from this repo with Node 20 and `npm ci`; start the dedicated voice entrypoint on the platform's assigned port; configure TLS/custom domain, health checks, restart policy, resource/connection limits, provider secrets, Supabase, and Redis. Point `VOICE_STREAM_URL` to its `wss://` endpoint. Keep the current Docker/custom-server entrypoint as the migration baseline until the new voice entrypoint is implemented and verified.
 4. **Deploy worker:** run a dedicated persistent worker process with bounded concurrency, graceful shutdown, DB/Redis access, retry/lease recovery and idempotency. Do not start `startSchedulerPolling()` in Vercel.
