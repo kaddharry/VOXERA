@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { validateTwilioSignature, buildConnectTwiml, buildEnqueueTwiml, buildRejectTwiml } from "../../../../lib/telephony/twilio";
 import { callQueue } from "../../../../lib/queue/manager";
 import { supabase } from "../../../../lib/db/supabase";
+import { publicWebhookUrl, resolvePublicBaseUrl, resolveVoiceWebSocketUrl } from "../../../../lib/telephony/urls";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
     const authToken = process.env.TWILIO_AUTH_TOKEN;
     if (authToken) {
       const signature = req.headers.get("x-twilio-signature") || "";
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "";
+      const baseUrl = resolvePublicBaseUrl({ configured: process.env.VOXERA_PUBLIC_URL || process.env.NEXT_PUBLIC_BASE_URL, requestUrl: req.url });
       // Must include the query string exactly as configured on the call's
       // webhook `url` — Twilio signs the full URL it was given, including
       // ?clientId=/&agentId= appended for outbound campaign calls below.
@@ -118,18 +119,19 @@ export async function POST(req: NextRequest) {
       queueWaitMs: caller.joinedAt ? Date.now() - caller.joinedAt : 0,
     }], { onConflict: "id" });
 
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `https://${req.headers.get("host")}`;
+    const baseUrl = resolvePublicBaseUrl({ configured: process.env.VOXERA_PUBLIC_URL || process.env.NEXT_PUBLIC_BASE_URL, requestUrl: req.url });
     // Query params here are a best-effort fallback only (kept for direct/
     // non-Twilio WS testing) — Twilio does not reliably forward them on the
     // Media Stream connection URL. The real source of truth is the
     // <Parameter> elements below, delivered via the "start" event.
     // const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}${agentId ? `&agentId=${agentId}` : ""}${patientId ? `&patientId=${patientId}` : ""}`;
 
-    const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream`;
-    console.log(`[Telephony] Connecting ${callSid} to stream: ${wsUrl}`);
+    const wsUrl = resolveVoiceWebSocketUrl(baseUrl);
+    const statusCallbackUrl = publicWebhookUrl(baseUrl, "/api/telephony/stream-status");
+    console.info(JSON.stringify({ service: "telephony", event: "twiml_stream_configured", timestamp: new Date().toISOString(), callSid, clientId, agentId: agentId ?? null, wsUrl, statusCallbackUrl }));
 
     return new NextResponse(
-      buildConnectTwiml(wsUrl, { callSid, clientId, caller: callerNumber, ...(agentId && { agentId }), ...(patientId && { patientId }) }),
+      buildConnectTwiml(wsUrl, { callSid, clientId, caller: callerNumber, ...(agentId && { agentId }), ...(patientId && { patientId }) }, statusCallbackUrl),
       { headers: { "Content-Type": "text/xml" } }
     );
   } catch (err) {

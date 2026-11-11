@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildConnectTwiml } from "../../../../lib/telephony/twilio";
 import { supabase } from "../../../../lib/db/supabase";
+import { publicWebhookUrl, resolvePublicBaseUrl, resolveVoiceWebSocketUrl } from "../../../../lib/telephony/urls";
 
 export const dynamic = "force-dynamic";
 
@@ -29,11 +30,13 @@ export async function POST(req: NextRequest) {
       queueWaitMs: 0, // wait time can be calculated if needed
     }]);
 
-    // Build WebSocket URL for Twilio Media Streams
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `https://${req.headers.get("host")}`;
-    const wsUrl = `${baseUrl.replace(/^https?/, "wss")}/api/telephony/stream?callSid=${callSid}&clientId=${clientId}&caller=${encodeURIComponent(callerNumber)}`;
+    // Media Stream identity is passed through documented <Parameter> values;
+    // Twilio does not support query parameters on the Stream URL.
+    const baseUrl = resolvePublicBaseUrl({ configured: process.env.VOXERA_PUBLIC_URL || process.env.NEXT_PUBLIC_BASE_URL, requestUrl: req.url });
+    const wsUrl = resolveVoiceWebSocketUrl(baseUrl);
+    const statusCallbackUrl = publicWebhookUrl(baseUrl, "/api/telephony/stream-status");
 
-    return new NextResponse(buildConnectTwiml(wsUrl, { callSid, clientId, caller: callerNumber }), {
+    return new NextResponse(buildConnectTwiml(wsUrl, { callSid, clientId, caller: callerNumber }, statusCallbackUrl), {
       headers: { "Content-Type": "text/xml" },
     });
   } catch (err) {

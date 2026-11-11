@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { LocalStore } from "../../../../../lib/redis/client";
+import { createSubscriber } from "../../../../../lib/redis/client";
 import { createClient } from "../../../../../lib/db/server";
 
 export const dynamic = "force-dynamic";
@@ -49,7 +49,10 @@ export async function GET(
   // A subscriber of its own per connection rather than the shared redisSub:
   // it can be fully unsubscribed when this viewer leaves, and one viewer
   // reconnecting can never make another viewer receive messages twice.
-  const subscriber = new LocalStore();
+  // createSubscriber() hands back a real Redis connection (so this viewer
+  // sees events published by whichever instance is handling the call) when
+  // REDIS_URL is configured, otherwise the in-memory fallback.
+  const subscriber = createSubscriber();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let closed = false;
 
@@ -59,6 +62,10 @@ export async function GET(
     if (heartbeat) clearInterval(heartbeat);
     subscriber.removeAllListeners("message");
     void subscriber.unsubscribe();
+    // Real Redis connections (unlike the in-memory fallback) must be
+    // released explicitly, or each SSE viewer leaks one connection against
+    // a free-tier connection limit.
+    void ("quit" in subscriber ? subscriber.quit().catch(() => {}) : undefined);
   };
 
   const stream = new ReadableStream({

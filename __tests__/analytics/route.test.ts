@@ -18,6 +18,7 @@ vi.mock("../../lib/db/supabase", () => {
   const mockChain = {
     select: () => mockChain,
     eq: () => mockChain,
+    not: () => mockChain,
     gte: () => mockChain,
     order: () => mockChain,
     limit: () => mockChain,
@@ -45,6 +46,7 @@ vi.mock("../../lib/db/server", () => {
   const mockChain = {
     select: () => mockChain,
     eq: () => mockChain,
+    not: () => mockChain,
     gte: () => mockChain,
     order: () => mockChain,
     limit: () => mockChain,
@@ -177,6 +179,7 @@ describe("GET /api/analytics", () => {
     const mockChainInstance = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
+      not: vi.fn().mockReturnThis(),
       gte: vi.fn().mockReturnThis(),
       order: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),

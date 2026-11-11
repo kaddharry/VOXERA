@@ -553,6 +553,31 @@ export async function __runCycleForTests(): Promise<void> {
   if (state) await runCycle(state);
 }
 
+/**
+ * One-shot entry point for a Vercel Schedule (cron) invocation — the
+ * serverless equivalent of one `runCycle()` pass, minus the wake-timer/
+ * setInterval machinery that has no meaning in a stateless invocation
+ * (there's no process left alive between invocations to hold a timer on).
+ * Called from app/api/cron/dispatch/route.ts. Not used by custom-server.ts,
+ * which still runs the real setInterval loop via startSchedulerPolling()
+ * for local/self-hosted use.
+ *
+ * On Vercel, follow-up calls fire within the Schedule's interval window
+ * (see vercel.json) rather than instantly on their due time — a real
+ * precision loss versus the wake-timer path, accepted as the tradeoff for
+ * not running a persistent process.
+ */
+export async function runScheduledDispatch(): Promise<{ dispatched: number; errors: number; stuckReconciled: number }> {
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "";
+  if (!baseUrl || isLocalBaseUrl(baseUrl)) {
+    console.warn(`[Scheduler] NEXT_PUBLIC_BASE_URL is "${baseUrl}" — skipping scheduled dispatch.`);
+    return { dispatched: 0, errors: 0, stuckReconciled: 0 };
+  }
+  const result = await runDispatchCycle(baseUrl);
+  const stuckReconciled = await reconcileStuckCalls();
+  return { ...result, stuckReconciled };
+}
+
 /** Test helper: install scheduler state without starting the interval. */
 export function __installSchedulerForTests(baseUrl: string, intervalMs = 30_000): SchedulerState {
   const state: SchedulerState = { baseUrl, intervalMs, running: false, rerun: false, wakeTimer: null, wakeAt: null, cycles: 0 };
