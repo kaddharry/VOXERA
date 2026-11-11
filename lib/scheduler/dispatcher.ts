@@ -568,9 +568,15 @@ export async function __runCycleForTests(): Promise<void> {
  * not running a persistent process.
  */
 export async function runScheduledDispatch(): Promise<{ dispatched: number; errors: number; stuckReconciled: number }> {
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "";
+  // VOXERA_PUBLIC_URL is the documented/preferred var for Vercel deployments
+  // (docs/production-deployment.md); NEXT_PUBLIC_BASE_URL is kept as a
+  // fallback since the rest of this file already reads it exclusively.
+  // Without this fallback, a deployment that only set VOXERA_PUBLIC_URL
+  // would have this silently no-op every cron tick — no error, just
+  // follow-up calls never going out.
+  const baseUrl = process.env.VOXERA_PUBLIC_URL || process.env.NEXT_PUBLIC_BASE_URL || "";
   if (!baseUrl || isLocalBaseUrl(baseUrl)) {
-    console.warn(`[Scheduler] NEXT_PUBLIC_BASE_URL is "${baseUrl}" — skipping scheduled dispatch.`);
+    console.warn(`[Scheduler] No public base URL configured (checked VOXERA_PUBLIC_URL, NEXT_PUBLIC_BASE_URL; got "${baseUrl}") — skipping scheduled dispatch.`);
     return { dispatched: 0, errors: 0, stuckReconciled: 0 };
   }
   const result = await runDispatchCycle(baseUrl);
