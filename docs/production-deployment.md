@@ -55,6 +55,17 @@ deliberate, accepted tradeoff, not an oversight:
   Vercel Functions are separate processes that can't share the old
   in-memory store. Falls back to the original in-memory emulation when
   `REDIS_URL` is unset, so local dev needs no Redis.
+- **Live Calls without Redis:** on Vercel with no `REDIS_URL`, live call
+  events (transcript, emotion) go over **Supabase Realtime Broadcast**
+  (`lib/realtime/live-events.ts`): the call sends each event to Supabase's
+  REST broadcast endpoint and the dashboard's SSE route
+  (`/api/session/[sessionId]/stream`) listens on the same channel, so the
+  live view works even when the call and the viewer are in different
+  Function instances. Nothing to configure: it uses `SUPABASE_URL` and
+  `SUPABASE_SERVICE_ROLE_KEY`, and needs Realtime's "Allow public access"
+  left on (the default; channel names carry an HMAC of the session id, so
+  they can't be guessed). `LIVE_EVENTS_TRANSPORT=supabase|redis` overrides
+  the choice.
 
 ## Architecture recommendation
 
@@ -126,7 +137,7 @@ Configure only variables actually used by the selected feature. Never put servic
 **Worker:** Supabase URL/service role key, Twilio credentials for outbound dispatch/status reconciliation, LLM keys for post-call analysis, and shared Redis connection settings once queue integration is deployed.
 
 **Vercel (as actually deployed, free Hobby plan):** everything above under "Vercel web and HTTP webhooks", plus:
-- `REDIS_URL` — an Upstash (or other) Redis connection string, `rediss://...`. Required for the call queue, circuit breaker, and live-dashboard pub/sub to work correctly once more than one Function instance is running; without it the app silently falls back to a non-shared in-memory store (fine for local dev, incorrect in production).
+- `REDIS_URL` (optional) — an Upstash (or other) Redis connection string, `rediss://...`. Shares the call queue counters and circuit breaker across Function instances. Without it those stay per instance (fine for a demo) and live call events go over Supabase Realtime instead.
 - `CRON_SECRET` — any random string, also set as the project's Cron secret in the Vercel dashboard. Verified by `/api/cron/dispatch` to reject non-Vercel callers.
 
 The stream callback columns, tenant MCP connections, and reusable custom tool registry are code-prepared but their migrations are **not applied**. Review and run `sql/migration_v32.sql`, `sql/migration_v33.sql`, and `sql/migration_v34.sql` in the Supabase environment before enabling stream callback persistence, MCP connections, or custom tools in production. MCP and custom tool credentials require a strong `CREDENTIALS_ENCRYPTION_KEY` shared by the web and voice services.

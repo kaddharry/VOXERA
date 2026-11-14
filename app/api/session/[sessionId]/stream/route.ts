@@ -1,8 +1,12 @@
 import { NextRequest } from "next/server";
 import { createSubscriber } from "../../../../../lib/redis/client";
 import { createClient } from "../../../../../lib/db/server";
+import { liveEventsTransport, subscribeSessionEvents } from "../../../../../lib/realtime/live-events";
 
 export const dynamic = "force-dynamic";
+// The free Vercel plan stops a Function at 300 s; the browser's EventSource
+// reconnects on its own when that happens.
+export const maxDuration = 300;
 
 /**
  * GET /api/session/[sessionId]/stream
@@ -52,7 +56,11 @@ export async function GET(
   // createSubscriber() hands back a real Redis connection (so this viewer
   // sees events published by whichever instance is handling the call) when
   // REDIS_URL is configured, otherwise the in-memory fallback.
-  const subscriber = createSubscriber();
+  // On Vercel (no shared Redis) the call can run in another instance, so
+  // listen on Supabase Realtime instead (lib/realtime/live-events.ts).
+  const useSupabase = liveEventsTransport() === "supabase";
+  const subscriber = useSupabase ? null : createSubscriber();
+  let stopSupabase: (() => Promise<void>) | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let closed = false;
 
@@ -60,6 +68,8 @@ export async function GET(
     if (closed) return;
     closed = true;
     if (heartbeat) clearInterval(heartbeat);
+    if (stopSupabase) void stopSupabase();
+    if (!subscriber) return;
     subscriber.removeAllListeners("message");
     void subscriber.unsubscribe();
     // Real Redis connections (unlike the in-memory fallback) must be
@@ -83,10 +93,14 @@ export async function GET(
       // Send initial connection event
       send(`data: ${JSON.stringify({ type: "connected", sessionId })}\n\n`);
 
-      subscriber.on("message", (ch: string, message: string) => {
-        if (ch === channel) send(`data: ${message}\n\n`);
-      });
-      await subscriber.subscribe(channel);
+      if (subscriber) {
+        subscriber.on("message", (ch: string, message: string) => {
+          if (ch === channel) send(`data: ${message}\n\n`);
+        });
+        await subscriber.subscribe(channel);
+      } else {
+        stopSupabase = subscribeSessionEvents(sessionId, (message) => send(`data: ${message}\n\n`));
+      }
 
       // SSE comment line every 15s. Silences between turns (the agent
       // thinking, the caller pausing) can outlast a proxy or load
