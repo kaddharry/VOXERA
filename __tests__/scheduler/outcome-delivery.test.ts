@@ -35,6 +35,10 @@ vi.mock("../../lib/scheduler/dispatcher", () => ({
 }));
 vi.mock("../../lib/agent/call-summary", () => ({ generateCallSummary: vi.fn() }));
 vi.mock("../../lib/db/demo-requests", () => ({ updateDemoRequestStatusByCallSid: vi.fn(async () => {}) }));
+// On Vercel, work still running after the response is frozen unless it's
+// handed to waitUntil(); record what the route hands over.
+const keptAlive: Promise<unknown>[] = [];
+vi.mock("@vercel/functions", () => ({ waitUntil: vi.fn((p: Promise<unknown>) => void keptAlive.push(p)) }));
 
 const { placeOutboundCall } = await import("../../lib/telephony/outbound");
 const { initiateOutboundCall } = await import("../../lib/telephony/twilio");
@@ -52,6 +56,7 @@ function statusCallback(query: string, body: string) {
 
 beforeEach(() => {
   inserts.length = 0;
+  keptAlive.length = 0;
   callLogRow = null;
   callLogError = null;
   vi.clearAllMocks();
@@ -88,6 +93,26 @@ describe("status callback", () => {
     await vi.waitFor(() =>
       expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "completed" })),
     );
+  });
+
+  it("keeps the after-call work alive past the response (Vercel)", async () => {
+    callLogRow = { sessionId: "s1", clientId: "c1", patientId: "p1", followUpTaskId: "task1" };
+    vi.mocked(generateCallSummary).mockResolvedValue(null);
+    const res = await POST(statusCallback("", "CallSid=CA1&CallStatus=completed&CallDuration=42"));
+    expect(res.status).toBe(200);
+    // The summary + follow-up decision is registered with waitUntil, and
+    // finishing it is what settles the follow-up.
+    expect(keptAlive).toHaveLength(1);
+    await Promise.all(keptAlive);
+    expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "completed" }));
+  });
+
+  it("keeps a never-connected call's retry decision alive past the response (Vercel)", async () => {
+    callLogRow = { sessionId: "s1", clientId: "c1", patientId: "p1", followUpTaskId: "task1" };
+    await POST(statusCallback("", "CallSid=CA1&CallStatus=busy"));
+    expect(keptAlive).toHaveLength(1);
+    await Promise.all(keptAlive);
+    expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "busy" }));
   });
 
   it("retries a never-connected call straight away", async () => {

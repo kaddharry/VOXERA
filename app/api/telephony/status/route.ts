@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
 import { supabase } from "../../../../lib/db/supabase";
 import { generateCallSummary } from "../../../../lib/agent/call-summary";
 import { analyzeCall, saveCallInsights } from "../../../../lib/insights/analyze-call";
@@ -9,6 +10,10 @@ import type { TwilioCallStatus } from "../../../../lib/scheduler/policy";
 import { updateDemoRequestStatusByCallSid } from "../../../../lib/db/demo-requests";
 
 export const dynamic = "force-dynamic";
+// The after-call work below (summary, follow-up decision, self-learning
+// analysis) keeps running after Twilio gets its reply, so give it the most
+// time the free Vercel plan allows.
+export const maxDuration = 300;
 
 /**
  * POST /api/telephony/status
@@ -103,8 +108,10 @@ export async function POST(req: NextRequest) {
       // app/api/demo-requests/[id]/call/route.ts. Keep its status in sync so
       // /book-demo/confirm's poll can show the right next step.
       if (updatedCall?.clientId === "demo") {
-        updateDemoRequestStatusByCallSid(supabase, callSid, updates.status === "completed" ? "completed" : "failed").catch((err) =>
-          console.error(`[Telephony/Status] Demo request sync failed for ${callSid}:`, err),
+        waitUntil(
+          updateDemoRequestStatusByCallSid(supabase, callSid, updates.status === "completed" ? "completed" : "failed").catch((err) =>
+            console.error(`[Telephony/Status] Demo request sync failed for ${callSid}:`, err),
+          ),
         );
       }
 
@@ -118,11 +125,12 @@ export async function POST(req: NextRequest) {
       // Post-call LLM-judge summary for the doctor to review — only for calls
       // that actually completed with a real transcript (not busy/no-answer/
       // failed, and not a follow-up call where the patient never spoke),
-      // and only ones placed against a roster patient. Fire-and-forget:
-      // this webhook's job is confirming Twilio's status update was
-      // recorded, not waiting on an LLM call — and the call has already
-      // ended by this point, so there's no live turn this could ever add
-      // latency to.
+      // and only ones placed against a roster patient. It runs after the
+      // reply to Twilio (this webhook's job is confirming the status update
+      // was recorded, not waiting on an LLM call), but inside waitUntil():
+      // on Vercel, work left running after the response is otherwise frozen
+      // or dropped, which would lose the summary, the follow-up retry
+      // decision and the self-learning findings.
       // A machine (voicemail/fax) answer or no patient speech means no
       // conversation happened, so there's nothing for the summary to judge.
       const machineAnswered = !!answeredBy && (answeredBy === "fax" || answeredBy.startsWith("machine_"));
@@ -142,7 +150,7 @@ export async function POST(req: NextRequest) {
               })
             : Promise.resolve();
 
-        generateCallSummary(updatedCall.sessionId, updatedCall.clientId)
+        waitUntil(generateCallSummary(updatedCall.sessionId, updatedCall.clientId)
           .then(async (summary) => {
             if (!summary) {
               // No transcript / summary failed: the outcome is unclear. The
@@ -194,19 +202,19 @@ export async function POST(req: NextRequest) {
             await settleFollowUp({}).catch((e) =>
               console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, e),
             );
-          });
+          }));
       } else if (followUpTaskId) {
         // Never connected (busy/no-answer/failed/canceled), or connected
         // without the patient ever speaking: known straight away from the
         // call itself, no summary needed — so a retry is scheduled at once.
-        handleFollowUpCallOutcome({
+        waitUntil(handleFollowUpCallOutcome({
           taskId: followUpTaskId,
           twilioStatus: callStatus as TwilioCallStatus,
           patientSpoke,
           answeredBy,
           endedAt,
           ...identity,
-        }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err));
+        }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err)));
       }
     }
 
