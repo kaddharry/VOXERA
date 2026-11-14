@@ -1,4 +1,5 @@
-import { redis, redisSub } from "../redis/client";
+import { redis } from "../redis/client";
+import { broadcastSessionEvent, liveEventsTransport } from "./live-events";
 
 export interface SessionEventPayload {
   sessionId: string;
@@ -8,8 +9,10 @@ export interface SessionEventPayload {
 }
 
 /**
- * Publishes a session event to Redis Pub/Sub so that real-time SSE endpoints
- * can push live updates to the Admin Dashboard.
+ * Publishes a session event so that real-time SSE endpoints can push live
+ * updates to the Admin Dashboard: over Supabase Realtime on Vercel (where the
+ * call and the viewer can be in different instances, see live-events.ts),
+ * otherwise over Redis Pub/Sub (or its in-memory stand-in).
  */
 export async function emitSessionEvent(
   sessionId: string,
@@ -35,6 +38,12 @@ export async function emitSessionEvent(
       await redis.hset(`session_state:${sessionId}`, "last_cai", JSON.stringify(data));
     } else if (type === "transcript") {
       await redis.hset(`session_state:${sessionId}`, "last_transcript", JSON.stringify(data));
+    }
+
+    if (liveEventsTransport() === "supabase") {
+      // Not awaited: the send runs in the background and never delays the call.
+      void broadcastSessionEvent(payload);
+      return;
     }
 
     // Publish to the specific session channel AND the global active calls channel
