@@ -1,0 +1,31 @@
+@page { size: A4; margin: 16mm 14mm 18mm 14mm; }
+body { font-family: "DejaVu Sans", "Helvetica", Arial, sans-serif; font-size: 9.6pt; line-height: 1.45; color: #1d2329; }
+h1 { font-size: 21pt; margin: 0 0 6pt; color: #0f3b5f; }
+h2 { font-size: 14pt; color: #0f3b5f; border-bottom: 1.5px solid #0f3b5f; padding-bottom: 3pt; margin-top: 18pt; page-break-after: avoid; }
+h3 { font-size: 11pt; color: #234; margin-top: 12pt; page-break-after: avoid; }
+p, li { orphans: 3; widows: 3; }
+code { font-family: "DejaVu Sans Mono", Menlo, monospace; font-size: 8.4pt; background: #eef2f5; padding: 0 2px; border-radius: 2px; }
+pre { background: #f4f6f8; border: 1px solid #d6dde3; padding: 7pt 9pt; font-size: 8pt; line-height: 1.35; white-space: pre-wrap; word-break: break-word; page-break-inside: avoid; }
+pre code { background: none; padding: 0; font-size: 8pt; }
+table { border-collapse: collapse; width: 100%; margin: 6pt 0 10pt; font-size: 8.2pt; page-break-inside: auto; }
+th, td { border: 1px solid #c9d2da; padding: 3pt 4pt; vertical-align: top; text-align: left; word-break: break-word; }
+th { background: #e3ebf2; }
+tr { page-break-inside: avoid; }
+hr { border: none; border-top: 1px solid #ccd; margin: 14pt 0; }
+strong { color: #111; }
+td code { font-size: 7.6pt; }
+td:first-child code { white-space: nowrap; }
+table { table-layout: fixed; }
+table:has(th:nth-child(6)) { font-size: 7.6pt; }
+table:has(th:nth-child(6)) th:nth-child(1) { width: 27%; }
+table:has(th:nth-child(6)) th:nth-child(2) { width: 11%; }
+table:has(th:nth-child(6)) th:nth-child(3) { width: 7%; }
+table:has(th:nth-child(6)) th:nth-child(4) { width: 22%; }
+table:has(th:nth-child(6)) th:nth-child(5) { width: 12%; }
+table:has(th:nth-child(6)) th:nth-child(6) { width: 21%; }
+table:has(th:nth-child(6)) td:first-child code { font-size: 7pt; }
+table:not(:has(th:nth-child(3))) th:nth-child(1) { width: 24%; }
+table:has(th:nth-child(4)):not(:has(th:nth-child(5))) th:nth-child(1) { width: 6%; }
+table:has(th:nth-child(4)):not(:has(th:nth-child(5))) th:nth-child(2) { width: 18%; }
+table:has(th:nth-child(3)):not(:has(th:nth-child(4))) th:nth-child(1) { width: 22%; }
+table:has(th:nth-child(6)) td:first-child code { white-space: normal; overflow-wrap: anywhere; }

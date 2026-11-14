@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabase } from "../../../../lib/db/supabase";
-import { generateCallSummary } from "../../../../lib/agent/call-summary";
-import { analyzeCall, saveCallInsights } from "../../../../lib/insights/analyze-call";
-import { hasPatientSpoken } from "../../../../lib/logging/session-logger";
-import { handleFollowUpCallOutcome, applyDoNotContactRequest, readAnsweredBy } from "../../../../lib/scheduler/dispatcher";
-import { applyAppointmentCallOutcome } from "../../../../lib/scheduler/appointment-reminders";
-import type { TwilioCallStatus } from "../../../../lib/scheduler/policy";
-import { updateDemoRequestStatusByCallSid } from "../../../../lib/db/demo-requests";
+import { enqueueJob, runJobNow } from "../../../../lib/jobs/background-jobs";
+import { POST_CALL_JOB, postCallJobKey, runPostCallJob, type PostCallPayload } from "../../../../lib/telephony/post-call";
+import { finishQueuedCall, releaseCallSlot } from "../../../../lib/telephony/call-coordination";
+import { verifyTwilioWebhook } from "../../../../lib/telephony/webhook-auth";
 
 export const dynamic = "force-dynamic";
-// The after-call work below (summary, follow-up decision, self-learning
-// analysis) keeps running after Twilio gets its reply, so give it the most
-// time the free Vercel plan allows.
+// The after-call job below runs after Twilio gets its reply, so give it the
+// most time the free Vercel plan allows. If it still doesn't finish, the job
+// stays in Postgres and the cron retries it.
 export const maxDuration = 300;
 
 /**
@@ -28,6 +25,9 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.text();
     const params = Object.fromEntries(new URLSearchParams(body));
+    if (!verifyTwilioWebhook(req, params).ok) {
+      return new NextResponse("Forbidden", { status: 403 });
+    }
 
     const callSid = params.CallSid;
     const callStatus = params.CallStatus; // completed | busy | no-answer | failed | canceled
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing CallSid" }, { status: 400 });
     }
 
-    const statusMap: Record<string, string> = {
+    const statusMap: Record<string, "completed" | "failed"> = {
       completed: "completed",
       busy: "failed",
       "no-answer": "failed",
@@ -47,15 +47,25 @@ export async function POST(req: NextRequest) {
       canceled: "failed",
     };
 
+    // Only the final status means the call is over. VOXERA only subscribes to
+    // "completed" (lib/telephony/twilio.ts), but a status callback set on the
+    // phone number in the Twilio console may also send ringing/in-progress.
+    if (!(callStatus in statusMap)) {
+      return NextResponse.json({ ok: true, ignored: callStatus });
+    }
+
+    // The call is over: free its slot (idempotent; the WebSocket close may
+    // already have) and close any queue entry it still had (a caller who
+    // hung up while waiting).
+    await releaseCallSlot(callSid, `twilio_status:${callStatus}`);
+    await finishQueuedCall(callSid, "abandoned", `call ${callStatus} while queued`);
+
     // When the call ended: Twilio sends this callback the moment it does.
     // Follow-up retries are timed from here, not from whenever the
-    // post-call summary below finishes.
+    // post-call summary finishes.
     const endedAt = Date.now();
-    const updates: Record<string, unknown> = {
-      status: statusMap[callStatus] || "completed",
-      endedAt,
-    };
-
+    const outcome = statusMap[callStatus] || "completed";
+    const updates: Record<string, unknown> = { status: outcome, endedAt };
     if (callDuration) {
       updates.durationMs = parseInt(callDuration, 10) * 1000;
     }
@@ -64,157 +74,45 @@ export async function POST(req: NextRequest) {
       .from("call_logs")
       .update(updates)
       .eq("id", callSid)
-      .select('sessionId, clientId, patientId, "followUpTaskId"')
+      .select('sessionId, "followUpTaskId"')
       .maybeSingle();
+    if (error) console.error("[Telephony/Status] DB update failed:", error);
 
     // Scheduled follow-up calls carry their task id on this callback's URL
-    // (lib/telephony/outbound.ts). That's what lets the outcome still reach
-    // the task when there's no call_logs row yet — a call that failed
-    // within milliseconds can finish before placeOutboundCall has written
-    // it, and that failure used to be dropped here, leaving the follow-up
-    // stuck in "calling" with no retry.
-    const followUpTaskId = updatedCall?.followUpTaskId ?? req.nextUrl.searchParams.get("followUpTaskId");
-    // Which attempt this call was (sent on the callback URL by the
-    // dispatcher), so a late callback from an earlier attempt can't be
-    // applied to a newer one.
+    // (lib/telephony/outbound.ts), so the outcome still reaches the task when
+    // there's no call_logs row yet (a call that failed within milliseconds).
+    const followUpTaskId = (updatedCall?.followUpTaskId as string | null) ?? req.nextUrl.searchParams.get("followUpTaskId");
+    // Which attempt this call was, so a late callback from an earlier
+    // attempt can't be applied to a newer one.
     const attemptParam = Number(req.nextUrl.searchParams.get("followUpAttempt"));
-    const identity = {
-      callSid,
-      ...(Number.isInteger(attemptParam) && attemptParam > 0 && { attempt: attemptParam }),
-    };
-    // Voicemail detection verdict, recorded by /api/telephony/amd before
-    // it hung up on a machine (Twilio may also include it here).
-    const answeredBy = followUpTaskId ? (params.AnsweredBy || (await readAnsweredBy(callSid))) : undefined;
 
-    if (error || !updatedCall) {
-      if (error) console.error("[Telephony/Status] DB update failed:", error);
-      if (followUpTaskId) {
-        // No call record yet means the call never got as far as the audio
-        // stream, so nobody spoke even if Twilio says "completed".
-        await handleFollowUpCallOutcome({
-          taskId: followUpTaskId,
-          twilioStatus: callStatus as TwilioCallStatus,
-          patientSpoke: callStatus === "completed" ? false : undefined,
-          answeredBy,
-          endedAt,
-          ...identity,
-        }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err));
-      } else if (error && !req.nextUrl.searchParams.get("campaignCallId")) {
-        return NextResponse.json({ error: "DB update failed" }, { status: 500 });
-      }
-      // Fall through: a campaign call's own row still gets its outcome below.
-    } else {
-      // Public Book-a-Demo calls (spec §5) always carry clientId "demo" — see
-      // app/api/demo-requests/[id]/call/route.ts. Keep its status in sync so
-      // /book-demo/confirm's poll can show the right next step.
-      if (updatedCall?.clientId === "demo") {
+    if (error && !followUpTaskId && !req.nextUrl.searchParams.get("campaignCallId")) {
+      return NextResponse.json({ error: "DB update failed" }, { status: 500 });
+    }
+
+    // Summary, follow-up decision, appointment outcome and self-learning
+    // findings: saved as a durable job first, then run right away. If this
+    // run is cut short, the cron (/api/cron/dispatch) retries it.
+    if (updatedCall || followUpTaskId) {
+      const payload: PostCallPayload = {
+        callSid,
+        callStatus,
+        outcome,
+        endedAt,
+        followUpTaskId: followUpTaskId ?? null,
+        ...(Number.isInteger(attemptParam) && attemptParam > 0 && { attempt: attemptParam }),
+        answeredBy: params.AnsweredBy || null,
+      };
+      const job = await enqueueJob(POST_CALL_JOB, postCallJobKey(callSid), payload as unknown as Record<string, unknown>);
+      if (job) {
+        waitUntil(runJobNow(postCallJobKey(callSid), runPostCallJob));
+      } else {
+        // The jobs table isn't reachable (e.g. migration_v33 not applied
+        // yet): still do the work now, without the retry safety net.
         waitUntil(
-          updateDemoRequestStatusByCallSid(supabase, callSid, updates.status === "completed" ? "completed" : "failed").catch((err) =>
-            console.error(`[Telephony/Status] Demo request sync failed for ${callSid}:`, err),
-          ),
+          runPostCallJob({ id: "inline", kind: POST_CALL_JOB, idempotency_key: postCallJobKey(callSid), payload: payload as unknown as Record<string, unknown>, status: "running", attempts: 1, max_attempts: 1, last_error: null })
+            .catch((err) => console.error(`[Telephony/Status] Post-call work failed for ${callSid}:`, err)),
         );
-      }
-
-      // Twilio reports "completed" for ANY call that connected — voicemail,
-      // a patient hanging up straight away, or a call whose audio stream
-      // never started included. Whether the patient actually spoke (from the
-      // saved transcript) is what separates a real conversation from those.
-      const connected = updates.status === "completed";
-      const patientSpoke = connected ? (updatedCall?.sessionId ? await hasPatientSpoken(updatedCall.sessionId) : false) : undefined;
-
-      // Post-call LLM-judge summary for the doctor to review — only for calls
-      // that actually completed with a real transcript (not busy/no-answer/
-      // failed, and not a follow-up call where the patient never spoke),
-      // and only ones placed against a roster patient. It runs after the
-      // reply to Twilio (this webhook's job is confirming the status update
-      // was recorded, not waiting on an LLM call), but inside waitUntil():
-      // on Vercel, work left running after the response is otherwise frozen
-      // or dropped, which would lose the summary, the follow-up retry
-      // decision and the self-learning findings.
-      // A machine (voicemail/fax) answer or no patient speech means no
-      // conversation happened, so there's nothing for the summary to judge.
-      const machineAnswered = !!answeredBy && (answeredBy === "fax" || answeredBy.startsWith("machine_"));
-      const summarise =
-        connected && updatedCall?.sessionId && updatedCall?.patientId && !(followUpTaskId && (patientSpoke === false || machineAnswered));
-      if (summarise) {
-        const settleFollowUp = (outcome: { followUpOutcome?: "resolved" | "needs_retry" | "needs_review"; doNotContactRequested?: boolean }) =>
-          followUpTaskId
-            ? handleFollowUpCallOutcome({
-                taskId: followUpTaskId,
-                twilioStatus: callStatus as TwilioCallStatus,
-                patientSpoke,
-                answeredBy,
-                endedAt,
-                ...identity,
-                ...outcome,
-              })
-            : Promise.resolve();
-
-        waitUntil(generateCallSummary(updatedCall.sessionId, updatedCall.clientId)
-          .then(async (summary) => {
-            if (!summary) {
-              // No transcript / summary failed: the outcome is unclear. The
-              // scheduler retries while attempts remain (never counting this
-              // as a success, never leaving the day stuck).
-              await settleFollowUp({});
-              return;
-            }
-            await supabase.from("call_logs").update({ summary }).eq("id", callSid);
-            if (summary.requestedDoNotContact && updatedCall.patientId) {
-              await applyDoNotContactRequest(
-                updatedCall.clientId,
-                updatedCall.patientId,
-                "Patient asked to stop being called (detected from call transcript).",
-              );
-            }
-            await settleFollowUp({ followUpOutcome: summary.followUpOutcome, doNotContactRequested: summary.requestedDoNotContact });
-
-            // Reminder-call outcome -> the appointment/waitlist entry it was
-            // actually about (no-op for an ordinary follow-up call). After
-            // settleFollowUp so a slow/failed apply here can never delay the
-            // scheduler's own retry decision.
-            if (followUpTaskId) {
-              await applyAppointmentCallOutcome(supabase, {
-                taskId: followUpTaskId,
-                sessionId: updatedCall.sessionId,
-                appointmentConfirmed: summary.appointmentConfirmed,
-                appointmentCancelRequested: summary.appointmentCancelRequested,
-              }).catch((err) => console.error(`[Telephony/Status] applyAppointmentCallOutcome failed for ${callSid}:`, err));
-            }
-
-            // Self-learning pipeline: knowledge gaps and emotional failure
-            // points for this call. After the follow-up is settled, so it
-            // can never delay a retry.
-            const insights = await analyzeCall(updatedCall.sessionId, updatedCall.clientId);
-            if (insights) {
-              await saveCallInsights({
-                callSid,
-                sessionId: updatedCall.sessionId,
-                clientId: updatedCall.clientId,
-                patientId: updatedCall.patientId,
-                summary: summary as unknown as Record<string, unknown>,
-                insights,
-              });
-            }
-          })
-          .catch(async (err) => {
-            console.error(`[Telephony/Status] Call summary failed for ${callSid}:`, err);
-            await settleFollowUp({}).catch((e) =>
-              console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, e),
-            );
-          }));
-      } else if (followUpTaskId) {
-        // Never connected (busy/no-answer/failed/canceled), or connected
-        // without the patient ever speaking: known straight away from the
-        // call itself, no summary needed — so a retry is scheduled at once.
-        waitUntil(handleFollowUpCallOutcome({
-          taskId: followUpTaskId,
-          twilioStatus: callStatus as TwilioCallStatus,
-          patientSpoke,
-          answeredBy,
-          endedAt,
-          ...identity,
-        }).catch((err) => console.error(`[Telephony/Status] Follow-up outcome handling failed for ${callSid}:`, err)));
       }
     }
 

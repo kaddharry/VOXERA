@@ -4,6 +4,7 @@ import { DEMO, ensureSeeded } from "@/lib/bootstrap";
 import { ingestDocument } from "@/lib/knowledge/ingest";
 import { invalidateInlineKnowledgeBase } from "@/lib/knowledge/inline";
 import { createClient } from "@/lib/db/server";
+import { isEmbeddingUnavailable } from "../../../../lib/util/embed";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,6 +97,8 @@ export async function POST(request: NextRequest) {
     return Response.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ error: message }, { status: 500 });
+    // The document is marked "failed" with this message (lib/knowledge/ingest.ts);
+    // nothing was written to the vector store.
+    return Response.json({ error: message }, { status: isEmbeddingUnavailable(err) ? 503 : 500 });
   }
 }

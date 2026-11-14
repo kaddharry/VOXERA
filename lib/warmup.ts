@@ -32,11 +32,21 @@ export async function warmupModels(opts: { includeVoiceModel?: boolean } = {}): 
       : []),
   ]);
   const failed = results.filter((r) => r.status === "rejected");
+  const ms = Date.now() - start;
   if (failed.length > 0) {
     console.warn(
-      "[Warmup] Some ONNX models failed to preload (will load lazily on first real use instead):",
-      failed.map((f) => (f as PromiseRejectedResult).reason)
+      JSON.stringify({
+        service: "models",
+        event: "model_warmup_failed",
+        failed: failed.length,
+        of: results.length,
+        ms,
+        errors: failed.map((f) => String((f as PromiseRejectedResult).reason?.message ?? (f as PromiseRejectedResult).reason).slice(0, 200)),
+        note: "these models will be retried on first real use; embeddings fail closed (retrieval degraded) if they still can't load",
+      }),
     );
+  } else {
+    console.info(JSON.stringify({ service: "models", event: "model_warmup_done", models: results.length, ms }));
   }
-  console.log(`[Warmup] ONNX models ready in ${Date.now() - start}ms`);
+  console.log(`[Warmup] ONNX models ready in ${ms}ms`);
 }

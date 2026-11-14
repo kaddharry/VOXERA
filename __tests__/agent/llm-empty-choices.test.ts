@@ -40,7 +40,7 @@ describe("BUG-O4 — empty choices array from a provider", () => {
     createMock.mockReset();
     // Both providers need a key or the loop skips them and never reaches the guard.
     process.env.GROQ_API_KEYS = "test-key-1";
-    process.env.OPENAI_API_KEY = "test-key-2";
+    process.env.ZENMUX_API_KEY = "test-key-2";
     // KeyRotator instances are now cached per env-var-name across calls
     // (see getKeyRotator's doc) — reset between tests so a stale/empty
     // cached instance from a previous test's env vars doesn't leak in.

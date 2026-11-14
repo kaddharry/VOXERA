@@ -1,4 +1,5 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { supabaseCredentials } from "../env";
 import ws from "ws";
 
 /**
@@ -8,15 +9,10 @@ import ws from "ws";
  * 
  * NOTE: NEVER expose this key to a frontend client like the browser.
  */
-function getSupabaseUrl() {
-  return process.env.SUPABASE_URL || "https://placeholder-project-id.supabase.co";
-}
+// Credentials come from lib/env.ts: in Production a missing SUPABASE_URL or
+// SUPABASE_SERVICE_ROLE_KEY is a clear error naming the variable, not a
+// silent placeholder (and the anon key is never used in its place).
 
-function getSupabaseKey() {
-  return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "placeholder-key";
-}
-
-import { redis, redisSub } from "../redis/client";
 
 // ─── Circuit Breaker ─────────────────────────────────────────────────────────
 // Prevents cascading timeouts when Supabase is unreachable.
@@ -46,39 +42,10 @@ const CIRCUIT_BREAKER = {
   /** How long (ms) the circuit stays open before allowing a retry probe. */
   cooldownMs: 10_000,
 };
-// Subscribe to state change broadcasts from other instances
-redisSub.subscribe("voxera:cb:state_change").catch((err: any) => {
-  console.error("[Supabase CB] Failed to subscribe to state change channel:", err);
-});
-
-redisSub.on("message", (channel: string, message: string) => {
-  if (channel === "voxera:cb:state_change") {
-    try {
-      const state = JSON.parse(message);
-      CIRCUIT_BREAKER.consecutiveFailures = state.consecutiveFailures;
-      CIRCUIT_BREAKER.lastFailureAt = state.lastFailureAt;
-    } catch (err) {
-      console.error("[Supabase CB] Failed to parse state change payload:", err);
-    }
-  }
-});
-
-// Pull initial state from Redis on startup asynchronously
-async function syncInitialState() {
-  try {
-    const failures = await redis.get("voxera:cb:consecutive_failures");
-    const lastFailure = await redis.get("voxera:cb:last_failure_at");
-    if (failures !== null) {
-      CIRCUIT_BREAKER.consecutiveFailures = parseInt(failures, 10);
-    }
-    if (lastFailure !== null) {
-      CIRCUIT_BREAKER.lastFailureAt = parseInt(lastFailure, 10);
-    }
-  } catch (err) {
-    console.error("[Supabase CB] Failed to sync initial circuit breaker state:", err);
-  }
-}
-syncInitialState();
+// Per-instance on purpose: each Vercel instance trips its own breaker after
+// its own failed requests. Sharing the state through another service (it
+// used to go through Redis) adds a dependency to the very path this guards,
+// and checking Supabase's health through Supabase would be circular.
 
 /** Returns true if Supabase is believed to be reachable. */
 export function isSupabaseHealthy(): boolean {
@@ -90,25 +57,11 @@ export function isSupabaseHealthy(): boolean {
 
 export function recordSupabaseSuccess(): void {
   CIRCUIT_BREAKER.consecutiveFailures = 0;
-  // Asynchronously write to Redis and broadcast change
-  redis.set("voxera:cb:consecutive_failures", "0").catch(() => {});
-  redis.publish("voxera:cb:state_change", JSON.stringify({
-    consecutiveFailures: 0,
-    lastFailureAt: CIRCUIT_BREAKER.lastFailureAt,
-  })).catch(() => {});
 }
 
 export function recordSupabaseFailure(): void {
   CIRCUIT_BREAKER.consecutiveFailures++;
   CIRCUIT_BREAKER.lastFailureAt = Date.now();
-  
-  // Asynchronously write to Redis and broadcast change
-  redis.set("voxera:cb:consecutive_failures", CIRCUIT_BREAKER.consecutiveFailures.toString()).catch(() => {});
-  redis.set("voxera:cb:last_failure_at", CIRCUIT_BREAKER.lastFailureAt.toString()).catch(() => {});
-  redis.publish("voxera:cb:state_change", JSON.stringify({
-    consecutiveFailures: CIRCUIT_BREAKER.consecutiveFailures,
-    lastFailureAt: CIRCUIT_BREAKER.lastFailureAt,
-  })).catch(() => {});
 }
 
 // ─── Timeout Fetch ───────────────────────────────────────────────────────────
@@ -161,17 +114,35 @@ export async function probeHealth(): Promise<boolean> {
 
 // ─── Client ──────────────────────────────────────────────────────────────────
 
-export const supabase = createClient(getSupabaseUrl(), getSupabaseKey(), {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false,
-    detectSessionInUrl: false,
-  },
-  global: {
-    fetch: timeoutFetch,
-  },
-  realtime: {
-    transport: ws as any,
+function createServiceClient(): SupabaseClient {
+  const { url, key } = supabaseCredentials("service");
+  return createClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      fetch: timeoutFetch,
+    },
+    realtime: {
+      transport: ws as any,
+    },
+  });
+}
+
+/**
+ * The server's service-role client. Created on first use rather than at
+ * import, so a missing variable can never stop a route (the phone-call route
+ * included) from loading: the first database call throws MissingEnvError
+ * naming the variable instead, which shows up in the logs of that request.
+ */
+let client: SupabaseClient | null = null;
+export const supabase: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    client ??= createServiceClient();
+    const v = Reflect.get(client, prop, client);
+    return typeof v === "function" ? v.bind(client) : v;
   },
 });
 

@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
-import { createSubscriber } from "../../../../../lib/redis/client";
 import { createClient } from "../../../../../lib/db/server";
-import { liveEventsTransport, subscribeSessionEvents } from "../../../../../lib/realtime/live-events";
+import { supabase as adminDb } from "../../../../../lib/db/supabase";
+import { subscribeSessionEvents } from "../../../../../lib/realtime/live-events";
 
 export const dynamic = "force-dynamic";
 // The free Vercel plan stops a Function at 300 s; the browser's EventSource
@@ -20,62 +20,58 @@ export const maxDuration = 300;
  * default used by /api/telephony/outbound for public demo calls) stays open
  * to anyone who knows the sessionId, matching the existing public-demo
  * threat model. A row owned by a real tenant requires that tenant's own
- * session cookie — previously this endpoint had no check at all, so any
- * sessionId (guessed or leaked) could watch any tenant's live transcript.
+ * session cookie. An id that matches no call at all is refused too.
+ *
+ * Ownership is looked up with the server's own client (row-level security
+ * would otherwise hide a demo call from an anonymous viewer and make the
+ * check silently pass), then the viewer's session is checked against it.
+ *
+ * The id may be the call's session id (tel-…) or its CallSid (the dashboard
+ * and the public demo use the CallSid before the session id exists); events
+ * are always published under the session id, so a CallSid is resolved to it
+ * — waiting for the stream's "start" event to record it if needed.
+ *
+ * Events come from Supabase Realtime (lib/realtime/live-events.ts) and are
+ * live only; a viewer who reconnects reloads earlier turns from /replay.
  */
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }
 ) {
   const { sessionId } = await params;
-  const channel = `session:${sessionId}`;
+  // Session ids (tel-…) and CallSids are plain [A-Za-z0-9_-]; anything else
+  // is refused before it reaches the PostgREST filter below.
+  if (!sessionId || !/^[A-Za-z0-9_-]{1,100}$/.test(sessionId)) return new Response("Not found", { status: 404 });
 
-  const supabase = await createClient();
-  // call_logs.sessionId is the TelephonyStreamHandler-generated id when
-  // present; callers fall back to call_logs.id (the Twilio CallSid) when it
-  // isn't (see LiveCallMonitor.tsx), so both must be checked here.
-  const { data: call } = await supabase
+  const { data: call } = await adminDb
     .from("call_logs")
-    .select("clientId")
+    .select('id, "clientId", "sessionId"')
     .or(`sessionId.eq.${sessionId},id.eq.${sessionId}`)
     .maybeSingle();
+  if (!call) return new Response("Not found", { status: 404 });
 
-  if (call && call.clientId !== "demo") {
+  if (call.clientId !== "demo") {
+    const userDb = await createClient();
     const {
       data: { user },
-    } = await supabase.auth.getUser();
+    } = await userDb.auth.getUser();
     if (!user || user.id !== call.clientId) {
       return new Response("Not found", { status: 404 });
     }
   }
 
   const encoder = new TextEncoder();
-  // A subscriber of its own per connection rather than the shared redisSub:
-  // it can be fully unsubscribed when this viewer leaves, and one viewer
-  // reconnecting can never make another viewer receive messages twice.
-  // createSubscriber() hands back a real Redis connection (so this viewer
-  // sees events published by whichever instance is handling the call) when
-  // REDIS_URL is configured, otherwise the in-memory fallback.
-  // On Vercel (no shared Redis) the call can run in another instance, so
-  // listen on Supabase Realtime instead (lib/realtime/live-events.ts).
-  const useSupabase = liveEventsTransport() === "supabase";
-  const subscriber = useSupabase ? null : createSubscriber();
-  let stopSupabase: (() => Promise<void>) | undefined;
+  let stopRealtime: (() => Promise<void>) | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let resolveTimer: ReturnType<typeof setInterval> | undefined;
   let closed = false;
 
   const cleanup = () => {
     if (closed) return;
     closed = true;
     if (heartbeat) clearInterval(heartbeat);
-    if (stopSupabase) void stopSupabase();
-    if (!subscriber) return;
-    subscriber.removeAllListeners("message");
-    void subscriber.unsubscribe();
-    // Real Redis connections (unlike the in-memory fallback) must be
-    // released explicitly, or each SSE viewer leaks one connection against
-    // a free-tier connection limit.
-    void ("quit" in subscriber ? subscriber.quit().catch(() => {}) : undefined);
+    if (resolveTimer) clearInterval(resolveTimer);
+    if (stopRealtime) void stopRealtime();
   };
 
   const stream = new ReadableStream({
@@ -93,13 +89,25 @@ export async function GET(
       // Send initial connection event
       send(`data: ${JSON.stringify({ type: "connected", sessionId })}\n\n`);
 
-      if (subscriber) {
-        subscriber.on("message", (ch: string, message: string) => {
-          if (ch === channel) send(`data: ${message}\n\n`);
-        });
-        await subscriber.subscribe(channel);
+      const listen = (liveSessionId: string) => {
+        if (closed || stopRealtime) return;
+        stopRealtime = subscribeSessionEvents(liveSessionId, (message) => send(`data: ${message}\n\n`));
+      };
+      if (call.sessionId) {
+        listen(call.sessionId as string);
       } else {
-        stopSupabase = subscribeSessionEvents(sessionId, (message) => send(`data: ${message}\n\n`));
+        // Asked by CallSid before the stream's "start" event saved the
+        // session id: check every 2 s (up to 2 minutes) until it appears.
+        let checks = 0;
+        resolveTimer = setInterval(async () => {
+          checks += 1;
+          const { data } = await adminDb.from("call_logs").select('"sessionId"').eq("id", call.id).maybeSingle();
+          if (data?.sessionId || checks >= 60) {
+            if (resolveTimer) clearInterval(resolveTimer);
+            resolveTimer = undefined;
+            if (data?.sessionId) listen(data.sessionId as string);
+          }
+        }, 2000);
       }
 
       // SSE comment line every 15s. Silences between turns (the agent

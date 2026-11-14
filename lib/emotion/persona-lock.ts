@@ -1,6 +1,6 @@
 import type { EmotionContext, EmotionLabel } from "../types";
 import { CONFIG } from "../config";
-import { redis } from "../redis/client";
+import { supabase } from "../db/supabase";
 
 /**
  * Persona hysteresis — keeps the agent's TONE stable across a call instead
@@ -25,10 +25,11 @@ import { redis } from "../redis/client";
  * actually saves is the LLM's tone whiplash from reacting to single-turn
  * noise, which was the actual product complaint — not compute.
  *
- * State lives in the shared in-process store (lib/redis/client.ts), keyed
- * per session, so it survives across turns the same way the Supabase
- * circuit breaker's state does — within this one process; see that file's
- * doc comment for why there's no cross-instance store anymore.
+ * State is kept per session in this process (a phone call lives in one
+ * Function for its whole length, so turns hit the cache) and written through
+ * to Postgres (session_state, sql/migration_v33.sql), so a turn served by a
+ * different instance (e.g. the HTTP /api/turn path) still sees it. A
+ * database write never delays the turn.
  */
 
 type ValenceSign = "neg" | "pos" | "neu";
@@ -49,32 +50,45 @@ function signOf(v: number): ValenceSign {
   return "neu";
 }
 
-function redisKey(sessionId: string): string {
-  return `voxera:persona-lock:${sessionId}`;
-}
+const STATE_KEY = "persona_lock";
+const cache = new Map<string, { state: PersonaLockState; at: number }>();
+const CACHE_MAX = 500;
 
 async function loadState(sessionId: string): Promise<PersonaLockState | null> {
+  const hit = cache.get(sessionId);
+  if (hit) return hit.state;
   try {
-    const raw = await redis.get(redisKey(sessionId));
-    if (!raw) return null;
-    return JSON.parse(raw) as PersonaLockState;
+    const { data } = await supabase.from("session_state").select("value").eq("session_id", sessionId).eq("key", STATE_KEY).maybeSingle();
+    const state = (data?.value as PersonaLockState | undefined) ?? null;
+    if (state) cache.set(sessionId, { state, at: Date.now() });
+    return state;
   } catch {
     return null;
   }
 }
 
 async function saveState(sessionId: string, state: PersonaLockState): Promise<void> {
-  try {
-    // The "EX", 7200 (2h TTL) args are vestigial — the in-process store
-    // (lib/redis/client.ts) ignores them and never expires keys. That's
-    // fine in practice (entries are bounded by how many sessions have
-    // actually run since the process started), but a long-lived production
-    // process will accumulate one entry per session forever; revisit if
-    // that ever becomes a real memory concern.
-    await redis.set(redisKey(sessionId), JSON.stringify(state), "EX", 7200);
-  } catch (err) {
-    console.warn("[PersonaLock] Failed to persist state:", err);
+  if (cache.size >= CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
   }
+  cache.set(sessionId, { state, at: Date.now() });
+  // Written through in the background; expires after a day (the cron's
+  // recover_telephony_state() deletes expired rows).
+  void (async () => {
+    try {
+      const { error } = await supabase.from("session_state").upsert({
+        session_id: sessionId,
+        key: STATE_KEY,
+        value: state,
+        updated_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      });
+      if (error) console.warn("[PersonaLock] Failed to persist state:", error.message);
+    } catch (err) {
+      console.warn("[PersonaLock] Failed to persist state:", err);
+    }
+  })();
 }
 
 export interface PersonaLockResult {

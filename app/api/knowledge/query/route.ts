@@ -3,6 +3,7 @@ import { DEMO, ensureSeeded } from "@/lib/bootstrap";
 import { queryKnowledgeBase } from "@/lib/knowledge/ingest";
 import { vectorStore } from "@/lib/memory/store";
 import { createClient } from "@/lib/db/server";
+import { isEmbeddingUnavailable } from "../../../../lib/util/embed";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,11 +46,15 @@ export async function POST(request: NextRequest) {
   }
 
   const topK = body.topK ?? 5;
-  const results = await queryKnowledgeBase({
-    clientId,
-    query: body.query,
-    topK,
-  });
+  let results;
+  try {
+    results = await queryKnowledgeBase({ clientId, query: body.query, topK });
+  } catch (err) {
+    if (isEmbeddingUnavailable(err)) {
+      return Response.json({ error: "Knowledge search is temporarily unavailable (the embedding model could not load). Try again shortly." }, { status: 503 });
+    }
+    throw err;
+  }
 
   return Response.json({ query: body.query, clientId, results });
 }

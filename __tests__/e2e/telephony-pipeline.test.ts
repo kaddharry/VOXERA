@@ -33,13 +33,11 @@ vi.mock("../../lib/db/supabase", () => ({
   recordSupabaseFailure: vi.fn(),
 }));
 
-vi.mock("../../lib/queue/manager", () => ({
-  callQueue: {
-    markCallStarted: vi.fn(),
-    markCallEnded: vi.fn(),
-    getMetrics: vi.fn().mockReturnValue({ activeCalls: 0, queuedCalls: 0, totalHandled: 0, rejected: 0 }),
-    dequeueCaller: vi.fn(),
-  },
+vi.mock("../../lib/telephony/call-coordination", () => ({
+  CALL_SLOT_RENEW_EVERY_MS: 45_000,
+  acquireCallSlot: vi.fn().mockResolvedValue({ acquired: true, alreadyHeld: true, active: 1, max: 10 }),
+  renewCallSlot: vi.fn().mockResolvedValue(true),
+  releaseCallSlot: vi.fn().mockResolvedValue(true),
 }));
 
 // ─── Audio Codec Tests ────────────────────────────────────────────────────────
@@ -233,7 +231,7 @@ describe("Telephony Pipeline Integration (Mocked Services)", () => {
       // Yield event loop to allow async TelephonyStreamHandler.init() to resolve its awaits
       await new Promise((resolve) => setTimeout(resolve, 10));
 
-      // Let it initialize (it runs callQueue.markCallStarted() and deepgram.connect())
+      // Let it initialize (it runs deepgram.connect())
       expect(connectSpy).toHaveBeenCalled();
 
       // Trigger "connected" event
@@ -264,6 +262,16 @@ describe("Telephony Pipeline Integration (Mocked Services)", () => {
       onMessage(Buffer.from(JSON.stringify({ event: "stop" })));
       await new Promise((resolve) => setTimeout(resolve, 10));
       expect(closeSpy).toHaveBeenCalled();
+
+      // Call-slot lease (Postgres): confirmed on "start", released exactly
+      // once when the call ends — a later socket close doesn't release again.
+      const coord = await import("../../lib/telephony/call-coordination");
+      expect(coord.acquireCallSlot).toHaveBeenCalledWith("test-call-123", "test-client");
+      expect(coord.releaseCallSlot).toHaveBeenCalledTimes(1);
+      expect(coord.releaseCallSlot).toHaveBeenCalledWith("test-call-123", "stream_closed");
+      listeners["close"]?.[0]?.(1000, Buffer.from(""));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(coord.releaseCallSlot).toHaveBeenCalledTimes(1);
 
       // Clean up spies
       connectSpy.mockRestore();

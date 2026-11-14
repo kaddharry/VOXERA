@@ -175,9 +175,9 @@ docker run -p 3000:3000 --env-file .env.local voxera:latest
 - The build process runs `npm run build` during the image creation. This means dummy environment variables are provided inside the Dockerfile strictly so static prerendering succeeds.
 - When running the container in the cloud, you must inject your live `.env.local` variables via your provider's secrets manager.
 
-### Vercel and telephony readiness
+### Vercel deployment
 
-The Docker/custom-server setup below is a single persistent Node deployment, not a Vercel deployment. VOXERA's phone media stream and follow-up scheduler require persistent processes, while the current queue/Pub/Sub implementation is process-local. See [the production deployment assessment](docs/production-deployment.md) for the Vercel + voice service + worker recommendation, confirmed repository findings, environment-variable ownership, migration order, and the production smoke checklist. Do not point Twilio Media Streams at Vercel until the actual Vercel WebSocket runtime, duration, shared-state, and repeated-call smoke tests have passed.
+VOXERA runs entirely on Vercel (Fluid Compute) with Supabase as the only state store: the Twilio Media Stream WebSocket is the `upgradeWebSocket()` route at `/api/telephony/stream`, call capacity / the caller queue / after-call jobs live in Postgres (`sql/migration_v33.sql`), live dashboard events go over Supabase Realtime, and Vercel Cron drives follow-ups and recovery. Redis/Upstash is no longer used. Step-by-step setup: [docs/VOXERA_DEPLOYMENT_RUNBOOK.md](docs/VOXERA_DEPLOYMENT_RUNBOOK.md) (also as a PDF). Architecture and data flow: [docs/voxera_data_flow.md](docs/voxera_data_flow.md) and [docs/production-deployment.md](docs/production-deployment.md). On the free Hobby plan every call is cut at **300 seconds** (Vercel's function limit).
 
 ---
 

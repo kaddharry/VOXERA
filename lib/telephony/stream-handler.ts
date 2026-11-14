@@ -6,7 +6,7 @@ import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from 
 import type { EmotionLabel, PolicyDirectives } from "../types";
 import { supabase } from "../db/supabase";
 import { getAgentWithTenant } from "../db/agents";
-import { callQueue } from "../queue/manager";
+import { acquireCallSlot, renewCallSlot, releaseCallSlot as releaseSlotLease, CALL_SLOT_RENEW_EVERY_MS } from "./call-coordination";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
 import { CONFIG } from "../config";
@@ -163,8 +163,8 @@ export class TelephonyStreamHandler {
   /** The caller's sentence the in-flight turn is answering ("" when idle). */
   private currentTurnText = "";
   private hasEnded = false; // prevent double-invocation of onCallEnded
-  private slotTaken = false;
   private slotReleaseStarted = false;
+  private slotRenewTimer: ReturnType<typeof setInterval> | null = null;
 
   // Issue #14: PCM accumulator for acoustic feature extraction
   private turnAudioChunks: Buffer[] = [];
@@ -269,27 +269,44 @@ export class TelephonyStreamHandler {
   }
 
   private async init() {
-    await callQueue.markCallStarted();
-    this.slotTaken = true;
-    // If the socket closed while Redis/local state was acquiring the slot,
-    // onCallEnded() ran before the slot existed. Release it here exactly once.
-    if (this.hasEnded) {
-      await this.releaseCallSlot();
-      return;
-    }
+    // The call slot itself is a lease taken by the incoming webhook (keyed
+    // by CallSid, in Postgres) and kept alive from the "start" event on —
+    // see holdCallSlot(). Nothing to acquire before Twilio says who the
+    // call is.
+    if (this.hasEnded) return;
     await this.stt.connect();
     console.log(`[TelephonyStream] STT ready for session: ${this.sessionId}`);
   }
 
+  /**
+   * Confirms this call's slot lease (idempotent — the webhook already took
+   * it) and renews it while the call runs. If this Function is killed
+   * mid-call, renewals stop and the lease expires on its own, so the slot
+   * comes back without anyone having to release it.
+   */
+  private async holdCallSlot(): Promise<void> {
+    if (this.hasEnded || this.callSid === "unknown") return;
+    const slot = await acquireCallSlot(this.callSid, this.clientId);
+    console.info(JSON.stringify({ service: "telephony", event: "call_slot_held", callSid: this.callSid, acquired: slot.acquired, alreadyHeld: slot.alreadyHeld, active: slot.active, max: slot.max, degraded: slot.degraded ?? false }));
+    if (this.hasEnded || this.slotRenewTimer) return;
+    this.slotRenewTimer = setInterval(() => {
+      void renewCallSlot(this.callSid).then((held) => {
+        if (!held) console.warn(JSON.stringify({ service: "telephony", event: "call_slot_renew_failed", callSid: this.callSid }));
+      });
+    }, CALL_SLOT_RENEW_EVERY_MS);
+    this.slotRenewTimer.unref?.();
+  }
+
+  /** Releases exactly this call's slot, once (Twilio's status callback may release it too — that's harmless). */
   private async releaseCallSlot(): Promise<void> {
-    if (!this.slotTaken || this.slotReleaseStarted) return;
-    this.slotReleaseStarted = true;
-    this.slotTaken = false;
-    try {
-      await callQueue.markCallEnded();
-    } catch (err) {
-      console.error(JSON.stringify({ service: "telephony", event: "slot_release_failed", timestamp: new Date().toISOString(), callSid: this.callSid, sessionId: this.sessionId, error: err instanceof Error ? err.message : String(err) }));
+    if (this.slotRenewTimer) {
+      clearInterval(this.slotRenewTimer);
+      this.slotRenewTimer = null;
     }
+    if (this.slotReleaseStarted || this.callSid === "unknown") return;
+    this.slotReleaseStarted = true;
+    const released = await releaseSlotLease(this.callSid, "stream_closed");
+    console.info(JSON.stringify({ service: "telephony", event: "call_slot_released", callSid: this.callSid, sessionId: this.sessionId, released }));
   }
   private async onInitFailed(err: unknown) {
     console.error(`[TelephonyStream] Initialisation failed for ${this.callSid}:`, err);
@@ -501,6 +518,7 @@ export class TelephonyStreamHandler {
         // earlier (e.g. in init()) would target a row keyed by whatever
         // wrong/placeholder id we started with and silently match nothing.
         void this.updateCallLog({ sessionId: this.sessionId });
+        void this.holdCallSlot();
         // Separate update: on a database without migration_v25's column it
         // fails alone instead of taking the sessionId with it.
         if (this.agentId) void this.recordAgent(this.agentId);

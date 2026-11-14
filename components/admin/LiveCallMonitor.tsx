@@ -73,7 +73,7 @@ export function LiveCallMonitor({
   const [emotionHistory, setEmotionHistory] = useState<EmotionPoint[]>([]);
   // Previously the "Stream Active" badge below was hardcoded to always show
   // — it never reflected whether the EventSource was actually open, so a
-  // dropped connection (network blip, Redis hiccup, server restart) kept
+  // dropped connection (network blip, Realtime hiccup, server restart) kept
   // showing "Stream Active" with no indication to the operator that the
   // feed had gone stale. This tracks the real EventSource readyState.
   const [streamStatus, setStreamStatus] = useState<"idle" | "connecting" | "open" | "error">("idle");

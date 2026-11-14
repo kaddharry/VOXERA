@@ -20,12 +20,11 @@ describe("when the ONNX runtime can't load", () => {
     await expect(import("../../lib/warmup")).resolves.toBeDefined();
   });
 
-  it("embeddings fall back and keep the vector store's dimension", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("embeddings fail closed with a clear error — no silent hash-vector downgrade", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    const { embed } = await import("../../lib/util/embed");
-    const v = await embed("when can I take a bath after surgery", { isQuery: true });
-    expect(v).toHaveLength(384);
+    const { embed, isEmbeddingUnavailable } = await import("../../lib/util/embed");
+    const err = await embed("when can I take a bath after surgery", { isQuery: true }).catch((e) => e);
+    expect(isEmbeddingUnavailable(err)).toBe(true);
   });
 
   it("the text emotion model reports itself unavailable instead of throwing", async () => {
