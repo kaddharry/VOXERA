@@ -1,6 +1,7 @@
 import { pipeline, env, TextClassificationPipeline } from '@xenova/transformers';
 import fs from 'node:fs';
 import path from 'node:path';
+import { MODEL_CACHE_DIR } from '../util/model-cache';
 
 /**
  * Local 7-class emotion model (ONNX), run in-process via @xenova/transformers.
@@ -26,7 +27,7 @@ import path from 'node:path';
  */
 
 const MODEL_ID = 'nicky48/emotion-english-distilroberta-base-ONNX';
-const CACHE_DIR = path.resolve(process.cwd(), '.cache', 'xenova');
+const CACHE_DIR = MODEL_CACHE_DIR;
 
 env.allowLocalModels = true;
 env.useBrowserCache = false;

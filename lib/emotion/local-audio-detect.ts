@@ -2,7 +2,6 @@ import type { EmotionLabel, EmotionSignal, VAD } from "../types";
 import { clamp } from "../util/math";
 import { classifyConfidence } from "./confidence";
 import { HF_VAD_MAP } from "./emotion-label-map";
-import LocalAudioClassifier from "./local-audio-classifier";
 
 /**
  * onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX's id2label
@@ -48,6 +47,8 @@ export async function detectAudioEmotionWav2Vec2(pcm16kHzFloat32: Float32Array):
   }
 
   try {
+    // Loaded on first use, not at import time (see local-onnx-detect.ts).
+    const { default: LocalAudioClassifier } = await import("./local-audio-classifier");
     const classifier = await LocalAudioClassifier.getInstance();
     const results = (await classifier(pcm16kHzFloat32, { topk: 6 })) as Array<{ label: string; score: number }>;
     const latencyMs = performance.now() - start;

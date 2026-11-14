@@ -19,7 +19,7 @@
  */
 
 import OpenAI from "openai";
-import { embedLocalOnnx, LOCAL_EMBED_DIM } from "./local-embedder";
+import { LOCAL_EMBED_DIM } from "./embed-dim";
 
 const DIM = LOCAL_EMBED_DIM;
 
@@ -154,6 +154,10 @@ export async function embed(text: string, opts?: { isQuery?: boolean }): Promise
 
   let embedding: number[];
   try {
+    // Loaded on first use, not at import time: @xenova/transformers loads the
+    // native ONNX runtime when imported, and a failure there must not stop
+    // the routes that embed (the phone call among them) from loading at all.
+    const { embedLocalOnnx } = await import("./local-embedder");
     embedding = await embedLocalOnnx(text, { isQuery });
   } catch (err) {
     console.warn("[Embed] Local ONNX model failed, falling back:", err);

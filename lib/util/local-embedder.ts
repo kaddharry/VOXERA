@@ -1,5 +1,6 @@
 import { pipeline, env, type FeatureExtractionPipeline } from "@xenova/transformers";
 import path from "node:path";
+import { MODEL_CACHE_DIR } from "./model-cache";
 
 /**
  * Local semantic embedding model (ONNX), run in-process via @xenova/transformers —
@@ -15,7 +16,7 @@ import path from "node:path";
  * fully in-process, no network dependency, no per-call cost.
  */
 const MODEL_ID = "Xenova/bge-small-en-v1.5";
-const CACHE_DIR = path.resolve(process.cwd(), ".cache", "xenova");
+const CACHE_DIR = MODEL_CACHE_DIR;
 
 env.allowLocalModels = true;
 env.useBrowserCache = false;
@@ -43,7 +44,7 @@ class LocalEmbedder {
 }
 
 /** Output dimension of Xenova/bge-small-en-v1.5. */
-export const LOCAL_EMBED_DIM = 384;
+export { LOCAL_EMBED_DIM } from "./embed-dim";
 
 /**
  * BGE models expect a query-side instruction prefix for asymmetric

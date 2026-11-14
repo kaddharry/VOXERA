@@ -2,7 +2,6 @@ import type { EmotionLabel, EmotionSignal, VAD } from "../types";
 import { clamp } from "../util/math";
 import { classifyConfidence } from "./confidence";
 import { HF_LABEL_MAP, HF_VAD_MAP } from "./emotion-label-map";
-import LocalEmotionClassifier from "./local-emotion-classifier";
 
 export interface LocalOnnxDetectResult {
   signal: EmotionSignal | null;
@@ -28,6 +27,10 @@ export async function detectTextEmotionLocalONNX(text: string): Promise<LocalOnn
   }
 
   try {
+    // Loaded on first use, not at import time: @xenova/transformers loads the
+    // native ONNX runtime when imported, and a failure there must not stop
+    // the phone-call route itself from loading (it would refuse every call).
+    const { default: LocalEmotionClassifier } = await import("./local-emotion-classifier");
     const classifier = await LocalEmotionClassifier.getInstance();
     const results = (await classifier(text, { topk: 7 })) as Array<{ label: string; score: number }>;
     const latencyMs = performance.now() - start;

@@ -31,6 +31,21 @@ const nextConfig: NextConfig = {
    */
   serverExternalPackages: ["pdfjs-dist", "tesseract.js", "@napi-rs/canvas"],
   /**
+   * @xenova/transformers (the local embedder and emotion models) runs on
+   * onnxruntime-node, whose onnxruntime_binding.node loads the native
+   * libonnxruntime.so.1.14.0 next to it. Vercel's file tracing follows the
+   * JS require of the .node binding but not that native library load, so
+   * deployed Functions shipped without it: importing the models failed with
+   * "libonnxruntime.so.1.14.0: cannot open shared object file", which took
+   * down every route that imports them at load time — including the Twilio
+   * Media Stream WebSocket (/api/telephony/stream), so calls hung up right
+   * after "Please hold" with Twilio error 31920. Ship the library with the
+   * API routes explicitly (Linux x64 only, which is what Vercel runs; ~16MB).
+   */
+  outputFileTracingIncludes: {
+    "/api/**/*": ["./node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime.so.1.14.0"],
+  },
+  /**
    * Next.js blocks cross-origin dev requests (including the HMR websocket
    * at /_next/webpack-hmr) unless the requesting origin is explicitly
    * allowlisted. Without this, opening the dev server via a LAN IP

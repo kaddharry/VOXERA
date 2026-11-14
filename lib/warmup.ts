@@ -1,6 +1,5 @@
 import { embed } from "./util/embed";
 import { detectTextEmotionLocalONNX } from "./emotion/local-onnx-detect";
-import LocalAudioClassifier from "./emotion/local-audio-classifier";
 
 /**
  * Proactively loads the in-process ONNX models (the bge-small embedder and
@@ -18,15 +17,19 @@ import LocalAudioClassifier from "./emotion/local-audio-classifier";
  * possible so it has the best chance of finishing before the first real
  * call arrives.
  */
-export async function warmupModels(): Promise<void> {
+export async function warmupModels(opts: { includeVoiceModel?: boolean } = {}): Promise<void> {
   const start = Date.now();
+  const includeVoiceModel = opts.includeVoiceModel ?? true;
   const results = await Promise.allSettled([
     embed("warmup", { isQuery: true }),
     detectTextEmotionLocalONNX("warmup"),
     // The trained voice-emotion model (~91MB, ~56s cold load) now runs on
     // every phone turn's diagnostics pass; loaded here so the first call's
-    // turns don't all time out waiting for it.
-    LocalAudioClassifier.getInstance(),
+    // turns don't all time out waiting for it. Imported lazily, like the
+    // others, so a missing native ONNX runtime can't break the importer.
+    ...(includeVoiceModel
+      ? [import("./emotion/local-audio-classifier").then(({ default: LocalAudioClassifier }) => LocalAudioClassifier.getInstance())]
+      : []),
   ]);
   const failed = results.filter((r) => r.status === "rejected");
   if (failed.length > 0) {

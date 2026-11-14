@@ -32,7 +32,6 @@ function isEnglish(language: string | undefined): boolean {
 // don't need to change their types — the field is just always empty now.
 const HF_DISABLED_RESULT: HFDetectResult = { signal: null, latencyMs: 0, timedOut: false };
 
-import MLClassifier from "./classifier";
 
 // ─── Lexicon Engine ──────────────────────────────────────────────────────────
 
@@ -194,6 +193,8 @@ export function detectTextEmotionLexicon(text: string): EmotionSignal & { matche
  * emotion classifier.
  */
 export async function detectTextEmotionLocal(text: string): Promise<EmotionSignal> {
+  // Loaded on first use, not at import time (see local-onnx-detect.ts).
+  const { default: MLClassifier } = await import("./classifier");
   const classifier = await MLClassifier.getInstance();
 
   // Predict POSITIVE/NEGATIVE using Deep Learning
