@@ -179,7 +179,6 @@ export const CONFIG = {
         model: process.env.ZENMUX_MODEL || "openai/gpt-4o-mini",
         envKey: "ZENMUX_API_KEY",
       },
-      { name: "openai", baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", envKey: "OPENAI_API_KEY" },
     ] as Array<{ name: string; baseURL: string; model: string; envKey: string; reasoningEffort?: "none" | "low" | "medium" | "high" }>,
     maxInputTokens: 6000,
     // Raised from 160 — real replies were measured well under the old cap

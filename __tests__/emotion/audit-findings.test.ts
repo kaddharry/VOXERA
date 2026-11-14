@@ -1,4 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { vi, describe, it, expect } from "vitest";
+// Persona state is cached in-process and written through to Postgres
+// (session_state); here the database is a no-op, so the cache is what's tested.
+vi.mock("../../lib/db/supabase", () => ({
+  supabase: {
+    from: () => ({
+      select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }) }),
+      upsert: async () => ({ error: null }),
+    }),
+  },
+}));
 import { detectTextEmotionLexicon, fuseEmotion } from "../../lib/emotion/detect";
 import { extractAcousticFeatures, isolateLastUtterance } from "../../lib/audio/acoustic";
 import { buildEmotionContext } from "../../lib/emotion/context";

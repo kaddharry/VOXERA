@@ -19,6 +19,8 @@ vi.mock("../../lib/db/supabase", () => ({
   recordSupabaseSuccess: () => {},
   recordSupabaseFailure: () => {},
 }));
+vi.mock("../../lib/jobs/background-jobs", async () => await import("../helpers/fake-background-jobs"));
+vi.mock("../../lib/telephony/call-coordination", async () => await import("../helpers/fake-call-coordination"));
 vi.mock("../../lib/agent/call-summary", () => ({ generateCallSummary: vi.fn() }));
 vi.mock("../../lib/db/demo-requests", () => ({ updateDemoRequestStatusByCallSid: vi.fn(async () => {}) }));
 vi.mock("../../lib/telephony/outbound", () => ({
@@ -31,6 +33,8 @@ vi.mock("../../lib/telephony/twilio", () => ({
   validateTwilioSignature: vi.fn(() => true),
 }));
 
+const { fakeJobs } = await import("../helpers/fake-background-jobs");
+beforeEach(() => fakeJobs.reset());
 const { POST: statusCallback } = await import("../../app/api/telephony/status/route");
 const dispatcher = await import("../../lib/scheduler/dispatcher");
 const { generateCallSummary } = await import("../../lib/agent/call-summary");

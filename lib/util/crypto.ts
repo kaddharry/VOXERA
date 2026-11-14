@@ -3,7 +3,15 @@ import crypto from "crypto";
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 
+let warnedFallbackKey = false;
+
 function getEncryptionKey(): Buffer {
+  if (!process.env.CREDENTIALS_ENCRYPTION_KEY && process.env.VERCEL_ENV === "production" && !warnedFallbackKey) {
+    warnedFallbackKey = true;
+    // Kept working (credentials saved earlier may already use the fallback),
+    // but made visible: see CREDENTIALS_ENCRYPTION_KEY in lib/env.ts.
+    console.error(JSON.stringify({ service: "config", event: "insecure_fallback_key", variable: "CREDENTIALS_ENCRYPTION_KEY" }));
+  }
   const secret = process.env.CREDENTIALS_ENCRYPTION_KEY || "default-fallback-secret-key-32-chars-long!!!";
   // Hash the secret to ensure it is exactly 32 bytes (256 bits)
   return crypto.createHash("sha256").update(secret).digest();

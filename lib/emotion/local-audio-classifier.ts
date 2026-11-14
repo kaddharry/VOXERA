@@ -1,5 +1,6 @@
 import { pipeline, env, AudioClassificationPipeline } from '@xenova/transformers';
 import path from 'node:path';
+import { MODEL_CACHE_DIR } from '../util/model-cache';
 
 /**
  * Local acoustic speech-emotion-recognition (ONNX), run in-process via
@@ -24,7 +25,7 @@ import path from 'node:path';
  * text-emotion ONNX model diagnostic-only before its Phase 2 promotion.
  */
 const MODEL_ID = 'onnx-community/wav2vec2-base-Speech_Emotion_Recognition-ONNX';
-const CACHE_DIR = path.resolve(process.cwd(), '.cache', 'xenova');
+const CACHE_DIR = MODEL_CACHE_DIR;
 
 env.allowLocalModels = true;
 env.useBrowserCache = false;

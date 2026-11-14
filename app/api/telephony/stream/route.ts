@@ -1,5 +1,8 @@
 import { upgradeWebSocket } from "@vercel/functions";
-import { TelephonyStreamHandler } from "@/lib/telephony/stream-handler";
+import { TelephonyStreamHandler } from "../../../../lib/telephony/stream-handler";
+import { warmupModels } from "../../../../lib/warmup";
+import { verifyTwilioStreamHandshake } from "../../../../lib/telephony/webhook-auth";
+import { reportMissingEnvOnce } from "../../../../lib/env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,9 +14,27 @@ export const dynamic = "force-dynamic";
 // gets disconnected mid-conversation.
 export const maxDuration = 300;
 
-export function GET() {
+// On Vercel nothing preloads the ONNX models at startup (custom-server.ts
+// does that locally), so the first call in a fresh instance starts loading
+// the embedder and text-emotion model as soon as it connects: they then
+// finish during the greeting instead of delaying the patient's first turn.
+// Once per instance; the voice model still loads on first use, as before.
+let warmupStarted = false;
+
+export function GET(request: Request) {
+  reportMissingEnvOnce("telephony_stream");
+  // Only Twilio may open a call stream: it signs the handshake (see
+  // lib/telephony/webhook-auth.ts). Refused before any work is done.
+  const auth = verifyTwilioStreamHandshake(request);
+  if (!auth.ok && auth.enforced) {
+    return new Response("Forbidden", { status: 403 });
+  }
   return upgradeWebSocket((ws) => {
     console.info(JSON.stringify({ service: "telephony", event: "websocket_handshake_succeeded", timestamp: new Date().toISOString() }));
+    if (!warmupStarted) {
+      warmupStarted = true;
+      void warmupModels({ includeVoiceModel: false }).catch(() => {});
+    }
     // Twilio does not reliably forward arbitrary Stream URL query parameters.
     // The handler replaces these placeholders from start.callSid and
     // start.customParameters, which are emitted by <Stream><Parameter>.

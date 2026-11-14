@@ -2,41 +2,31 @@ import { createHmac } from "node:crypto";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
 /**
- * Live call events (transcript, emotion, ...) for the Live Calls page over
- * Supabase Realtime Broadcast.
+ * Live call events (transcript, emotion, ...) for the Live Calls page, over
+ * Supabase Realtime Broadcast — the only live-event transport.
  *
- * Why: on Vercel a phone call runs in one Function instance while the
- * dashboard's SSE stream (app/api/session/[sessionId]/stream) can land on
- * another. The in-memory pub/sub in lib/redis/client.ts only reaches
- * listeners in the same instance, so without a shared channel the live view
- * stays empty. Supabase Realtime is that shared channel, and the project
- * already has Supabase, so no extra service is needed.
+ *   call (TelephonyStreamHandler / orchestrator) → emitSessionEvent()
+ *     → broadcastSessionEvent(): Supabase REST broadcast, PRIVATE channel
+ *     → subscribeSessionEvents() in the authorised SSE route
+ *       (app/api/session/[sessionId]/stream) → browser EventSource
  *
- * - Sending uses Supabase's REST broadcast endpoint: no WebSocket is kept
- *   open by the call, and a send never blocks the conversation.
- * - Receiving (the SSE route) subscribes to the channel with the server-side
- *   Supabase client; the browser never talks to Supabase Realtime directly.
- * - Channel names include an HMAC of the session id keyed with a server
- *   secret, so a public broadcast channel can't be guessed from a session id
- *   alone (the SSE route still checks the viewer owns the call).
+ * Why: a call runs in one Vercel Function instance while a viewer's SSE
+ * stream can land in another, so events have to cross instances.
+ *
+ * Security: channels are PRIVATE. Supabase authorises private channels with
+ * RLS on realtime.messages; only the service-role key (server only) is used
+ * to send and listen, it bypasses RLS, and no policy grants anon or
+ * signed-in users access (sql/migration_v33.sql). So a browser can't join a
+ * channel even if it learned the name; viewers only get events through the
+ * SSE route, which checks they own the call first. The channel name also
+ * carries an HMAC of the session id as a second layer.
+ *
+ * Broadcasts are transient: a viewer who reconnects reloads the call so far
+ * from Postgres (/api/session/[sessionId]/replay, session_logs).
  */
-
-export type LiveEventsTransport = "supabase" | "redis";
-
-/**
- * Supabase on Vercel without REDIS_URL (where the in-memory store can't reach
- * other instances); the existing Redis/in-memory pub/sub everywhere else,
- * which keeps local dev and self-hosting unchanged. LIVE_EVENTS_TRANSPORT
- * ("supabase" or "redis") overrides the choice.
- */
-export function liveEventsTransport(): LiveEventsTransport {
-  const forced = process.env.LIVE_EVENTS_TRANSPORT?.trim().toLowerCase();
-  if (forced === "supabase" || forced === "redis") return forced;
-  return process.env.VERCEL && !process.env.REDIS_URL ? "supabase" : "redis";
-}
 
 function channelSecret(): string {
-  return process.env.LIVE_EVENTS_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "voxera-dev";
+  return process.env.SUPABASE_SERVICE_ROLE_KEY || "voxera-dev-only";
 }
 
 /** The Realtime channel (topic) for one session's live events. */
@@ -59,12 +49,14 @@ const queues = new Map<string, { pending: LivePayload[]; running: boolean }>();
 
 async function post(payload: LivePayload): Promise<void> {
   const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-  if (!url || !key) return;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return; // logged once by the env check; nothing to send to
   const res = await fetch(`${url.replace(/\/+$/, "")}/realtime/v1/api/broadcast`, {
     method: "POST",
     headers: { "Content-Type": "application/json", apikey: key, Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ messages: [{ topic: liveEventsTopic(payload.sessionId), event: LIVE_EVENT_NAME, payload }] }),
+    body: JSON.stringify({
+      messages: [{ topic: liveEventsTopic(payload.sessionId), event: LIVE_EVENT_NAME, payload, private: true }],
+    }),
     signal: AbortSignal.timeout(5000),
   });
   if (!res.ok) throw new Error(`broadcast returned ${res.status}`);
@@ -80,7 +72,7 @@ async function drain(sessionId: string): Promise<void> {
       try {
         await post(next);
       } catch (err) {
-        console.warn(`[LiveEvents] Broadcast failed for ${sessionId}:`, err instanceof Error ? err.message : err);
+        console.warn(JSON.stringify({ service: "live_events", event: "broadcast_failed", sessionId, type: next.type, error: err instanceof Error ? err.message : String(err) }));
       }
     }
   } finally {
@@ -90,9 +82,9 @@ async function drain(sessionId: string): Promise<void> {
 }
 
 /**
- * Queues an event for broadcast and returns at once. A transcript_delta
- * carries the agent's whole reply so far, so a newer one replaces an older
- * one that hasn't been sent yet instead of sending every token.
+ * Queues an event for broadcast and returns at once (the call never waits
+ * on it). A transcript_delta carries the agent's whole reply so far, so a
+ * newer one replaces an older one that hasn't been sent yet.
  */
 export function broadcastSessionEvent(payload: LivePayload): Promise<void> {
   const q = queues.get(payload.sessionId) ?? { pending: [], running: false };
@@ -107,9 +99,9 @@ export function broadcastSessionEvent(payload: LivePayload): Promise<void> {
 }
 
 /**
- * Listens to one session's live events. Calls onMessage with each event as
- * the same JSON string the Redis path delivers; returns a function that
- * stops listening.
+ * Listens to one session's live events with the server's Supabase client.
+ * Calls onMessage with each event as a JSON string; returns a function that
+ * stops listening. Only call this after checking the viewer may see the call.
  */
 export function subscribeSessionEvents(sessionId: string, onMessage: (message: string) => void): () => Promise<void> {
   let stopped = false;
@@ -118,13 +110,13 @@ export function subscribeSessionEvents(sessionId: string, onMessage: (message: s
   // pull in the database client just to send events over HTTP.
   const ready = import("../db/supabase").then(({ supabase }) => {
     if (stopped) return supabase;
-    channel = supabase.channel(liveEventsTopic(sessionId), { config: { broadcast: { self: false } } });
+    channel = supabase.channel(liveEventsTopic(sessionId), { config: { private: true, broadcast: { self: false } } });
     channel.on("broadcast", { event: LIVE_EVENT_NAME }, (msg: { payload?: unknown }) => {
       if (msg?.payload) onMessage(JSON.stringify(msg.payload));
     });
     channel.subscribe((status: string, err?: Error) => {
       if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-        console.warn(`[LiveEvents] Subscription ${status} for ${sessionId}:`, err?.message ?? "");
+        console.warn(JSON.stringify({ service: "live_events", event: "subscribe_failed", sessionId, status, error: err?.message ?? null }));
       }
     });
     return supabase;

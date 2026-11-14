@@ -28,8 +28,9 @@ function chatResponse(text: string) {
 const ORIGINAL_ENV = { ...process.env };
 
 describe("CONFIG.llm.providers — explicit priority order", () => {
-  it("tries Groq first (fastest/smallest-model provider), then a second Groq org, then ZenMux, then OpenAI", () => {
-    expect(CONFIG.llm.providers.map((p) => p.name)).toEqual(["groq", "groq-2", "zenmux", "openai"]);
+  it("tries Groq first (fastest/smallest-model provider), then a second Groq org, then ZenMux — no direct OpenAI", () => {
+    expect(CONFIG.llm.providers.map((p) => p.name)).toEqual(["groq", "groq-2", "zenmux"]);
+    expect(CONFIG.llm.providers.some((p) => p.baseURL.includes("api.openai.com") || p.envKey === "OPENAI_API_KEY")).toBe(false);
   });
 
   it("the second Groq org reads its key from a separate env var (independent TPD quota)", () => {
@@ -57,7 +58,6 @@ describe("generateReply — Groq primary with automatic ZenMux fallback", () => 
     mockCreate.mockReset();
     process.env.ZENMUX_API_KEY = "zm_test_key";
     process.env.GROQ_API_KEYS = "gsk_test_key";
-    delete process.env.OPENAI_API_KEY;
     // KeyRotator instances are now cached per env-var-name across calls
     // (see getKeyRotator's doc) so a real session remembers a key it
     // already proved exhausted — but that same caching would otherwise

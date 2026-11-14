@@ -80,13 +80,14 @@ vi.mock("../../lib/db/server", () => {
   };
 });
 
-vi.mock("../../lib/queue/manager", () => ({
-  callQueue: {
-    getMetrics: vi.fn().mockReturnValue({
-      activeCallCount: 3,
-      queueLength: 5,
-    }),
-  },
+vi.mock("../../lib/telephony/call-coordination", () => ({
+  getTelephonyMetrics: vi.fn().mockResolvedValue({
+    activeCallCount: 3,
+    maxConcurrentCalls: 10,
+    queueLength: 5,
+    handledToday: 0,
+    rejectedToday: 0,
+  }),
 }));
 
 // ─── Test Data Setup ──────────────────────────────────────────────────────────
