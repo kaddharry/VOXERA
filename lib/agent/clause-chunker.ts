@@ -23,8 +23,23 @@
 const SENTENCE_END_RE = /[.!?]+["')\]]?\s+/g;
 const SAFETY_VALVE_CHARS = 150;
 
+export interface ClauseChunkerOptions {
+  /** Voice calls: let the FIRST clause of a reply go out at its first comma/
+   * dash once it is long enough to sound natural, instead of waiting for the
+   * end of the whole first sentence. Time-to-first-audio is set by how soon
+   * the first clause is ready, so this shaves a few hundred ms off every
+   * reply; later clauses still split on full sentences. */
+  earlyFirstClause?: boolean;
+}
+
+const EARLY_MIN_CHARS = 24;
+const EARLY_BREAK_RE = /[,;:–—]\s+/g;
+
 export class ClauseChunker {
   private buffer = "";
+  private emittedAny = false;
+
+  constructor(private readonly opts: ClauseChunkerOptions = {}) {}
 
   /** Feed a new text delta. Returns zero or more clauses now complete and safe to speak, in order. */
   push(delta: string): string[] {
@@ -52,6 +67,23 @@ export class ClauseChunker {
       this.buffer = this.buffer.slice(end);
     }
 
+    if (this.opts.earlyFirstClause && !this.emittedAny && clauses.length === 0 && isAngleBracketBalanced(this.buffer)) {
+      EARLY_BREAK_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = EARLY_BREAK_RE.exec(this.buffer))) {
+        const end = m.index + m[0].length;
+        if (end >= EARLY_MIN_CHARS) {
+          const candidate = this.buffer.slice(0, end);
+          if (isAngleBracketBalanced(candidate)) {
+            const trimmed = candidate.trim();
+            if (trimmed) clauses.push(trimmed);
+            this.buffer = this.buffer.slice(end);
+          }
+          break;
+        }
+      }
+    }
+
     if (isAngleBracketBalanced(this.buffer) && this.buffer.length > SAFETY_VALVE_CHARS) {
       const cut = findSafetyValveCut(this.buffer);
       if (cut > 0) {
@@ -61,6 +93,7 @@ export class ClauseChunker {
       }
     }
 
+    if (clauses.length > 0) this.emittedAny = true;
     return clauses;
   }
 

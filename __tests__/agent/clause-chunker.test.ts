@@ -55,3 +55,30 @@ describe("ClauseChunker", () => {
     expect(c.flush()).toBeNull();
   });
 });
+
+describe("ClauseChunker earlyFirstClause (voice-call mode)", () => {
+  it("releases the first clause at its first comma once long enough, then splits on sentences", () => {
+    const c = new ClauseChunker({ earlyFirstClause: true });
+    const out: string[] = [];
+    for (const d of ["Sure, I can ", "help you with that ", "today. Let me check, one ", "moment. "]) out.push(...c.push(d));
+    expect(out[0]).toBe("Sure, I can help you with that today.");
+  });
+
+  it("does not split on a comma that arrives too early to sound natural", () => {
+    const c = new ClauseChunker({ earlyFirstClause: true });
+    expect(c.push("Ok, ")).toEqual([]);
+  });
+
+  it("emits an early clause when the comma comes after enough words, and only for the first clause", () => {
+    const c = new ClauseChunker({ earlyFirstClause: true });
+    expect(c.push("Thanks for calling the clinic today, ")).toEqual(["Thanks for calling the clinic today,"]);
+    // Later commas do NOT split — only sentence ends do.
+    expect(c.push("how can I help, ")).toEqual([]);
+    expect(c.push("you? ")).toEqual(["how can I help, you?"]);
+  });
+
+  it("default mode is unchanged", () => {
+    const c = new ClauseChunker();
+    expect(c.push("Thanks for calling the clinic today, how can I help? ")).toEqual(["Thanks for calling the clinic today, how can I help?"]);
+  });
+});

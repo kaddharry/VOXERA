@@ -54,6 +54,31 @@ export function buildListenParams(sampleRate: number, opts?: { codeSwitching?: b
   return params;
 }
 
+/** Words that mean the speaker is mid-thought ("...and", "...because the"). */
+const CONTINUATION_WORDS = new Set([
+  "and", "but", "or", "so", "because", "if", "then", "that", "which", "with", "to", "of", "the", "a", "an", "my", "i", "is", "are",
+  "um", "uh", "uhm", "umm", "hmm", "like", "also", "when", "while", "for", "in", "on", "at", "about",
+  "और", "लेकिन", "तो", "कि", "क्योंकि", "या", "मैं", "मेरा", "मेरी", "का", "की", "के", "में", "से", "को", "और",
+  "aur", "lekin", "toh", "ki", "kyunki", "ya", "main", "mera", "meri", "ka", "ke", "mein", "se", "ko",
+]);
+
+/**
+ * How long to keep waiting after Deepgram's `speech_final` before treating
+ * the caller's turn as over — the core of the end-of-turn latency win. A
+ * sentence that already sounds finished only needs a short confirmation
+ * window; one that trails off mid-thought gets the long wait. See CONFIG.stt.
+ */
+export function endpointHoldMs(text: string): number {
+  const t = text.trim();
+  if (!t) return CONFIG.stt.incompleteHoldMs;
+  if (/(\.\.\.|…)$/.test(t)) return CONFIG.stt.incompleteHoldMs; // trailing off
+  if (/[.?!।]["')\]]*$/.test(t)) return CONFIG.stt.completeHoldMs;
+  if (/[,;:\-–—…]$/.test(t)) return CONFIG.stt.incompleteHoldMs;
+  const lastWord = t.toLowerCase().replace(/[^\p{L}\p{M}\s']/gu, "").split(/\s+/).filter(Boolean).pop();
+  if (lastWord && CONTINUATION_WORDS.has(lastWord)) return CONFIG.stt.incompleteHoldMs;
+  return CONFIG.stt.uncertainHoldMs;
+}
+
 export interface DeepgramLiveOptions {
   /** Sample rate in Hz. Use 16000 for browser audio, 8000 for Twilio telephony. */
   sampleRate?: number;
@@ -131,6 +156,8 @@ export class DeepgramLiveWrapper {
    * already used for the LLM tool-loop fallback in lib/agent/llm.ts. */
   private static readonly UTTERANCE_END_FALLBACK_MS = 2500;
   private utteranceFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Short, text-aware hold started by `speech_final` — see endpointHoldMs(). */
+  private endpointTimer: ReturnType<typeof setTimeout> | null = null;
   private onSpeechStarted: (() => void) | null = null;
   private readonly codeSwitching: boolean;
 
@@ -258,6 +285,13 @@ export class DeepgramLiveWrapper {
     this.clearUtteranceFallback();
   }
 
+  private clearEndpointTimer(): void {
+    if (this.endpointTimer) {
+      clearTimeout(this.endpointTimer);
+      this.endpointTimer = null;
+    }
+  }
+
   private clearUtteranceFallback(): void {
     if (this.utteranceFallbackTimer) {
       clearTimeout(this.utteranceFallbackTimer);
@@ -269,6 +303,7 @@ export class DeepgramLiveWrapper {
    * utterance and fires the turn-triggering callback (isFinal=true). */
   private finalizeUtterance(): void {
     this.clearUtteranceFallback();
+    this.clearEndpointTimer();
     if (this.finalSegments.length === 0) return;
     const text = this.finalSegments.join(" ").trim();
     this.finalSegments = [];
@@ -288,6 +323,9 @@ export class DeepgramLiveWrapper {
     // Deepgram's own VAD onset signal (vad_events=true) — fires as soon as
     // it detects the caller starting to talk, ahead of any transcript.
     if (data && data.type === "SpeechStarted") {
+      // The caller is talking again — whatever finished-sounding hold was
+      // pending no longer applies.
+      this.clearEndpointTimer();
       this.onSpeechStarted?.();
       return;
     }
@@ -300,6 +338,8 @@ export class DeepgramLiveWrapper {
 
       const text = alternatives[0].transcript;
       if (!text || text.trim().length === 0) return;
+      // New words arrived: the caller hasn't finished after all.
+      this.clearEndpointTimer();
 
       if (isFinal) {
         // A finalized word group, not necessarily the end of the turn —
@@ -309,6 +349,12 @@ export class DeepgramLiveWrapper {
         this.finalSegments.push(text.trim());
         if (this.onTranscript) {
           this.onTranscript(this.finalSegments.join(" "), false);
+        }
+        // Deepgram's endpointing says the caller paused. Rather than always
+        // waiting out UtteranceEnd (CONFIG.stt.utteranceEndMs of silence),
+        // finish the turn after a hold sized to how complete it sounds.
+        if (data.speech_final) {
+          this.endpointTimer = setTimeout(() => this.finalizeUtterance(), endpointHoldMs(this.finalSegments.join(" ")));
         }
         // Safety net in case UtteranceEnd never arrives for this utterance.
         this.clearUtteranceFallback();

@@ -70,6 +70,14 @@ async function getTenantDefault(clientId: string): Promise<ResolvedSpeechConfig>
   return result;
 }
 
+/** Starts (and caches) the tenant's speech default ahead of resolveSpeechConfig(), so it overlaps other lookups. Never throws. */
+export function warmTenantSpeechDefault(clientId: string): Promise<void> {
+  return getTenantDefault(clientId).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
 /**
  * Resolves the speech provider+language for a call: the agent's own
  * `speech_provider`/`language` columns win when set, otherwise falls back to

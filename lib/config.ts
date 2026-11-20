@@ -53,7 +53,7 @@ export const CONFIG = {
     // lowered; tune it further only against real call recordings, since too
     // aggressive a cut reintroduces the "ordinary mid-sentence thinking
     // pause gets split into two turns" bug documented in live.ts.
-    endpointingMs: 400,
+    endpointingMs: 300,
     // Raised from Deepgram's own hard floor (1000ms) to 1300ms — live
     // feedback compared this agent unfavorably against a competitor's that
     // "wouldn't start until I complete my sentence," even with an ordinary
@@ -70,6 +70,50 @@ export const CONFIG = {
     // stream-handler.ts also now merges a continuation that arrives before
     // the reply starts, so this only needs to cover the common case.
     utteranceEndMs: 1700,
+    // Adaptive end-of-turn (lib/deepgram/live.ts endpointHoldMs). Deepgram's
+    // `speech_final` fires after `endpointingMs` of silence; instead of then
+    // always waiting for UtteranceEnd (utteranceEndMs above — 1.7s of dead
+    // air on EVERY turn), how much longer to wait depends on whether what
+    // the caller said already sounds finished:
+    //  - ends in . ? ! or the Devanagari danda -> a finished sentence: only
+    //    `completeHoldMs` more, so the agent starts ~1.2s sooner.
+    //  - ends mid-thought (trailing "and"/"but"/"the"/comma/"um") -> keep
+    //    waiting `incompleteHoldMs` (UtteranceEnd stays as the backstop).
+    //  - anything else -> `uncertainHoldMs`.
+    // New speech during the hold cancels it, and stream-handler.ts still
+    // merges a continuation that arrives before the reply starts speaking,
+    // so a too-early cut costs one discarded LLM call, never a lost word.
+    completeHoldMs: 250,
+    uncertainHoldMs: 650,
+    incompleteHoldMs: 1500,
+  },
+  // Local, in-process voice-activity detection on the caller's inbound audio
+  // (lib/audio/vad.ts) — no network round trip, so it reacts in 20ms frames
+  // instead of waiting for a transcript. Decides what is a REAL interruption:
+  // sustained, near-field caller speech — not a cough, a filler, a TV or a
+  // second person talking in the background.
+  vad: {
+    /** Frame RMS must beat noiseFloor * this to count as speech at all. */
+    noiseFloorMultiplier: 3.5,
+    /** ...and never be below this absolute RMS (16-bit PCM units). */
+    minSpeechRms: 450,
+    /** Once the caller's own voice level is learned, a frame must reach this
+     * fraction of it to count as THEM (a quieter background talker doesn't). */
+    nearFieldRatio: 0.3,
+    /** Speech frames needed before the caller's voice level counts as learned. */
+    calibrationFrames: 20,
+    /** Sustained speech required to interrupt the agent on energy alone
+     * (before/without a transcript) — longer than any "mm-hm"/"yeah". */
+    bargeInSustainedMs: 650,
+    /** A transcript-triggered barge-in also needs this much near-field speech
+     * in the last second, else it is a background voice / STT hallucination. */
+    minSpeechForBargeInMs: 100,
+    /** A whole turn with less near-field speech than this is background
+     * chatter, not the caller — dropped instead of answered. */
+    minSpeechForTurnMs: 140,
+    /** Energy-only barge-in switch (needs a learned caller level, so it never
+     * fires on the greeting or on speakerphone echo of the agent's own voice). */
+    energyBargeIn: true,
   },
   deepgram: {
     sttModel: "nova-2-general",

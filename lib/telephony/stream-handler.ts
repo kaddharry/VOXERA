@@ -5,16 +5,18 @@ import { announceGreeting, handleTurn, recordInterruptedReply } from "../agent/o
 import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "../emotion/tts-params";
 import type { EmotionLabel, PolicyDirectives } from "../types";
 import { supabase } from "../db/supabase";
-import { getAgentWithTenant } from "../db/agents";
+import { getAgentWithTenantCached } from "../db/agent-cache";
 import { acquireCallSlot, renewCallSlot, releaseCallSlot as releaseSlotLease, CALL_SLOT_RENEW_EVERY_MS } from "./call-coordination";
 import { stm } from "../memory/stm";
 import { sendSMS } from "./sms";
 import { CONFIG } from "../config";
 import { isMissingColumnError } from "../db/follow-up-tasks";
+import { CallerVad } from "../audio/vad";
+import { prewarmLlm } from "../agent/llm";
 import { extractAcousticFeatures, isolateLastUtterance, upsample8kTo16kFloat32 } from "../audio/acoustic";
 import { createLiveStt, createTtsEngine, createSpeakStream } from "../speech/factory";
 import { DeepgramTtsAdapter } from "../speech/deepgram-adapter";
-import { resolveSpeechConfig } from "../speech/resolve";
+import { resolveSpeechConfig, warmTenantSpeechDefault } from "../speech/resolve";
 import { parseGnaniPersona } from "../tts/gnani-voices";
 import type { LiveSttConnection, SpeakStreamHandle, SpeechProvider, TtsEngine } from "../speech/types";
 
@@ -97,18 +99,52 @@ export interface StreamHandlerOptions {
 
 /** Listening sounds and acknowledgements — said while the agent talks, they aren't an interruption. */
 const BACKCHANNEL_WORDS = new Set([
-  "hmm", "hm", "mm", "mmm", "mhm", "mmhmm", "uh", "um", "uhm", "umm", "ah", "oh", "er", "erm", "huh",
+  "hmm", "hm", "mm", "mmm", "mhm", "mmhmm", "uh", "um", "uhm", "umm", "ah", "oh", "ohh", "er", "erm", "huh",
   "uhhuh", "yeah", "yes", "yep", "yup", "ok", "okay", "right", "sure", "alright", "fine", "i", "see", "got", "it", "aha",
+  "mhmm", "ya", "yea", "cool", "great", "nice", "good", "true", "exactly", "correct", "indeed", "wow", "oof",
+  // Hindi / Hinglish listening sounds (Devanagari and romanized) — the
+  // old English-only list stripped Devanagari to nothing and so treated
+  // EVERY Hindi sentence as "empty = backchannel", i.e. never an interruption.
+  "हम्म", "हम", "हूँ", "हूं", "अं", "अह", "ओह", "आह", "हाँ", "हां", "हा", "जी", "अच्छा", "ठीक", "है", "सही", "बिल्कुल", "ओके", "अच्छा", "ऊँ",
+  "haan", "han", "hanji", "ji", "jee", "accha", "acha", "achha", "theek", "thik", "hai", "sahi", "bilkul", "hmmm", "ohhh",
+]);
+/** Hesitation sounds only — no meaning at all, so even as a whole turn there is nothing to answer. */
+const HESITATION_WORDS = new Set([
+  "hmm", "hm", "mm", "mmm", "mhm", "mmhmm", "mhmm", "uh", "um", "uhm", "umm", "ah", "er", "erm", "huh", "hmmm", "uhhuh",
+  "हम्म", "हम", "हूँ", "हूं", "अं", "अह", "ऊँ",
 ]);
 /** Short words that do mean "stop" even on their own. */
-const STOP_WORDS = new Set(["no", "stop", "wait", "hold", "sorry", "excuse", "hey", "hello"]);
+const STOP_WORDS = new Set([
+  "no", "stop", "wait", "hold", "sorry", "excuse", "hey", "hello",
+  "नहीं", "नही", "रुको", "रुकिए", "रुकिये", "सुनो", "सुनिए", "ठहरो", "सुनिये", "माफ़", "सॉरी", "हेलो", "सुनिए",
+  "nahi", "nahin", "ruko", "rukiye", "suno", "suniye", "sunna", "thehro",
+]);
 
-/** True when `text` is only listening noises/acknowledgements ("yeah okay", "hmm", "I see"). */
+function tokenize(text: string): string[] {
+  // Unicode-aware: \p{L}\p{M} keeps Devanagari letters and combining marks.
+  return text.toLowerCase().replace(/['’-]/g, "").replace(/[^\p{L}\p{M}\s]/gu, " ").split(/\s+/).filter(Boolean);
+}
+
+/** True when `text` is only listening noises/acknowledgements ("yeah okay", "hmm", "I see", "haan ji"). */
 export function isBackchannel(text: string): boolean {
-  const words = text.toLowerCase().replace(/[^a-z\s'-]/g, " ").replace(/['-]/g, "").split(/\s+/).filter(Boolean);
+  const words = tokenize(text);
   if (words.length === 0) return true;
   if (words.some((w) => STOP_WORDS.has(w))) return false;
   return words.every((w) => BACKCHANNEL_WORDS.has(w));
+}
+
+/** True when `text` is nothing but "um/hmm/uh" — never worth a reply, even as a standalone turn. */
+export function isHesitationOnly(text: string): boolean {
+  const words = tokenize(text);
+  return words.length > 0 && words.every((w) => HESITATION_WORDS.has(w));
+}
+
+/** A lone 1-2 letter fragment ("a", "the", "so") — the usual output of STT hearing background noise. */
+export function isNoiseFragment(text: string): boolean {
+  const words = tokenize(text);
+  if (words.length === 0) return true;
+  if (words.some((w) => STOP_WORDS.has(w))) return false;
+  return words.length === 1 && [...words[0]].length <= 2;
 }
 
 /**
@@ -174,6 +210,15 @@ export class TelephonyStreamHandler {
    * caller is still hearing the agent. See isAgentAudible(). */
   private pendingMarks = new Set<string>();
   private markSeq = 0;
+  /** Local voice-activity detector on the caller's audio (lib/audio/vad.ts). */
+  private vad = new CallerVad();
+  /** Identity of the open Speak connection (provider|voice|language|model) —
+   * lets a speculatively pre-opened default connection be swapped out if the
+   * call's real voice turns out to differ. See prewarmSpeakStream(). */
+  private speakStreamKey = "";
+  /** The most recent in-flight transcript text while the agent was audible —
+   * consulted by the energy barge-in so a "mm-hm" never triggers it. */
+  private lastInterimWhileAudible = "";
 
   // Bumped on every barge-in — a turn whose captured generation no longer
   // matches this is stale and must not speak or be spoken over. Same
@@ -265,6 +310,10 @@ export class TelephonyStreamHandler {
       this.onCallEnded();
     });
 
+    // Warm the LLM provider connection now, while Twilio is still doing its
+    // handshake, so the first reply doesn't pay a cold TLS connect.
+    prewarmLlm();
+
     this.init().catch((err) => this.onInitFailed(err));
   }
 
@@ -346,8 +395,12 @@ export class TelephonyStreamHandler {
   private async setupVoiceForCall(): Promise<void> {
     try {
       const [agentInfo, voiceSettings] = await Promise.all([
-        this.agentId ? getAgentWithTenant(supabase, this.agentId).catch(() => null) : Promise.resolve(null),
+        this.agentId ? getAgentWithTenantCached(supabase, this.agentId).catch(() => null) : Promise.resolve(null),
         getClientVoiceSettings(this.clientId).catch(() => null),
+        // The tenant's speech default is a two-query chain that
+        // resolveSpeechConfig() would otherwise start only AFTER the two
+        // lookups above finish — begin it now so it overlaps them.
+        warmTenantSpeechDefault(this.clientId),
       ]);
       if (agentInfo?.voice_persona) {
         this.voiceModel = resolveVoiceModel(agentInfo.voice_persona);
@@ -414,7 +467,24 @@ export class TelephonyStreamHandler {
    * connection; barge-in calls clear() on it, never close() — see
    * onTwilioMessage's "media" case.
    */
+  private desiredSpeakKey(): string {
+    const voice = this.speechProvider === "gnani" ? this.gnaniVoice : this.voiceModel;
+    return `${this.speechProvider}|${voice}|${this.language}|${this.gnaniModel}`;
+  }
+
   private ensureSpeakStream(): { stream: SpeakStreamHandle; ready: Promise<void> } {
+    const key = this.desiredSpeakKey();
+    // A connection pre-opened with the default voice before the call's real
+    // voice was known (prewarmSpeakStream) is replaced if they differ.
+    if (this.currentSpeakStream && this.speakStreamKey !== key) {
+      try {
+        this.currentSpeakStream.close();
+      } catch {
+        // already gone
+      }
+      this.currentSpeakStream = null;
+      this.speakStreamReadyPromise = null;
+    }
     if (!this.currentSpeakStream) {
       const stream = createSpeakStream(
         this.speechProvider,
@@ -427,7 +497,11 @@ export class TelephonyStreamHandler {
         () => { } // replaced per-turn via setAudioHandler before first use
       );
       this.currentSpeakStream = stream;
+      this.speakStreamKey = key;
       this.speakStreamReadyPromise = stream.connect().catch((err) => {
+        // A connection that was already swapped out (see above) failing late
+        // must not tear down its replacement.
+        if (this.currentSpeakStream !== stream) return;
         console.error(`[TelephonyStream] Speak stream connect failed for ${this.callSid}, falling back to buffered TTS:`, err);
         this.currentSpeakStream = null;
         this.speakStreamReadyPromise = null;
@@ -439,6 +513,18 @@ export class TelephonyStreamHandler {
       });
     }
     return { stream: this.currentSpeakStream, ready: this.speakStreamReadyPromise! };
+  }
+
+  /**
+   * Opens the TTS connection the instant the call starts, with the default
+   * voice, in parallel with the agent/tenant lookups that decide the real
+   * one — instead of only after them. Those lookups are the long pole of
+   * call setup, so the handshake (~100ms) used to be added on top of them
+   * before the greeting could play. If the resolved voice differs,
+   * ensureSpeakStream() swaps the connection out.
+   */
+  private prewarmSpeakStream(): void {
+    if (!this.useBufferedTts) this.ensureSpeakStream();
   }
 
   /**
@@ -530,8 +616,16 @@ export class TelephonyStreamHandler {
         // their first utterance (at least a second or two of real time),
         // this has almost always already connected, so the ~50-150ms
         // handshake doesn't sit on the first turn's critical path either.
+        this.prewarmSpeakStream();
         this.voiceSetupPromise = this.setupVoiceForCall().then(() => {
-          if (!this.useBufferedTts) this.ensureSpeakStream();
+          if (!this.useBufferedTts) {
+            this.ensureSpeakStream();
+          } else if (this.currentSpeakStream) {
+            // A custom (ElevenLabs) voice can't stream — drop the pre-opened connection.
+            this.currentSpeakStream.close();
+            this.currentSpeakStream = null;
+            this.speakStreamReadyPromise = null;
+          }
           void this.speakGreeting().catch((err) => console.error(`[TelephonyStream] speakGreeting failed for ${this.callSid}:`, err));
         });
         break;
@@ -546,6 +640,11 @@ export class TelephonyStreamHandler {
 
           // Issue #14: Accumulate PCM for turn-level acoustic analysis
           this.turnAudioChunks.push(pcmBuf);
+
+          // Local VAD first (microseconds), STT second: lets a real
+          // interruption be acted on without waiting for a transcript.
+          this.vad.push(pcmBuf);
+          this.onVadActivity();
 
           this.stt.sendAudio(pcmBuf);
         }
@@ -579,6 +678,48 @@ export class TelephonyStreamHandler {
     return this.isSpeaking || this.pendingMarks.size > 0;
   }
 
+  /**
+   * Whether `text`, heard while the agent is audible, is a real interruption.
+   * Not one: listening sounds ("hmm", "haan ji"), 1-2 letter noise fragments,
+   * and — once the VAD has learned the caller's own voice level — any words
+   * with no near-field caller speech behind them (a background talker, or the
+   * STT hallucinating words out of noise).
+   */
+  private bargeInVerdict(text: string): "barge" | "ignore" {
+    if (isBackchannel(text) || isNoiseFragment(text)) return "ignore";
+    if (this.vad.isCalibrated() && this.vad.recentSpeechMs(1000) < CONFIG.vad.minSpeechForBargeInMs) {
+      console.info(JSON.stringify({ service: "telephony", event: "barge_in_ignored_background", callSid: this.callSid, characterCount: text.length }));
+      return "ignore";
+    }
+    return "barge";
+  }
+
+  /** True when the VAD knows the caller's voice level and this turn held less of it than a real utterance. */
+  private isBackgroundOnly(): boolean {
+    return this.vad.isCalibrated() && this.vad.turnSpeechMs < CONFIG.vad.minSpeechForTurnMs;
+  }
+
+  /**
+   * Runs on every inbound 20ms frame. Energy-only barge-in: sustained,
+   * near-field caller speech while the agent is audible stops the agent now,
+   * without waiting ~300-600ms for the first transcript words. Deliberately
+   * conservative so it can't be the false-positive source the transcript-only
+   * design was originally chosen to avoid: it needs a learned caller level
+   * (never fires on the greeting or on speakerphone echo of the agent), speech
+   * well past the length of any "mm-hm", and defers to the transcript path as
+   * soon as any text exists (which knows whether it was just a filler).
+   */
+  private onVadActivity(): void {
+    const run = this.vad.speechRunMs;
+    if (run === 0) this.lastInterimWhileAudible = "";
+    // The caller has started talking, so a reply is about to be needed:
+    // refresh the LLM connection now rather than when the sentence ends.
+    if (run >= 100) prewarmLlm();
+    if (!CONFIG.vad.energyBargeIn || !this.vad.isCalibrated() || !this.isAgentAudible()) return;
+    if (run < CONFIG.vad.bargeInSustainedMs || this.lastInterimWhileAudible) return;
+    this.triggerBargeIn("sustained caller speech (VAD)");
+  }
+
   private async onTranscript(text: string, isFinal: boolean) {
     if (!text.trim()) return;
     if (this.isAgentAudible()) {
@@ -586,10 +727,24 @@ export class TelephonyStreamHandler {
       // interruption. Anything else stops the agent (interim results arrive
       // while the caller is still mid-word, so this is quick) and the
       // caller's sentence becomes the next turn.
-      if (isBackchannel(text)) return;
+      this.lastInterimWhileAudible = text;
+      if (this.bargeInVerdict(text) !== "barge") return;
       this.triggerBargeIn(isFinal ? "caller spoke" : "caller speech started");
     }
     if (!isFinal) return;
+    // A turn that is only "um"/"hmm", or that the local VAD says no one near
+    // the phone actually spoke (TV, a second person across the room), has
+    // nothing to answer — dropping it here is what keeps the agent from
+    // replying to background noise.
+    if (isHesitationOnly(text)) {
+      this.vad.resetTurn();
+      return;
+    }
+    if (this.isBackgroundOnly()) {
+      console.info(JSON.stringify({ service: "telephony", event: "background_turn_ignored", callSid: this.callSid, characterCount: text.length, turnSpeechMs: this.vad.turnSpeechMs }));
+      this.vad.resetTurn();
+      return;
+    }
     // BUG-E7: when the merge branch below fires, the caller's two
     // transcript fragments get concatenated into one `text`, but the pause
     // between them (the agent still composing its reply) is commonly well
@@ -769,6 +924,7 @@ export class TelephonyStreamHandler {
         // Reset turn-level accumulators for next utterance
         this.turnAudioChunks = [];
         this.turnInterruptionCount = 0;
+        this.vad.resetTurn();
       }
     }
   }
@@ -851,20 +1007,26 @@ export class TelephonyStreamHandler {
   private triggerBargeIn(reason: string) {
     this.isSpeaking = false;
     this.turnInterruptionCount++;
-    this.sendClearMessage();
+    this.lastInterimWhileAudible = "";
 
-    // Invalidate the in-flight turn: cancel LLM generation, stop generating
-    // audio nobody will hear, and let the caller's actual interruption
-    // (still being transcribed by Deepgram in the background — never gated)
-    // be processed as a fresh turn instead of being silently dropped by
-    // isBusy below.
+    // Order matters — everything below is synchronous, but each step is what
+    // the caller perceives first:
+    //  1. Twilio `clear`: the audio the caller is HEARING stops. This is the
+    //     only step they can notice, so it goes out first.
+    //  2. generation++: from this instant any audio chunk or clause from the
+    //     interrupted turn is dropped on arrival instead of being forwarded.
+    //  3. Speak stream clear(): stop synthesizing speech nobody will hear.
+    //     clear() only — NOT close(): the connection is kept alive for the
+    //     whole call (see ensureSpeakStream()) so the next turn doesn't pay
+    //     another ~50-150ms handshake.
+    //  4. Abort the LLM and flush its pending output: only now, last, since
+    //     it is invisible to the caller. The caller's actual interruption
+    //     (still being transcribed in the background — never gated) is then
+    //     processed as a fresh turn instead of being dropped by isBusy.
+    this.sendClearMessage();
     this.generation++;
-    this.currentAbortController?.abort();
-    // clear() only — NOT close(). The Speak connection is kept alive for the
-    // whole call (see ensureSpeakStream()) so the next turn doesn't pay
-    // another ~50-150ms WS handshake; clear() just discards whatever audio
-    // was queued/in-flight for the turn that just got interrupted.
     this.currentSpeakStream?.clear();
+    this.currentAbortController?.abort();
     this.isBusy = false;
     this.currentTurnText = "";
 
