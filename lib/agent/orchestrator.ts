@@ -10,8 +10,8 @@ import { resolvePersonaLock, type PersonaLockResult } from "../emotion/persona-l
 import { logSessionEvent, makeEvent } from "../logging/session-logger";
 import { emitSessionEvent } from "../realtime/emitter";
 import { supabase as supabaseService } from "../db/supabase";
-import { getAgentWithTenant } from "../db/agents";
-import { getPatientCallContext } from "../db/patient-documents";
+import { getAgentWithTenantCached } from "../db/agent-cache";
+import { getPatientCallContextCached } from "../db/agent-cache";
 import { createEscalationAlert } from "../db/alerts";
 import { retrieve, topScore } from "../memory/retrieval";
 import { stm } from "../memory/stm";
@@ -204,7 +204,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // them. Only actually awaited once its result (the resolved clientId) is
   // needed, further down.
   const agentInfoPromise = input.agentId
-    ? getAgentWithTenant(supabaseService, input.agentId).catch((err) => {
+    ? getAgentWithTenantCached(supabaseService, input.agentId).catch((err) => {
         console.warn("[Orchestrator] Failed to resolve agentId, using default clientId:", err);
         return null;
       })
@@ -214,7 +214,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // "trusted infrastructure caller" reasoning as getAgentWithTenant's own
   // unscoped read) — safe to resolve in the same Promise.all below.
   const patientInfoPromise = input.patientId
-    ? getPatientCallContext(supabaseService, input.patientId).catch((err) => {
+    ? getPatientCallContextCached(supabaseService, input.patientId).catch((err) => {
         console.warn("[Orchestrator] Failed to resolve patientId:", err);
         return undefined;
       })
@@ -294,6 +294,14 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // other work here, so its own start-to-finish time is what counts.
   const emotionStartedAt = performance.now();
   let textEmotionMs = 0;
+  // The inline knowledge base only needs the resolved tenant, so it starts the
+  // instant the agent lookup returns — overlapping the emotion model and the
+  // embedding — instead of being awaited serially after all of them.
+  // MUST use the agent's resolved clientId (see the long note at its use
+  // site below about the demo-tenant KB leaking into a real agent).
+  const inlineKbPromise = agentInfoPromise.then((resolved) =>
+    getInlineKnowledgeBase(resolved ? resolved.tenant_auth_user_id : input.clientId).catch((): string | null => null),
+  );
   const [agentInfo, textEmoResult, queryEmbedding, patientContext] = await Promise.all([
     agentInfoPromise,
     detectTextEmotion(input.transcript, { language: input.language }).then((result) => {
@@ -322,7 +330,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // escalation/brand-voice KB overrode a real agent's real knowledge base,
   // and the model, with no real facts to work from, fabricated a plausible-
   // sounding but entirely made-up answer instead of using the caller's data.
-  const inlineKb = await getInlineKnowledgeBase(input.clientId);
+  const inlineKb = await inlineKbPromise;
 
   const textEmo = textEmoResult.primary;
   const audioStartedAt = performance.now();
@@ -344,7 +352,9 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     emotion: fused,
     ts,
   };
-  await stm.push(input.sessionId, userTurn, input.clientId);
+  // The history write and the three vector searches don't depend on each
+  // other; only stm.get() below needs the write to have landed.
+  const userTurnPushed = stm.push(input.sessionId, userTurn, input.clientId);
 
   // Single shared candidate fetch for all three memory tiers — this used to
   // be a separate LTM_user/MTM search here (just for the novelty score
@@ -369,6 +379,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   const ltmUserAll = ltmUserCandidates.map((r) => r.rec);
   const mtmExisting = mtmCandidates.map((r) => r.rec);
 
+  await userTurnPushed;
   const sttHistory = await stm.get(input.sessionId);
   const emotionCtx = buildEmotionContext({
     current: fused,
@@ -494,21 +505,24 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   });
 
   const retrievalStart = Date.now();
-  const [memoryWrite, retrieved] = await Promise.all([
-    // Nothing goes into the vector store while the embedding model is
-    // unavailable (see lib/util/embed.ts): the turn stays in short-term memory.
-    retrievalDegraded
-      ? Promise.resolve({ tier: "STM" as const, recordId: undefined, merged: false })
-      : writeMemory({
-          utterance: userTurn,
-          userId: input.userId,
-          clientId: input.clientId,
-          emotion: emotionCtx,
-          importance: I,
-        }).catch((err) => {
-          console.error(`[Orchestrator] Memory write failed for ${input.sessionId}:`, err);
-          return { tier: "STM" as const, recordId: undefined, merged: false };
-        }),
+  // The memory write (embedding dedupe + a DB insert) feeds nothing the LLM
+  // prompt uses, so it runs alongside retrieval and the LLM call and is only
+  // awaited once the reply is already on its way (see memoryWritePromise below).
+  // Nothing goes into the vector store while the embedding model is
+  // unavailable (see lib/util/embed.ts): the turn stays in short-term memory.
+  const memoryWritePromise: Promise<Awaited<ReturnType<typeof writeMemory>>> = retrievalDegraded
+    ? Promise.resolve({ tier: "STM" as const, recordId: undefined, merged: false } as Awaited<ReturnType<typeof writeMemory>>)
+    : writeMemory({
+        utterance: userTurn,
+        userId: input.userId,
+        clientId: input.clientId,
+        emotion: emotionCtx,
+        importance: I,
+      }).catch((err) => {
+        console.error(`[Orchestrator] Memory write failed for ${input.sessionId}:`, err);
+        return { tier: "STM" as const, recordId: undefined, merged: false } as Awaited<ReturnType<typeof writeMemory>>;
+      });
+  const [retrieved] = await Promise.all([
     retrieve(
       {
         sessionId: input.sessionId,
@@ -539,12 +553,14 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   const policy = decidePolicy(emotionCtx);
   opts?.onEmotionResolved?.(fused.label, policy);
 
-  void logSessionEvent(makeEvent(evBase, "memory_write", {
-    tier: memoryWrite.tier,
-    recordId: memoryWrite.recordId,
-    merged: memoryWrite.merged,
-    importance: I,
-  }));
+  void memoryWritePromise.then((memoryWrite) =>
+    logSessionEvent(makeEvent(evBase, "memory_write", {
+      tier: memoryWrite.tier,
+      recordId: memoryWrite.recordId,
+      merged: memoryWrite.merged,
+      importance: I,
+    })),
+  );
 
   void logSessionEvent(makeEvent(evBase, "retrieval", {
     mtmIds: retrieved.mtm.map((m) => m.id),
@@ -806,6 +822,9 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // phone calls can never let this gate their own turn-taking, however
   // small the worst case.
   const emotionDiagnostics = opts?.deferDiagnostics ? undefined : await diagnosticsPromise;
+  // Started before the LLM call; long since settled by the time the reply
+  // finished, so this costs nothing on the hot path.
+  const memoryWrite = await memoryWritePromise;
 
   return {
     reply: guarded.cleaned,

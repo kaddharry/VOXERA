@@ -496,3 +496,123 @@ describe("TelephonyStreamHandler — caller continues after a pause", () => {
     expect(sentEventTypes(mockWs)).toContain("clear");
   });
 });
+
+describe("TelephonyStreamHandler — selective interruption (fillers, Hindi, background, local VAD)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    speakStreamInstances.length = 0;
+    capturedOnTranscript = null;
+  });
+
+  const mediaMsg = (frame: Buffer) => Buffer.from(JSON.stringify({ event: "media", media: { payload: frame.toString("base64") } }));
+  const feedFrames = (onMessage: (b: Buffer) => void, frame: Buffer, n: number) => {
+    for (let i = 0; i < n; i++) onMessage(mediaMsg(frame));
+  };
+  const replyThatNeverEnds = () =>
+    handleTurnMock.mockImplementation((_input: any, opts: any) => {
+      opts.onReplyChunk("Starting a long reply");
+      return new Promise(() => {});
+    });
+
+  it("treats Devanagari speech as a real interruption but Hindi 'haan ji' as listening", async () => {
+    replyThatNeverEnds();
+    const mockWs = makeMockWs();
+    await startCall(mockWs);
+    capturedOnTranscript!("tell me a long story", true);
+    await new Promise((r) => setTimeout(r, 10));
+
+    capturedOnTranscript!("हाँ जी", false);
+    capturedOnTranscript!("haan haan", false);
+    expect(sentEventTypes(mockWs)).not.toContain("clear");
+
+    capturedOnTranscript!("नहीं, मैं ठीक हूँ", false);
+    expect(sentEventTypes(mockWs)).toContain("clear");
+  });
+
+  it("ignores 1-2 letter noise fragments while the agent talks", async () => {
+    replyThatNeverEnds();
+    const mockWs = makeMockWs();
+    await startCall(mockWs);
+    capturedOnTranscript!("tell me a long story", true);
+    await new Promise((r) => setTimeout(r, 10));
+
+    capturedOnTranscript!("a", false);
+    capturedOnTranscript!("so", false);
+    expect(sentEventTypes(mockWs)).not.toContain("clear");
+  });
+
+  it("does not start a turn for a standalone 'um' / 'hmm' while the line is idle", async () => {
+    const mockWs = makeMockWs();
+    await startCall(mockWs);
+    capturedOnTranscript!("Um.", true);
+    capturedOnTranscript!("हम्म", true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(handleTurnMock).not.toHaveBeenCalled();
+  });
+
+  it("stops the agent on sustained caller speech alone — Twilio clear first, then the TTS stream, then the LLM", async () => {
+    let signal: AbortSignal | undefined;
+    handleTurnMock.mockImplementation((_input: any, opts: any) => {
+      signal = opts.abortSignal;
+      opts.onReplyChunk("Starting a long reply");
+      return new Promise(() => {});
+    });
+    const mockWs = makeMockWs();
+    const onMessage = await startCall(mockWs);
+
+    // The caller speaks first, so the VAD learns their voice level.
+    feedFrames(onMessage, makeVoicedMulawFrame(), 30);
+    feedFrames(onMessage, Buffer.alloc(160, 0xff), 15); // the pause before the agent answers
+    capturedOnTranscript!("tell me a long story", true);
+    await new Promise((r) => setTimeout(r, 10));
+    const stream = speakStreamInstances[0];
+    expect(sentEventTypes(mockWs)).not.toContain("clear");
+
+    // Agent is talking; the caller breaks in — no transcript has arrived yet.
+    feedFrames(onMessage, makeVoicedMulawFrame(), 20); // 400ms: still below the sustained threshold
+    expect(sentEventTypes(mockWs)).not.toContain("clear");
+    feedFrames(onMessage, makeVoicedMulawFrame(), 20); // 800ms: sustained
+
+    expect(sentEventTypes(mockWs)).toContain("clear");
+    expect(stream.clear).toHaveBeenCalled();
+    expect(signal?.aborted).toBe(true);
+
+    const clearSendOrder = mockWs.send.mock.invocationCallOrder[mockWs.send.mock.calls.findIndex((c: any[]) => JSON.parse(c[0]).event === "clear")];
+    expect(clearSendOrder).toBeLessThan(stream.clear.mock.invocationCallOrder[0]);
+  });
+
+  it("does not energy-barge-in on loud-but-flat noise, and never before the caller's voice is learned", async () => {
+    replyThatNeverEnds();
+    const mockWs = makeMockWs();
+    const onMessage = await startCall(mockWs);
+
+    capturedOnTranscript!("tell me a long story", true);
+    await new Promise((r) => setTimeout(r, 10));
+    // Never calibrated here (the caller hasn't spoken yet), and flat loud
+    // noise isn't speech-shaped anyway.
+    feedFrames(onMessage, makeFlatLoudMulawFrame(), 80);
+    expect(sentEventTypes(mockWs)).not.toContain("clear");
+  });
+
+  it("drops a turn with no near-field caller speech behind it (background talker), once the caller's level is known", async () => {
+    handleTurnMock.mockImplementation(async (_input: any, opts: any) => {
+      opts.onReplyChunk("Fine.");
+      return { reply: "Fine.", trace: { emotion: { current: { label: "neutral" } }, agent: undefined } };
+    });
+    const mockWs = makeMockWs();
+    const onMessage = await startCall(mockWs);
+
+    feedFrames(onMessage, makeVoicedMulawFrame(), 40);
+    capturedOnTranscript!("what are your hours", true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(handleTurnMock).toHaveBeenCalledTimes(1);
+    // Twilio echoes the mark once the reply has played.
+    const mark = mockWs.send.mock.calls.map((c: any[]) => JSON.parse(c[0])).find((m: any) => m.event === "mark");
+    if (mark) onMessage(Buffer.from(JSON.stringify({ event: "mark", streamSid: "stream-1", mark: { name: mark.mark.name } })));
+
+    // Words arrive from the STT but the caller's mic carried no speech (a TV in the room).
+    capturedOnTranscript!("and then the senator said", true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(handleTurnMock).toHaveBeenCalledTimes(1);
+  });
+});

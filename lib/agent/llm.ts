@@ -7,6 +7,49 @@ import { getKeyRotator } from "../util/keys";
 import { TOOLS, dispatchToolCall, getToolsForAgent } from "./tools";
 import { ClauseChunker } from "./clause-chunker";
 
+/**
+ * One OpenAI-compatible client per (baseURL, key, timeout), reused across
+ * turns. A fresh `new OpenAI()` for every turn (the previous behavior) meant
+ * a cold connection to the provider — DNS + TCP + TLS, typically 100-300ms —
+ * paid on the critical path of every single reply. The SDK sits on Node's
+ * pooled fetch, so a long-lived client keeps that connection warm.
+ */
+const clientCache = new Map<string, OpenAI>();
+function getClient(apiKey: string, baseURL: string, timeout: number): OpenAI {
+  const key = `${baseURL}|${apiKey}|${timeout}`;
+  let client = clientCache.get(key);
+  if (!client) {
+    client = new OpenAI({ apiKey, baseURL, timeout, maxRetries: 1 });
+    clientCache.set(key, client);
+  }
+  return client;
+}
+
+let lastPrewarmAt = 0;
+/**
+ * Opens (or refreshes) the connection to the primary LLM provider before the
+ * reply is needed. Called when a call connects and again the moment the
+ * caller starts talking, so by the time their sentence ends the TLS session
+ * is already warm. Cheap (a models-list GET), rate-limited, fire-and-forget,
+ * and never throws.
+ */
+export function prewarmLlm(): void {
+  const now = Date.now();
+  if (now - lastPrewarmAt < 3_000) return;
+  lastPrewarmAt = now;
+  const provider = CONFIG.llm.providers[0];
+  if (!provider) return;
+  const apiKey = getKeyRotator(provider.envKey).getKey();
+  if (!apiKey) return;
+  void fetch(`${provider.baseURL}/models`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(4_000),
+  })
+    .then((res) => res.arrayBuffer())
+    .catch(() => undefined);
+}
+
 export interface LLMReply {
   text: string;
   model: string;
@@ -135,7 +178,9 @@ export async function generateReply(args: {
   abortSignal?: AbortSignal;
 }): Promise<LLMReply> {
   const streaming = !!args.onClause;
-  const clauseChunker = streaming ? new ClauseChunker() : null;
+  // earlyFirstClause: start speaking at the first natural pause instead of
+  // waiting for the whole first sentence — see ClauseChunker.
+  const clauseChunker = streaming ? new ClauseChunker({ earlyFirstClause: true }) : null;
   // Accumulated raw text for onRawDelta — safe to keep scoped to the whole
   // call (not per-attempt): once anyClauseEmitted is true, the guard added
   // above prevents this function from ever reaching a second attempt at
@@ -202,12 +247,7 @@ export async function generateReply(args: {
         if (anyClauseEmitted) {
           throw new Error(`Provider "${provider.name}" cannot retry mid-turn — part of this reply was already spoken`);
         }
-        const openai = new OpenAI({
-          apiKey,
-          baseURL: provider.baseURL,
-          timeout: retryBudget[1],
-          maxRetries: 1,
-        });
+        const openai = getClient(apiKey, provider.baseURL, retryBudget[1]);
 
         const messages: any[] = [
           { role: "system", content: args.system },
