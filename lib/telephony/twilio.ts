@@ -99,16 +99,43 @@ export function buildRejectTwiml(): string {
 }
 
 /**
- * TwiML to enqueue a call in Twilio's native queue.
+ * TwiML that puts a caller in Twilio's native queue while every call slot is
+ * taken. Twilio requests `waitUrl` (app/api/telephony/queue-wait) when the
+ * caller joins and again each time its hold message finishes; that route
+ * answers <Leave/> once a slot has been claimed for this caller, and Twilio
+ * then requests `actionUrl` (app/api/telephony/dequeue) to connect them.
+ * No long-running process is involved.
  */
-export function buildEnqueueTwiml(queueName: string): string {
+export function buildEnqueueTwiml(queueName: string, waitUrl: string, actionUrl: string): string {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const response = new VoiceResponse();
   response.say(
     { voice: "Polly.Joanna-Neural" },
     "All agents are busy. Please hold while we place you in the queue."
   );
-  response.enqueue(queueName);
+  response.enqueue({ waitUrl, waitUrlMethod: "POST", action: actionUrl, method: "POST" }, queueName);
+  return response.toString();
+}
+
+/** waitUrl answer while the caller keeps waiting; Twilio requests waitUrl again when it ends. */
+export function buildQueueHoldTwiml(position: number | null): string {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+  response.say(
+    { voice: "Polly.Joanna-Neural" },
+    position && position > 1
+      ? `Thank you for waiting. You are number ${position} in line.`
+      : "Thank you for waiting. You will be connected shortly."
+  );
+  response.pause({ length: 10 });
+  return response.toString();
+}
+
+/** waitUrl answer that takes the caller out of the queue (on to the <Enqueue> action URL). */
+export function buildQueueLeaveTwiml(): string {
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const response = new VoiceResponse();
+  response.leave();
   return response.toString();
 }
 

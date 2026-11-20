@@ -12,10 +12,13 @@
  * lib/emotion/local-emotion-classifier.ts (7-class ONNX model).
  */
 import { pipeline, env, TextClassificationPipeline } from '@xenova/transformers';
+import path from 'node:path';
+import { MODEL_CACHE_DIR } from '../util/model-cache';
 
 // Configure environment for Node.js
 env.allowLocalModels = true;
 env.useBrowserCache = false;
+env.cacheDir = MODEL_CACHE_DIR + path.sep;
 
 class MLClassifier {
   static task = 'text-classification';

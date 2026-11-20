@@ -1,3 +1,6 @@
+// The `openai` package is used only as an OpenAI-COMPATIBLE client: every
+// provider in CONFIG.llm.providers (Groq, ZenMux) sets its own baseURL. VOXERA
+// makes no direct calls to the OpenAI API and needs no OpenAI key.
 import OpenAI from "openai";
 import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";

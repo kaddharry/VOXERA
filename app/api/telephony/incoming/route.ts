@@ -1,23 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import { validateTwilioSignature, buildConnectTwiml, buildEnqueueTwiml, buildRejectTwiml } from "../../../../lib/telephony/twilio";
-import { callQueue } from "../../../../lib/queue/manager";
+import { buildConnectTwiml, buildEnqueueTwiml, buildRejectTwiml } from "../../../../lib/telephony/twilio";
+import { acquireCallSlot, enqueueCall } from "../../../../lib/telephony/call-coordination";
+import { verifyTwilioWebhook } from "../../../../lib/telephony/webhook-auth";
+import { reportMissingEnvOnce } from "../../../../lib/env";
 import { supabase } from "../../../../lib/db/supabase";
 import { publicWebhookUrl, resolvePublicBaseUrl, resolveVoiceWebSocketUrl } from "../../../../lib/telephony/urls";
 
 export const dynamic = "force-dynamic";
-
-const MAX_CONCURRENT_CALLS = 10;
 
 /**
  * POST /api/telephony/incoming
  *
  * Twilio calls this webhook when a phone call arrives.
  * We respond with TwiML that either:
- *   a) Opens a Media Stream WebSocket (normal path)
- *   b) Enqueues the call natively on Twilio (queue full but under hard limit)
- *   c) Rejects the call (hard limit reached)
+ *   a) Opens a Media Stream WebSocket (normal path) — after atomically
+ *      taking a call slot (lease) for this CallSid in Postgres
+ *   b) Puts the caller in Twilio's native queue when every slot is taken
+ *      (the queue entry is stored in Postgres first; see queue-wait)
+ *   c) Says "all lines busy" and hangs up when the queue is full too
+ * Capacity lives in telephony_settings (sql/migration_v33.sql).
  */
 export async function POST(req: NextRequest) {
+  reportMissingEnvOnce("telephony_incoming");
   try {
     const body = await req.text();
     const params = Object.fromEntries(new URLSearchParams(body));
@@ -28,21 +32,9 @@ export async function POST(req: NextRequest) {
 
     console.log(`[Telephony] Incoming call: ${callSid} from ${callerNumber} to ${toNumber}`);
 
-    const authToken = process.env.TWILIO_AUTH_TOKEN;
-    if (authToken) {
-      const signature = req.headers.get("x-twilio-signature") || "";
-      const baseUrl = resolvePublicBaseUrl({ configured: process.env.VOXERA_PUBLIC_URL || process.env.NEXT_PUBLIC_BASE_URL, requestUrl: req.url });
-      // Must include the query string exactly as configured on the call's
-      // webhook `url` — Twilio signs the full URL it was given, including
-      // ?clientId=/&agentId= appended for outbound campaign calls below.
-      // Reconstructing without it would make every outbound-triggered call
-      // fail signature validation.
-      const webhookUrl = `${baseUrl}/api/telephony/incoming${req.nextUrl.search}`;
-      const isValid = validateTwilioSignature(webhookUrl, params, signature);
-      if (!isValid) {
-        console.warn("[Telephony] Invalid Twilio signature — rejecting request");
-        return new NextResponse("Forbidden", { status: 403 });
-      }
+    if (!verifyTwilioWebhook(req, params).ok) {
+      console.warn("[Telephony] Invalid Twilio signature — rejecting request");
+      return new NextResponse("Forbidden", { status: 403 });
     }
 
     // Outbound calls (single "Place Outbound Call" or a bulk campaign) set
@@ -77,31 +69,35 @@ export async function POST(req: NextRequest) {
       agentId = phoneRow?.agentId ?? undefined;
     }
 
-    const activeCount = await callQueue.getActiveCallCount();
+    const baseUrl = resolvePublicBaseUrl({ configured: process.env.VOXERA_PUBLIC_URL || process.env.NEXT_PUBLIC_BASE_URL, requestUrl: req.url });
 
-    if (activeCount >= MAX_CONCURRENT_CALLS) {
-      console.warn(`[Telephony] Hard limit reached (${activeCount} calls). Rejecting ${callSid}.`);
-      return new NextResponse(buildRejectTwiml(), {
-        headers: { "Content-Type": "text/xml" },
-      });
+    // Take a call slot for this CallSid (atomic + idempotent in Postgres:
+    // a Twilio retry of this webhook never takes a second one). The stream
+    // handler keeps renewing it; it's released when the call ends, or
+    // expires on its own if the Function serving the call dies.
+    const slot = await acquireCallSlot(callSid, clientId);
+    if (!slot.acquired) {
+      // Premium numbers jump the queue (lower = sooner).
+      const priority = callerNumber.includes("999") || callerNumber.includes("VIP") ? 1 : 5;
+      const queued = await enqueueCall(callSid, clientId, callerNumber, priority);
+      console.log(JSON.stringify({ service: "telephony", event: queued.queued ? "call_queued" : "call_rejected_capacity", callSid, active: slot.active, max: slot.max, position: queued.position, reason: queued.reason ?? null }));
+      if (!queued.queued) {
+        return new NextResponse(buildRejectTwiml(), { headers: { "Content-Type": "text/xml" } });
+      }
+      // Who to connect them to once a slot frees up: carried on the queue's
+      // action URL (Twilio signs it, see dequeue/route.ts).
+      const routing = new URLSearchParams({ clientId, caller: callerNumber });
+      if (agentId) routing.set("agentId", agentId);
+      if (patientId) routing.set("patientId", patientId);
+      return new NextResponse(
+        buildEnqueueTwiml(
+          "voxera_queue",
+          publicWebhookUrl(baseUrl, "/api/telephony/queue-wait"),
+          `${publicWebhookUrl(baseUrl, "/api/telephony/dequeue")}?${routing.toString()}`,
+        ),
+        { headers: { "Content-Type": "text/xml" } },
+      );
     }
-
-    // Determine priority based on callerNumber (premium numbers get higher priority, e.g. 1)
-    const priority = callerNumber.includes("999") || callerNumber.includes("VIP") ? 1 : 5;
-
-    const caller = await callQueue.enqueueCaller(callSid, callerNumber, priority, clientId);
-    const waitMs = await callQueue.getEstimatedWaitTimeMs(callSid);
-
-    if (waitMs > 0) {
-      console.log(`[Telephony] Caller ${callSid} enqueued in Twilio queue, wait: ${waitMs}ms`);
-      // Keep in the CallQueueManager, do not dequeue! It will be dequeued when redirected.
-      return new NextResponse(buildEnqueueTwiml("voxera_queue"), {
-        headers: { "Content-Type": "text/xml" },
-      });
-    }
-
-    // Accepted immediately — remove from queue, stream-handler will markCallStarted
-    await callQueue.dequeueCaller(callSid);
 
     // Upsert, not insert: for an outbound call (single call or a campaign),
     // /api/telephony/outbound already inserted a row with this same callSid
@@ -116,10 +112,9 @@ export async function POST(req: NextRequest) {
       callerNumber,
       status: "active",
       startedAt: Date.now(),
-      queueWaitMs: caller.joinedAt ? Date.now() - caller.joinedAt : 0,
+      queueWaitMs: 0,
     }], { onConflict: "id" });
 
-    const baseUrl = resolvePublicBaseUrl({ configured: process.env.VOXERA_PUBLIC_URL || process.env.NEXT_PUBLIC_BASE_URL, requestUrl: req.url });
     // Query params here are a best-effort fallback only (kept for direct/
     // non-Twilio WS testing) — Twilio does not reliably forward them on the
     // Media Stream connection URL. The real source of truth is the

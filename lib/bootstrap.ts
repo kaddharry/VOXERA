@@ -1,41 +1,11 @@
 import { seedClientMemory } from "./memory/writer";
 import { vectorStore } from "./memory/store";
 import { probeHealth } from "./db/supabase";
-import { callQueue } from "./queue/manager";
-import { getTwilioClient } from "./telephony/twilio";
 
 let seeded = false;
 
-// Register the slot open callback to dynamically redirect callers out of Twilio Enqueue
-callQueue.onSlotOpen(async () => {
-  while ((await callQueue.getQueueLength()) > 0 && (await callQueue.canAcceptCall())) {
-    const nextCaller = await callQueue.peekNextCaller();
-    if (!nextCaller) break;
-
-    try {
-      const client = getTwilioClient();
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
-      // Redirect URL that will return buildConnectTwiml()
-      const redirectUrl = `${baseUrl}/api/telephony/dequeue?callSid=${nextCaller.id}&clientId=${nextCaller.clientId || "demo"}&caller=${encodeURIComponent(nextCaller.phoneNumber || "unknown")}`;
-
-      console.log(`[Telephony Queue] Auto-redirecting queued caller ${nextCaller.id} out of Enqueue...`);
-      
-      // Dequeue first to prevent duplicate processing
-      await callQueue.dequeueCaller(nextCaller.id);
-
-      await client.calls(nextCaller.id).update({
-        url: redirectUrl,
-        method: "POST",
-      });
-
-      // Slot filled, continue to next if we still have capacity
-    } catch (err: any) {
-      console.error(`[Telephony Queue] Failed to redirect queued caller ${nextCaller.id}:`, err?.message ?? err);
-      // Remove failed caller from queue to avoid blockages
-      await callQueue.dequeueCaller(nextCaller.id);
-    }
-  }
-});
+// Queued callers are dispatched by Twilio's queue waitUrl polls
+// (app/api/telephony/queue-wait) against Postgres; no listener lives here.
 
 export const DEMO = {
   clientId: "acme-telecom",

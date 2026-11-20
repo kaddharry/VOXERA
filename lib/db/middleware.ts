@@ -1,4 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
+import { supabaseCredentials } from "../env";
 import { NextResponse, type NextRequest } from "next/server";
 
 /** Routes that require a signed-in session — everything else is public and
@@ -10,8 +11,8 @@ export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
-    process.env.SUPABASE_URL || "https://placeholder-project-id.supabase.co",
-    process.env.SUPABASE_ANON_KEY || "placeholder-key",
+    supabaseCredentials("anon").url,
+    supabaseCredentials("anon").key,
     {
       cookies: {
         getAll() {

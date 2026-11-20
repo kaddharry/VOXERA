@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "../../../lib/db/server";
-import { callQueue } from "../../../lib/queue/manager";
+import { getTelephonyMetrics } from "../../../lib/telephony/call-coordination";
 
 export const dynamic = "force-dynamic";
 
@@ -135,8 +135,8 @@ export async function GET(request: NextRequest) {
         ? Math.round(completedCalls.reduce((s, c) => s + (c.durationMs || 0), 0) / completedCalls.length)
         : 0;
 
-    // 4. Live queue metrics from in-process CallQueueManager (now Redis-backed async)
-    const queueMetrics = await callQueue.getMetrics();
+    // 4. Live call/queue metrics from Postgres (call_slots / call_queue, migration_v33)
+    const queueMetrics = (await getTelephonyMetrics()) ?? { activeCallCount: 0, queueLength: 0 };
 
     // ─── NEW SPRINT 5 METRICS ──────────────────────────────────────────────────
 

@@ -6,6 +6,9 @@ import { WebSocketServer } from "ws";
 import { TelephonyStreamHandler } from "./lib/telephony/stream-handler";
 import { warmupModels } from "./lib/warmup";
 import { startSchedulerPolling } from "./lib/scheduler/dispatcher";
+import { recoverTelephonyState } from "./lib/telephony/call-coordination";
+import { runDueJobs } from "./lib/jobs/background-jobs";
+import { POST_CALL_JOB, runPostCallJob } from "./lib/telephony/post-call";
 
 // Kicked off as early as possible in process lifetime — see warmup.ts's doc
 // comment. Not awaited: server startup shouldn't block on it, but starting
@@ -111,5 +114,12 @@ app.prepare().then(() => {
     // Node process the app has, so this is where any durable polling loop
     // belongs, same reasoning as the WebSocket upgrade handler above.
     startSchedulerPolling();
+    // Same recovery the Vercel cron runs (/api/cron/dispatch): expired call
+    // slots, abandoned queue entries, unfinished after-call jobs. All state
+    // is in Postgres, so this behaves exactly like production.
+    setInterval(() => {
+      void recoverTelephonyState();
+      void runDueJobs({ [POST_CALL_JOB]: runPostCallJob }, 5).catch((err) => console.error("[Jobs] Recovery run failed:", err));
+    }, 60_000).unref();
   });
 });

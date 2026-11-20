@@ -6,7 +6,17 @@
  * once the configured threshold is reached, and that genuine distress
  * always overrides immediately regardless of streak state.
  */
-import { describe, it, expect } from "vitest";
+import { vi, describe, it, expect } from "vitest";
+// Persona state is cached in-process and written through to Postgres
+// (session_state); here the database is a no-op, so the cache is what's tested.
+vi.mock("../../lib/db/supabase", () => ({
+  supabase: {
+    from: () => ({
+      select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }) }),
+      upsert: async () => ({ error: null }),
+    }),
+  },
+}));
 import { resolvePersonaLock } from "../../lib/emotion/persona-lock";
 import { CONFIG } from "../../lib/config";
 import type { EmotionContext, EmotionLabel } from "../../lib/types";

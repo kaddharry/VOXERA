@@ -1,19 +1,23 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { checkRateLimit } from "../../lib/telephony/rate-limit";
+import { describe, it, expect, beforeAll, vi } from "vitest";
+import { createMigratedDb } from "../helpers/pglite-db";
 
-describe("checkRateLimit — fixed-window limiter over MockRedis", () => {
-  beforeEach(() => {
-    vi.useRealTimers();
-  });
+/** checkRateLimit over the real rate_limit_hit() SQL function (PGlite). */
+let pg: Awaited<ReturnType<typeof createMigratedDb>>;
+let failRpc = false;
+vi.mock("../../lib/db/supabase", () => ({
+  supabase: { rpc: (fn: string, args: Record<string, unknown>) => (failRpc ? Promise.resolve({ data: null, error: { message: "down" } }) : pg.rpc(fn, args)) },
+}));
 
+const { checkRateLimit } = await import("../../lib/telephony/rate-limit");
+
+beforeAll(async () => {
+  pg = await createMigratedDb();
+});
+
+describe("checkRateLimit — fixed window in Postgres", () => {
   it("allows requests under the limit", async () => {
     const key = `test:rate-limit:${Math.random()}`;
-    const r1 = await checkRateLimit(key, 3, 60_000);
-    const r2 = await checkRateLimit(key, 3, 60_000);
-    const r3 = await checkRateLimit(key, 3, 60_000);
-    expect(r1.allowed).toBe(true);
-    expect(r2.allowed).toBe(true);
-    expect(r3.allowed).toBe(true);
+    for (let i = 0; i < 3; i++) expect((await checkRateLimit(key, 3, 60_000)).allowed).toBe(true);
   });
 
   it("blocks requests once the limit is exceeded, with a retryAfterMs", async () => {
@@ -27,24 +31,28 @@ describe("checkRateLimit — fixed-window limiter over MockRedis", () => {
 
   it("resets the window after it elapses", async () => {
     const key = `test:rate-limit:${Math.random()}`;
-    const shortWindowMs = 50;
-    await checkRateLimit(key, 1, shortWindowMs);
-    const blockedImmediately = await checkRateLimit(key, 1, shortWindowMs);
-    expect(blockedImmediately.allowed).toBe(false);
-
-    await new Promise((resolve) => setTimeout(resolve, shortWindowMs + 20));
-
-    const allowedAfterReset = await checkRateLimit(key, 1, shortWindowMs);
-    expect(allowedAfterReset.allowed).toBe(true);
+    await checkRateLimit(key, 1, 50);
+    expect((await checkRateLimit(key, 1, 50)).allowed).toBe(false);
+    await new Promise((r) => setTimeout(r, 80));
+    expect((await checkRateLimit(key, 1, 50)).allowed).toBe(true);
   });
 
-  it("tracks separate keys independently", async () => {
-    const keyA = `test:rate-limit:a:${Math.random()}`;
-    const keyB = `test:rate-limit:b:${Math.random()}`;
-    await checkRateLimit(keyA, 1, 60_000);
-    const blockedA = await checkRateLimit(keyA, 1, 60_000);
-    const allowedB = await checkRateLimit(keyB, 1, 60_000);
-    expect(blockedA.allowed).toBe(false);
-    expect(allowedB.allowed).toBe(true);
+  it("keeps separate windows per key", async () => {
+    const a = `test:rate-limit:${Math.random()}`;
+    const b = `test:rate-limit:${Math.random()}`;
+    await checkRateLimit(a, 1, 60_000);
+    expect((await checkRateLimit(a, 1, 60_000)).allowed).toBe(false);
+    expect((await checkRateLimit(b, 1, 60_000)).allowed).toBe(true);
+  });
+
+  it("lets requests through (and logs) if the database is unreachable", async () => {
+    failRpc = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await checkRateLimit("test:down", 1, 60_000)).allowed).toBe(true);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      failRpc = false;
+    }
   });
 });

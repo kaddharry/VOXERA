@@ -33,9 +33,17 @@ vi.mock("../../lib/scheduler/dispatcher", () => ({
   applyDoNotContactRequest: vi.fn(async () => {}),
   readAnsweredBy: vi.fn(async () => undefined),
 }));
+vi.mock("../../lib/jobs/background-jobs", async () => await import("../helpers/fake-background-jobs"));
+vi.mock("../../lib/telephony/call-coordination", async () => await import("../helpers/fake-call-coordination"));
 vi.mock("../../lib/agent/call-summary", () => ({ generateCallSummary: vi.fn() }));
 vi.mock("../../lib/db/demo-requests", () => ({ updateDemoRequestStatusByCallSid: vi.fn(async () => {}) }));
+// On Vercel, work still running after the response is frozen unless it's
+// handed to waitUntil(); record what the route hands over.
+const keptAlive: Promise<unknown>[] = [];
+vi.mock("@vercel/functions", () => ({ waitUntil: vi.fn((p: Promise<unknown>) => void keptAlive.push(p)) }));
 
+const { fakeJobs } = await import("../helpers/fake-background-jobs");
+beforeEach(() => fakeJobs.reset());
 const { placeOutboundCall } = await import("../../lib/telephony/outbound");
 const { initiateOutboundCall } = await import("../../lib/telephony/twilio");
 const { handleFollowUpCallOutcome } = await import("../../lib/scheduler/dispatcher");
@@ -52,6 +60,7 @@ function statusCallback(query: string, body: string) {
 
 beforeEach(() => {
   inserts.length = 0;
+  keptAlive.length = 0;
   callLogRow = null;
   callLogError = null;
   vi.clearAllMocks();
@@ -78,6 +87,8 @@ describe("status callback", () => {
     callLogRow = null; // the fast failure beat the call_logs insert
     const res = await POST(statusCallback("?followUpTaskId=task1", "CallSid=CA1&CallStatus=failed"));
     expect(res.status).toBe(200);
+    // Runs as the durable post-call job, kept alive with waitUntil.
+    await Promise.all(keptAlive);
     expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "failed" }));
   });
 
@@ -90,9 +101,30 @@ describe("status callback", () => {
     );
   });
 
+  it("keeps the after-call work alive past the response (Vercel)", async () => {
+    callLogRow = { sessionId: "s1", clientId: "c1", patientId: "p1", followUpTaskId: "task1" };
+    vi.mocked(generateCallSummary).mockResolvedValue(null);
+    const res = await POST(statusCallback("", "CallSid=CA1&CallStatus=completed&CallDuration=42"));
+    expect(res.status).toBe(200);
+    // The summary + follow-up decision is registered with waitUntil, and
+    // finishing it is what settles the follow-up.
+    expect(keptAlive).toHaveLength(1);
+    await Promise.all(keptAlive);
+    expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "completed" }));
+  });
+
+  it("keeps a never-connected call's retry decision alive past the response (Vercel)", async () => {
+    callLogRow = { sessionId: "s1", clientId: "c1", patientId: "p1", followUpTaskId: "task1" };
+    await POST(statusCallback("", "CallSid=CA1&CallStatus=busy"));
+    expect(keptAlive).toHaveLength(1);
+    await Promise.all(keptAlive);
+    expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "busy" }));
+  });
+
   it("retries a never-connected call straight away", async () => {
     callLogRow = { sessionId: null, clientId: "c1", patientId: "p1", followUpTaskId: "task1" };
     await POST(statusCallback("", "CallSid=CA1&CallStatus=no-answer"));
+    await Promise.all(keptAlive);
     expect(handleFollowUpCallOutcome).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task1", twilioStatus: "no-answer" }));
   });
 });

@@ -1,6 +1,5 @@
 import { embed } from "./util/embed";
 import { detectTextEmotionLocalONNX } from "./emotion/local-onnx-detect";
-import LocalAudioClassifier from "./emotion/local-audio-classifier";
 
 /**
  * Proactively loads the in-process ONNX models (the bge-small embedder and
@@ -18,22 +17,36 @@ import LocalAudioClassifier from "./emotion/local-audio-classifier";
  * possible so it has the best chance of finishing before the first real
  * call arrives.
  */
-export async function warmupModels(): Promise<void> {
+export async function warmupModels(opts: { includeVoiceModel?: boolean } = {}): Promise<void> {
   const start = Date.now();
+  const includeVoiceModel = opts.includeVoiceModel ?? true;
   const results = await Promise.allSettled([
     embed("warmup", { isQuery: true }),
     detectTextEmotionLocalONNX("warmup"),
     // The trained voice-emotion model (~91MB, ~56s cold load) now runs on
     // every phone turn's diagnostics pass; loaded here so the first call's
-    // turns don't all time out waiting for it.
-    LocalAudioClassifier.getInstance(),
+    // turns don't all time out waiting for it. Imported lazily, like the
+    // others, so a missing native ONNX runtime can't break the importer.
+    ...(includeVoiceModel
+      ? [import("./emotion/local-audio-classifier").then(({ default: LocalAudioClassifier }) => LocalAudioClassifier.getInstance())]
+      : []),
   ]);
   const failed = results.filter((r) => r.status === "rejected");
+  const ms = Date.now() - start;
   if (failed.length > 0) {
     console.warn(
-      "[Warmup] Some ONNX models failed to preload (will load lazily on first real use instead):",
-      failed.map((f) => (f as PromiseRejectedResult).reason)
+      JSON.stringify({
+        service: "models",
+        event: "model_warmup_failed",
+        failed: failed.length,
+        of: results.length,
+        ms,
+        errors: failed.map((f) => String((f as PromiseRejectedResult).reason?.message ?? (f as PromiseRejectedResult).reason).slice(0, 200)),
+        note: "these models will be retried on first real use; embeddings fail closed (retrieval degraded) if they still can't load",
+      }),
     );
+  } else {
+    console.info(JSON.stringify({ service: "models", event: "model_warmup_done", models: results.length, ms }));
   }
-  console.log(`[Warmup] ONNX models ready in ${Date.now() - start}ms`);
+  console.log(`[Warmup] ONNX models ready in ${ms}ms`);
 }

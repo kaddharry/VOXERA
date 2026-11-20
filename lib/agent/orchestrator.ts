@@ -300,9 +300,13 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       textEmotionMs = performance.now() - emotionStartedAt;
       return result;
     }),
-    embed(input.transcript, { isQuery: true }),
+    // null = the embedding model is unavailable: retrieval runs degraded
+    // (no vector memory; an inlined knowledge base still works) instead of
+    // failing the turn or searching with meaningless vectors.
+    embed(input.transcript, { isQuery: true }).catch((): number[] | null => null),
     patientInfoPromise,
   ]);
+  const retrievalDegraded = queryEmbedding === null;
   applyAgentInfo(agentInfo);
   const evBase = { sessionId: input.sessionId, userId: input.userId, clientId: input.clientId };
 
@@ -350,15 +354,16 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // retrieve() (via its preFetched param) cuts 2 duplicate pgvector round
   // trips per turn down to zero.
   const candidateK = 20;
+  const noCandidates = Promise.resolve([] as Awaited<ReturnType<typeof vectorStore.search>>);
   const [mtmCandidates, ltmUserCandidates, ltmClientCandidates] = await Promise.all([
-    vectorStore.search({ tier: "MTM", userId: input.userId, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
-    vectorStore.search({ tier: "LTM_user", userId: input.userId, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
+    queryEmbedding ? vectorStore.search({ tier: "MTM", userId: input.userId, clientId: input.clientId, query: queryEmbedding, topK: candidateK }) : noCandidates,
+    queryEmbedding ? vectorStore.search({ tier: "LTM_user", userId: input.userId, clientId: input.clientId, query: queryEmbedding, topK: candidateK }) : noCandidates,
     // Skipped entirely when the whole KB is already being inlined into the
     // system prompt below (see inlineKb) — no point spending an embedding
     // call's worth of pgvector search re-deriving a top-K slice of content
     // the model already has in full.
-    inlineKb
-      ? Promise.resolve([])
+    inlineKb || !queryEmbedding
+      ? noCandidates
       : vectorStore.search({ tier: "LTM_client", userId: null, clientId: input.clientId, query: queryEmbedding, topK: candidateK }),
   ]);
   const ltmUserAll = ltmUserCandidates.map((r) => r.rec);
@@ -375,7 +380,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // Persona hysteresis (lib/emotion/persona-lock.ts) — kicked off here but
   // not awaited yet, same "run concurrently with retrieval/LLM prep, only
   // await right before it's actually needed" pattern as the diagnostics
-  // promise below. It's a single small Redis round trip, but there's no
+  // promise below. Usually a cache hit (or one small Postgres read), but there's no
   // reason to serialize it ahead of the retrieval/memory-write work either.
   const personaLockPromise: Promise<PersonaLockResult> = resolvePersonaLock(input.sessionId, emotionCtx);
 
@@ -482,7 +487,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   const I = importanceScore({
     text: input.transcript,
     emotion: emotionCtx,
-    novelty: novelty(queryEmbedding, mtmExisting),
+    novelty: queryEmbedding ? novelty(queryEmbedding, mtmExisting) : 1,
     recurrence: mtmExisting.filter((m) => m.topic && input.transcript.toLowerCase().includes(m.topic)).length,
     taskCriticality: taskCriticality(input.transcript),
     policyFlag: policyFlag(emotionCtx),
@@ -490,13 +495,20 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
 
   const retrievalStart = Date.now();
   const [memoryWrite, retrieved] = await Promise.all([
-    writeMemory({
-      utterance: userTurn,
-      userId: input.userId,
-      clientId: input.clientId,
-      emotion: emotionCtx,
-      importance: I,
-    }),
+    // Nothing goes into the vector store while the embedding model is
+    // unavailable (see lib/util/embed.ts): the turn stays in short-term memory.
+    retrievalDegraded
+      ? Promise.resolve({ tier: "STM" as const, recordId: undefined, merged: false })
+      : writeMemory({
+          utterance: userTurn,
+          userId: input.userId,
+          clientId: input.clientId,
+          emotion: emotionCtx,
+          importance: I,
+        }).catch((err) => {
+          console.error(`[Orchestrator] Memory write failed for ${input.sessionId}:`, err);
+          return { tier: "STM" as const, recordId: undefined, merged: false };
+        }),
     retrieve(
       {
         sessionId: input.sessionId,
@@ -761,6 +773,8 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       topSource: topTier,
       reason: topExplanation?.reason,
       similarity: topExplanation?.metrics.similarity,
+      // True when the embedding model was unavailable this turn (no vector memory).
+      degraded: retrievalDegraded,
     });
   }
 

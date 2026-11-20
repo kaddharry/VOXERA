@@ -1,4 +1,4 @@
-import { redis } from "../redis/client";
+import { supabase } from "../db/supabase";
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -6,32 +6,26 @@ export interface RateLimitResult {
   retryAfterMs?: number;
 }
 
-interface WindowState {
-  count: number;
-  windowStart: number;
-}
-
 /**
- * Simple fixed-window rate limiter keyed by an arbitrary string (e.g. an IP
- * address). Implemented app-side with plain get/set rather than a native
- * EXPIRE/SET-EX TTL command, since the shared in-process store (see
- * lib/redis/client.ts) only implements get/set/incr/decr/hash/zset/pub-sub.
+ * Fixed-window rate limiter keyed by an arbitrary string (e.g. an IP
+ * address), shared by every Vercel instance: the count lives in Postgres
+ * (rate_limits, sql/migration_v33.sql) and rate_limit_hit() updates it
+ * atomically, so concurrent requests can't both slip under the limit.
+ *
+ * If the database can't be reached the request is allowed (and logged):
+ * these limits stop abuse of public endpoints, and refusing every request
+ * during a database blip would be worse.
  */
 export async function checkRateLimit(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
-  const now = Date.now();
-  const raw = await redis.get(key);
-  let state: WindowState = raw ? JSON.parse(raw) : { count: 0, windowStart: now };
-
-  if (now - state.windowStart >= windowMs) {
-    state = { count: 0, windowStart: now };
+  try {
+    const { data, error } = await supabase.rpc("rate_limit_hit", { p_key: key, p_limit: limit, p_window_ms: windowMs });
+    if (error) throw error;
+    if (data?.allowed === false) {
+      return { allowed: false, retryAfterMs: Math.max(0, Number(data.retry_after_ms ?? windowMs)) };
+    }
+    return { allowed: true };
+  } catch (err) {
+    console.warn(JSON.stringify({ service: "rate_limit", event: "rate_limit_unavailable", key: key.split(":").slice(0, 2).join(":"), error: err instanceof Error ? err.message : String((err as { message?: string })?.message ?? err) }));
+    return { allowed: true };
   }
-
-  if (state.count >= limit) {
-    const retryAfterMs = windowMs - (now - state.windowStart);
-    return { allowed: false, retryAfterMs: Math.max(0, retryAfterMs) };
-  }
-
-  state.count += 1;
-  await redis.set(key, JSON.stringify(state));
-  return { allowed: true };
 }

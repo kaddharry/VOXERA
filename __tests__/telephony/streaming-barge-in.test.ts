@@ -28,8 +28,11 @@ vi.mock("../../lib/db/supabase", () => ({
 
 vi.mock("../../lib/db/agents", () => ({ getAgentWithTenant: vi.fn().mockResolvedValue(null) }));
 
-vi.mock("../../lib/queue/manager", () => ({
-  callQueue: { markCallStarted: vi.fn(), markCallEnded: vi.fn() },
+vi.mock("../../lib/telephony/call-coordination", () => ({
+  CALL_SLOT_RENEW_EVERY_MS: 45_000,
+  acquireCallSlot: vi.fn().mockResolvedValue({ acquired: true, alreadyHeld: true, active: 1, max: 10 }),
+  renewCallSlot: vi.fn().mockResolvedValue(true),
+  releaseCallSlot: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../../lib/memory/stm", () => ({
