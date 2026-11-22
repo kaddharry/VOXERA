@@ -356,7 +356,8 @@ const ROMAN_HINDI_WORDS = /\b(aap|aapka|aapki|hai|hain|hoon|kya|kaise|karna|bata
  * Hindi) is pulled back. Script-based; Devanagari is split Hindi/Marathi by
  * vocabulary. */
 export function detectCallerLanguage(text: string): string {
-  if (/[\u0900-\u097F]/.test(text)) return MARATHI_WORDS.test(text) ? "Marathi (Devanagari)" : "Hindi (Devanagari)";
+  // Danda (U+0964/5) is excluded: Bengali/Gujarati/Punjabi sentences end with it too.
+  if (/[\u0900-\u0963\u0966-\u097F]/.test(text)) return MARATHI_WORDS.test(text) ? "Marathi (Devanagari)" : "Hindi (Devanagari)";
   if (/[\u0B80-\u0BFF]/.test(text)) return "Tamil (Tamil script)";
   if (/[\u0C00-\u0C7F]/.test(text)) return "Telugu (Telugu script)";
   if (/[\u0C80-\u0CFF]/.test(text)) return "Kannada (Kannada script)";

@@ -51,7 +51,8 @@ const HI = {
   escalate: "चलिए, आपकी मदद के लिए टीम से किसी को जोड़ देते हैं।",
   stt: "माफ़ कीजिए, क्या आप एक बार फिर से बोल सकते हैं?",
 };
-const DEVANAGARI_RE = /[\u0900-\u097F]/;
+// Excludes U+0964/0965 (danda): it is shared by Bengali, Gujarati, Punjabi, Odia etc. as a sentence end.
+const DEVANAGARI_RE = /[\u0900-\u0963\u0966-\u097F]/;
 /** Hindi guard sentences when the reply (or, before there is one, the call
  * language) is Hindi; English otherwise. */
 function isHindi(sample: string | undefined, language?: string): boolean {

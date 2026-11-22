@@ -108,7 +108,7 @@ const SCRIPT_RANGES: Record<string, RegExp> = {
   Kannada: /[ಀ-೿]/g,
   Malayalam: /[ഀ-ൿ]/g,
 };
-const ALL_INDIC_RE = /[ऀ-ൿ]/g;
+const ALL_INDIC_RE = /[\u0900-\u0963\u0966-\u0D7F]/g; // danda excluded (shared across scripts)
 
 /** Words in scripts the agent never speaks (live-observed: a Korean "많이" inside a Gujarati reply). */
 const FOREIGN_SCRIPT_TOKEN_RE =
