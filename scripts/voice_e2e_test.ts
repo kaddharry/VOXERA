@@ -157,7 +157,7 @@ async function interactionSuite() {
   // 2. server-side RMS barge-in: loud speech while agent talks, NO barge_in message
   {
     const s = new Session(); await s.open(); await s.waitFor(() => false, 5000);
-    let m = s.mark(); await s.speak(q1, 1500);
+    const m = s.mark(); await s.speak(q1, 1500);
     const gotAudio = await s.waitFor(() => s.since(m).some((e) => e.type === "reply_audio_chunk"), 20000);
     if (!gotAudio) rec("barge-in (server RMS fallback)", false, "agent never started speaking");
     else {
