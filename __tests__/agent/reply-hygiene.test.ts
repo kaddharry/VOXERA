@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isReasoningClause, stripReasoningLeak, stripWrappingQuotes } from "../../lib/agent/reply-hygiene";
+import { isReasoningClause, isWrongIndicScript, stripForeignScript, stripReasoningLeak, stripWrappingQuotes } from "../../lib/agent/reply-hygiene";
 import { sanitizeReply } from "../../lib/agent/llm";
 import { ClauseChunker } from "../../lib/agent/clause-chunker";
 
@@ -62,5 +62,21 @@ describe("detectCallerLanguage", () => {
     ["ਮੈਨੂੰ ਸਿਰ ਦਰਦ ਹੈ", "Punjabi (Gurmukhi script)"],
   ])("%s -> %s", (text, expected) => {
     expect(detectCallerLanguage(text)).toBe(expected);
+  });
+});
+
+describe("reply-hygiene: script guards", () => {
+  it("flags a Hindi reply to a Bengali caller, not a matching one", () => {
+    expect(isWrongIndicScript("नमस्ते, सुनकर खुशी हुई।", "Bengali")).toBe(true);
+    expect(isWrongIndicScript("নমস্কার, শুনে ভালো লাগলো!", "Bengali")).toBe(false);
+  });
+  it("never flags English/Hinglish callers, digits or Latin text", () => {
+    expect(isWrongIndicScript("नमस्ते, सुनकर खुशी हुई।", "Hinglish")).toBe(false);
+    expect(isWrongIndicScript("नमस्ते", undefined)).toBe(false);
+    expect(isWrongIndicScript("OK 10", "Bengali")).toBe(false);
+  });
+  it("strips stray Korean/Chinese/Cyrillic words but keeps Indic text", () => {
+    expect(stripForeignScript("પાણી 많이 પીવો")).toBe("પાણી પીવો");
+    expect(stripForeignScript("તાવ માટે આરામ કરો")).toBe("તાવ માટે આરામ કરો");
   });
 });
