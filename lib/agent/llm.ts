@@ -6,7 +6,7 @@ import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";
 import { TOOLS, dispatchToolCall, getToolsForAgent } from "./tools";
 import { ClauseChunker } from "./clause-chunker";
-import { isReasoningClause, stripReasoningLeak, stripWrappingQuotes } from "./reply-hygiene";
+import { isReasoningClause, isWrongIndicScript, stripForeignScript, stripReasoningLeak, stripWrappingQuotes } from "./reply-hygiene";
 
 /**
  * One OpenAI-compatible client per (baseURL, key, timeout), reused across
@@ -253,7 +253,17 @@ export async function generateReply(args: {
   // the first. Scoped to the whole call (not per-provider) since a repeat
   // should never be spoken regardless of which attempt produced it.
   const seenClauses = new Set<string>();
+  // Language the context builder pinned for this turn ("CALLER LANGUAGE THIS TURN: Bengali (...)").
+  const callerLang = /CALLER LANGUAGE THIS TURN:\s*([A-Za-z]+)/.exec(args.user)?.[1];
   const emitClauseOnce = (raw: string) => {
+    // A clause in the wrong Indic script (Bengali caller, Hindi reply). Before anything
+    // is spoken, throw so the same turn is regenerated; once speech has started it
+    // cannot be retried, so just skip the clause.
+    if (isWrongIndicScript(raw, callerLang)) {
+      console.warn(`[LLM] Wrong-script clause for caller language ${callerLang}: "${raw.slice(0, 60)}"`);
+      if (!anyClauseEmitted) throw new Error("Reply script does not match caller language (timeout)");
+      return;
+    }
     // Planning text the model leaked into its visible output must never be
     // spoken (see reply-hygiene.ts) — dropped BEFORE it counts as "spoken".
     if (isReasoningClause(raw)) {
@@ -531,7 +541,7 @@ export async function generateReply(args: {
  */
 export function sanitizeReply(text: string): string {
   return humanizeEscalationLanguage(
-    stripReasoningLeak(text)
+    stripForeignScript(stripReasoningLeak(text))
       .replace(/<function[^>]*>[\s\S]*?<\/function>/gi, "")
       .replace(/<\/?function[^>]*>/gi, "")
       .replace(/[ \t]{2,}/g, " ")

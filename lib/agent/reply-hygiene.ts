@@ -91,3 +91,43 @@ export function stripReasoningLeak(text: string): string {
   const kept = sentences.filter((s) => !isReasoningClause(s)).map(stripWrappingQuotes).filter(Boolean);
   return kept.join(" ").trim();
 }
+
+/** Unicode ranges of the Indic scripts the agent speaks, keyed by the first word of
+ * detectCallerLanguage()'s label ("Bengali (Bengali script)" -> "Bengali"). */
+const SCRIPT_RANGES: Record<string, RegExp> = {
+  // Hindi/Marathi (Devanagari) are deliberately absent: Gnani's auto-language STT transcribes
+  // short Gujarati/Punjabi greetings into Devanagari, so a Devanagari transcript does not prove
+  // the caller speaks Hindi, and a non-Devanagari reply to it is not wrong.
+  Bengali: /[ঀ-৿]/g,
+  Gurmukhi: /[਀-੿]/g,
+  Punjabi: /[਀-੿]/g,
+  Gujarati: /[઀-૿]/g,
+  Odia: /[଀-୿]/g,
+  Tamil: /[஀-௿]/g,
+  Telugu: /[ఀ-౿]/g,
+  Kannada: /[ಀ-೿]/g,
+  Malayalam: /[ഀ-ൿ]/g,
+};
+const ALL_INDIC_RE = /[ऀ-ൿ]/g;
+
+/** Words in scripts the agent never speaks (live-observed: a Korean "많이" inside a Gujarati reply). */
+const FOREIGN_SCRIPT_TOKEN_RE =
+  /\S*[ᄀ-ᇿ぀-ヿ㄰-㆏㐀-䶿一-鿿가-힯Ѐ-ӿ฀-๿]\S*/g;
+export function stripForeignScript(text: string): string {
+  return text.replace(FOREIGN_SCRIPT_TOKEN_RE, " ").replace(/\s{2,}/g, " ").trim();
+}
+
+/**
+ * True when the clause is written in a DIFFERENT Indic script than the caller's
+ * (live-observed: a Bengali caller answered in Devanagari Hindi). Only fires for
+ * an Indic caller language and a clause that actually contains Indic letters, so
+ * English/Hinglish turns and number-only clauses are never flagged.
+ */
+export function isWrongIndicScript(clause: string, callerLanguage: string | undefined): boolean {
+  const expected = callerLanguage ? SCRIPT_RANGES[callerLanguage] : undefined;
+  if (!expected) return false;
+  const indic = clause.match(ALL_INDIC_RE)?.length ?? 0;
+  if (indic < 3) return false;
+  const inExpected = clause.match(expected)?.length ?? 0;
+  return inExpected < indic / 2;
+}
