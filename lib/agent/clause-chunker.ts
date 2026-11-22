@@ -20,7 +20,9 @@
  * it through the same sanitizer used on the non-streaming path).
  */
 
-const SENTENCE_END_RE = /[.!?]+["')\]]?\s+/g;
+// Includes the Devanagari danda (।, ॥) — Hindi/Marathi sentences end with it,
+// not "." — without it every Hindi reply waited for the safety valve.
+const SENTENCE_END_RE = /[.!?।॥]+["')\]]?\s+/g;
 const SAFETY_VALVE_CHARS = 150;
 
 export interface ClauseChunkerOptions {

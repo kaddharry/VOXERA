@@ -22,10 +22,15 @@ const ACK_PHRASES = [
   "apologize",
   "completely understand",
   "i get that",
+  // Hindi (Devanagari + common romanized) acknowledgements — without these a
+  // perfectly good Hindi apology was never recognized and an English one was
+  // bolted on top of it.
+  "खेद", "अफ़सोस", "अफसोस", "माफ़", "माफ", "सॉरी", "दुख", "परेशानी", "समझ सकती", "समझ सकता", "समझ सकते",
+  "afsos", "khed hai", "maaf", "sorry", "samajh sakt",
 ];
 
 const HANDOFF_RE =
-  /(connect|transfer|supervisor|human|someone from the team|teammate|grab someone|loop (?:in|you in)|bring (?:in|someone))/i;
+  /(connect|transfer|supervisor|human|someone from the team|teammate|grab someone|loop (?:in|you in)|bring (?:in|someone)|टीम|साथी|जोड़|कनेक्ट|ट्रांसफ़र|ट्रांसफर|सुपरवाइज़र|नर्स|बुला)/i;
 
 const CITATION_FENCE_RE = /\[MEM_ID=([a-zA-Z0-9_-]+)\]/g;
 const FABRICATED_TICKET_RE = /\b[A-Z]{2,}-\d{3,}\b/g;
@@ -34,6 +39,30 @@ const INJECTED_ACK_SENTENCE = "I'm really sorry this is happening.";
 const RETRIEVAL_HEDGE_SENTENCE = "I don't have reliable information on that yet, so I want to avoid guessing.";
 const ESCALATION_SENTENCE = "Let me grab someone from the team to help with this.";
 const STT_CLARIFICATION = "I want to make sure I got that right — could you say that once more for me?";
+
+// Fixed guard sentences are spoken aloud, so they must be in the caller's
+// language — live-reproduced: a Hindi call where the agent said an English
+// "I'm really sorry this is happening" and "Let me grab someone from the
+// team" in the middle of an otherwise Hindi reply. Gender-neutral phrasing on
+// purpose (works for any agent voice).
+const HI = {
+  ack: "आपको ये परेशानी हो रही है, इसका मुझे बहुत अफ़सोस है।",
+  hedge: "इस बारे में मेरे पास पक्की जानकारी नहीं है, इसलिए अंदाज़े से कुछ नहीं कहूँगा।",
+  escalate: "चलिए, आपकी मदद के लिए टीम से किसी को जोड़ देते हैं।",
+  stt: "माफ़ कीजिए, क्या आप एक बार फिर से बोल सकते हैं?",
+};
+const DEVANAGARI_RE = /[\u0900-\u097F]/;
+/** Hindi guard sentences when the reply (or, before there is one, the call
+ * language) is Hindi; English otherwise. */
+function isHindi(sample: string | undefined, language?: string): boolean {
+  if (sample && DEVANAGARI_RE.test(sample)) return true;
+  if (sample) return false; // there is text and it's Latin script
+  return language === "hi-IN" || language === "hi-en" || language === "auto";
+}
+const ackFor = (hi: boolean) => (hi ? HI.ack : INJECTED_ACK_SENTENCE);
+const hedgeFor = (hi: boolean) => (hi ? HI.hedge : RETRIEVAL_HEDGE_SENTENCE);
+const escalateFor = (hi: boolean) => (hi ? HI.escalate : ESCALATION_SENTENCE);
+const sttFor = (hi: boolean) => (hi ? HI.stt : STT_CLARIFICATION);
 
 export function guardOutput(args: {
   reply: string;
@@ -46,6 +75,7 @@ export function guardOutput(args: {
 }): GuardResult {
   const reasons: string[] = [];
   let reply = args.reply.trim();
+  const hi = isHindi(reply);
 
   // 1) Citation fence: strip citations not in the allowed list.
   reply = reply.replace(CITATION_FENCE_RE, (full, id) => {
@@ -72,7 +102,7 @@ export function guardOutput(args: {
     const first120 = reply.slice(0, 120).toLowerCase();
     const hasAck = ACK_PHRASES.some((p) => first120.includes(p));
     if (!hasAck) {
-      reply = `${INJECTED_ACK_SENTENCE} ${reply}`;
+      reply = `${ackFor(hi)} ${reply}`;
       reasons.push("injected acknowledgement (policy)");
     }
   }
@@ -82,13 +112,13 @@ export function guardOutput(args: {
     return {
       ok: false,
       reasons: [`STT confidence ${args.sttConfidence.toFixed(2)} below ${args.minStt}`],
-      cleaned: STT_CLARIFICATION,
+      cleaned: sttFor(hi),
     };
   }
 
   if (args.topRetrievalScore < args.minRetrieval && args.allowedCitations.length > 0 && /\b(ticket|account|order|charge|refund)\b/i.test(reply)) {
     reasons.push("retrieval below threshold — hedging factual claim");
-    reply = `${RETRIEVAL_HEDGE_SENTENCE} ${reply}`;
+    reply = `${hedgeFor(hi)} ${reply}`;
   }
 
   // 5) Escalation mention required. Recognizes natural hand-off phrasing
@@ -100,7 +130,7 @@ export function guardOutput(args: {
   if (args.policy.escalate !== "none") {
     const alreadyMentionsHandoff = HANDOFF_RE.test(reply);
     if (!alreadyMentionsHandoff) {
-      reply += ` ${ESCALATION_SENTENCE}`;
+      reply += ` ${escalateFor(hi)}`;
       reasons.push("appended escalation sentence (policy)");
     }
   }
@@ -128,11 +158,13 @@ export function guardOutput(args: {
 export function guardBeforeLLM(args: {
   sttConfidence: number;
   minStt: number;
+  /** Call language — picks the language of the spoken clarification. */
+  language?: string;
 }): { blocked: true; deflection: string; reasons: string[] } | null {
   if (args.sttConfidence < args.minStt) {
     return {
       blocked: true,
-      deflection: STT_CLARIFICATION,
+      deflection: sttFor(isHindi(undefined, args.language)),
       reasons: [`STT confidence ${args.sttConfidence.toFixed(2)} below ${args.minStt}`],
     };
   }
@@ -156,18 +188,19 @@ export function guardOpeningClause(args: {
 }): { leadingClauses: string[]; reasons: string[] } {
   const reasons: string[] = [];
   const leadingClauses: string[] = [];
+  const hi = isHindi(args.firstClause);
 
   if (args.policy.acknowledgeFirst) {
     const first120 = args.firstClause.slice(0, 120).toLowerCase();
     const hasAck = ACK_PHRASES.some((p) => first120.includes(p));
     if (!hasAck) {
-      leadingClauses.push(INJECTED_ACK_SENTENCE);
+      leadingClauses.push(ackFor(hi));
       reasons.push("injected acknowledgement (policy)");
     }
   }
 
   if (args.topRetrievalScore < args.minRetrieval && args.allowedCitations.length > 0) {
-    leadingClauses.push(RETRIEVAL_HEDGE_SENTENCE);
+    leadingClauses.push(hedgeFor(hi));
     reasons.push("retrieval below threshold — hedging factual claim");
   }
 
@@ -210,7 +243,7 @@ export function guardTrailingClause(args: {
   if (args.policy.escalate === "none") return { trailingClause: null, reasons: [] };
   if (HANDOFF_RE.test(args.fullSpokenText)) return { trailingClause: null, reasons: [] };
   return {
-    trailingClause: ESCALATION_SENTENCE,
+    trailingClause: escalateFor(isHindi(args.fullSpokenText)),
     reasons: ["appended escalation sentence (policy)"],
   };
 }

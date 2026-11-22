@@ -196,6 +196,13 @@ export const CONFIG = {
         model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
         envKey: "GROQ_API_KEYS",
         reasoningEffort: "none" as const,
+        hideReasoning: true,
+        // Hindi/Indic turns go to a stronger multilingual model. qwen3.x-27b
+        // was live-measured producing word-salad Hindi at reasoning "none"
+        // (even stray Bengali characters), planning text in the visible
+        // reply at "low", and 5-17s turns; gpt-oss-120b at "low" answered
+        // in clean, simple Hindi in ~1s. English stays on the fast model.
+        nonEnglishModel: "openai/gpt-oss-120b",
       },
       // Second Groq ORGANIZATION (not just another key) — set
       // GROQ_API_KEYS_2 (comma-separated, same format as GROQ_API_KEYS) to
@@ -216,6 +223,23 @@ export const CONFIG = {
         model: process.env.GROQ_MODEL || "qwen/qwen3.6-27b",
         envKey: "GROQ_API_KEYS_2",
         reasoningEffort: "none" as const,
+        hideReasoning: true,
+        nonEnglishModel: "openai/gpt-oss-120b",
+      },
+      // Gnani Evon (https://docs.gnani.ai/api/LLM/overview.md) — OpenAI-
+      // compatible, 11 Indian languages, tool calling. Early-access: the
+      // key needs the "LLM" scope (otherwise 403 SCOPE_NOT_ALLOWED), so this
+      // is skipped until GNANI_LLM_API_KEY is set. Free-plan limits are
+      // tight (1 concurrent request, 100K tokens/day), hence a fallback for
+      // Indian-language turns, not the primary. Thinking is off by default
+      // via reasoningEffort "none" (voice latency).
+      {
+        name: "gnani-evon",
+        baseURL: "https://api.vachana.ai/v1",
+        model: "evon-v3.5",
+        envKey: "GNANI_LLM_API_KEY",
+        reasoningEffort: "none" as const,
+        nonEnglishOnly: true,
       },
       {
         name: "zenmux",
@@ -223,7 +247,7 @@ export const CONFIG = {
         model: process.env.ZENMUX_MODEL || "openai/gpt-4o-mini",
         envKey: "ZENMUX_API_KEY",
       },
-    ] as Array<{ name: string; baseURL: string; model: string; envKey: string; reasoningEffort?: "none" | "low" | "medium" | "high" }>,
+    ] as Array<{ name: string; baseURL: string; model: string; envKey: string; reasoningEffort?: "none" | "low" | "medium" | "high"; hideReasoning?: boolean; nonEnglishModel?: string; nonEnglishOnly?: boolean }>,
     maxInputTokens: 6000,
     // Raised from 160 — real replies were measured well under the old cap
     // (150-260 chars, ~50-80 tokens) even for questions that should've

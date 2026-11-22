@@ -50,6 +50,7 @@ export const ENV_SPEC: EnvVar[] = [
   // ── Speech ──
   { name: "DEEPGRAM_API_KEY", level: "required", secret: true, source: "Deepgram Console → API Keys", purpose: "Live speech-to-text and text-to-speech on every call." },
   { name: "GNANI_API_KEY", level: "feature", secret: true, source: "Gnani / Vachana dashboard", purpose: "Indian-language speech, for agents whose speech provider is Gnani." },
+  { name: "GNANI_LLM_API_KEY", level: "feature", secret: true, source: "Gnani API dashboard (key with the LLM scope — early access)", purpose: "Optional Gnani Evon LLM, used as a fallback for Indian-language replies." },
   { name: "ELEVENLABS_API_KEY", level: "feature", secret: true, source: "ElevenLabs → Profile → API key", purpose: "Custom voice cloning." },
   // ── LLM ──
   { name: "GROQ_API_KEYS", level: "one-of:llm", secret: true, source: "Groq Console → API Keys (comma-separated for rotation)", purpose: "Primary LLM provider." },

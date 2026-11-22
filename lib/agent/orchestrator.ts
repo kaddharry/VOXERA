@@ -21,6 +21,7 @@ import type { Utterance, EmotionSignal, EmotionLabel, AcousticFeatures, PolicyDi
 import { embed } from "../util/embed";
 import { getInlineKnowledgeBase } from "../knowledge/inline";
 import { buildLLMContext } from "./context";
+import { parseGnaniPersona } from "../tts/gnani-voices";
 import { guardOutput, guardBeforeLLM, guardOpeningClause, cleanClause, guardTrailingClause, type GuardResult } from "./guard";
 import { guardInput, type InputGuardResult } from "./input-guard";
 import { generateReply } from "./llm";
@@ -611,6 +612,9 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     inlineKnowledgeBase: inlineKb ?? undefined,
     patientContext,
     language: input.language,
+    speakerGender: resolvedAgent?.voicePersona?.startsWith("gnani:")
+      ? parseGnaniPersona(resolvedAgent.voicePersona).gender
+      : undefined,
   });
 
   const llmStart = Date.now();
@@ -623,7 +627,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     // the network round trip entirely and speak the clarification directly,
     // matching what guardOutput's whole-text version would have replaced
     // the reply with anyway (see guard.ts's clause-safe helpers doc).
-    const beforeGate = guardBeforeLLM({ sttConfidence: sttConf, minStt: CONFIG.gates.minSttConfidence });
+    const beforeGate = guardBeforeLLM({ sttConfidence: sttConf, minStt: CONFIG.gates.minSttConfidence, language: input.language });
     if (beforeGate) {
       onReplyChunk(beforeGate.deflection);
       llmReply = { text: beforeGate.deflection, model: "none", usedLive: false };
