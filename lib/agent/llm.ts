@@ -6,6 +6,7 @@ import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";
 import { TOOLS, dispatchToolCall, getToolsForAgent } from "./tools";
 import { ClauseChunker } from "./clause-chunker";
+import { isReasoningClause, stripReasoningLeak, stripWrappingQuotes } from "./reply-hygiene";
 
 /**
  * One OpenAI-compatible client per (baseURL, key, timeout), reused across
@@ -73,20 +74,49 @@ function isEnglishLanguage(language: string | undefined): boolean {
  * in use. `onContentDelta` fires per raw text delta as it arrives — the
  * caller feeds it into a ClauseChunker to get sentence-level chunks instead
  * of raw token deltas. */
+const STREAM_IDLE_MS = 6_000;
+
 async function streamChatCompletion(
   openai: OpenAI,
   params: Record<string, unknown>,
   opts: { onContentDelta?: (delta: string) => void; signal?: AbortSignal }
 ): Promise<{ content: string; tool_calls?: any[] }> {
-  const stream = (await openai.chat.completions.create(
-    { ...params, stream: true } as any,
-    opts.signal ? { signal: opts.signal } : undefined
-  )) as unknown as AsyncIterable<any>;
+  // Stall watchdog (replaces a whole-turn timeout): abort only when the
+  // provider stops sending data for STREAM_IDLE_MS, never because a long but
+  // healthy reply is still streaming. The old behaviour raced the ENTIRE
+  // operation (full reply included) against 5s — a 4-sentence Hindi answer
+  // "timed out" while still streaming, a second completion started on the
+  // next key, and both wrote into the same clause chunker: live-observed as
+  // 6-8s turns, replies glued from two generations ("किसकौन से डॉक्टर…") and
+  // advice spoken twice.
+  const ac = new AbortController();
+  const onExternalAbort = () => ac.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) ac.abort();
+    else opts.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  let stalled = false;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      stalled = true;
+      ac.abort();
+    }, STREAM_IDLE_MS);
+  };
+  armIdle();
 
   let content = "";
   const toolCallsByIndex: Record<number, { id?: string; type?: string; function: { name?: string; arguments: string } }> = {};
 
+  try {
+  const stream = (await openai.chat.completions.create(
+    { ...params, stream: true } as any,
+    { signal: ac.signal }
+  )) as unknown as AsyncIterable<any>;
+
   for await (const chunk of stream) {
+    armIdle();
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) continue;
 
@@ -106,6 +136,16 @@ async function streamChatCompletion(
         if (tc.function?.arguments) toolCallsByIndex[idx].function.arguments += tc.function.arguments;
       }
     }
+  }
+
+  } catch (err) {
+    if (stalled && !opts.signal?.aborted) {
+      throw new Error(`Stream stalled — no data for ${STREAM_IDLE_MS}ms (timeout)`);
+    }
+    throw err;
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+    opts.signal?.removeEventListener("abort", onExternalAbort);
   }
 
   const toolCallsArr = Object.values(toolCallsByIndex);
@@ -180,7 +220,7 @@ export async function generateReply(args: {
   const streaming = !!args.onClause;
   // earlyFirstClause: start speaking at the first natural pause instead of
   // waiting for the whole first sentence — see ClauseChunker.
-  const clauseChunker = streaming ? new ClauseChunker({ earlyFirstClause: true }) : null;
+  let clauseChunker = streaming ? new ClauseChunker({ earlyFirstClause: true }) : null;
   // Accumulated raw text for onRawDelta — safe to keep scoped to the whole
   // call (not per-attempt): once anyClauseEmitted is true, the guard added
   // above prevents this function from ever reaching a second attempt at
@@ -214,7 +254,13 @@ export async function generateReply(args: {
   // should never be spoken regardless of which attempt produced it.
   const seenClauses = new Set<string>();
   const emitClauseOnce = (raw: string) => {
-    const cleaned = sanitizeReply(raw);
+    // Planning text the model leaked into its visible output must never be
+    // spoken (see reply-hygiene.ts) — dropped BEFORE it counts as "spoken".
+    if (isReasoningClause(raw)) {
+      console.warn(`[LLM] Dropped leaked reasoning clause: "${raw.slice(0, 80)}"`);
+      return;
+    }
+    const cleaned = stripWrappingQuotes(sanitizeReply(raw));
     const key = cleaned.toLowerCase();
     if (!cleaned || seenClauses.has(key)) return;
     seenClauses.add(key);
@@ -227,6 +273,7 @@ export async function generateReply(args: {
     // This is what lets the rotator remember which key already proved
     // exhausted (and for roughly how long) instead of re-probing every key
     // from index 0 again on every single turn.
+    if (provider.nonEnglishOnly && isEnglishLanguage(args.language)) continue;
     const rotator = getKeyRotator(provider.envKey);
     if (!rotator.getKey()) continue;
 
@@ -248,6 +295,12 @@ export async function generateReply(args: {
           throw new Error(`Provider "${provider.name}" cannot retry mid-turn — part of this reply was already spoken`);
         }
         const openai = getClient(apiKey, provider.baseURL, retryBudget[1]);
+        // A fresh attempt must start from a clean slate: a half-filled
+        // chunker buffer or raw text from an abandoned attempt would be
+        // glued onto this one's output. (Nothing was spoken yet — the
+        // anyClauseEmitted guard above already refuses a mid-turn retry.)
+        rawAccumulated = "";
+        if (streaming) clauseChunker = new ClauseChunker({ earlyFirstClause: true });
 
         const messages: any[] = [
           { role: "system", content: args.system },
@@ -269,11 +322,22 @@ export async function generateReply(args: {
         // above "none", is untouched) — this is strictly "give the model a
         // bit more room to get non-English generation right," not a general
         // reasoning-level override.
+        console.log(`[LLM] prompt ~${Math.round((args.system.length + args.user.length) / 3.2)} tokens (system ${args.system.length} + user ${args.user.length} chars), model=${!isEnglishLanguage(args.language) && provider.nonEnglishModel ? provider.nonEnglishModel : provider.model}`);
+        const modelForCall = !isEnglishLanguage(args.language) && provider.nonEnglishModel ? provider.nonEnglishModel : provider.model;
         const effectiveReasoningEffort =
-          provider.reasoningEffort === "none" && !isEnglishLanguage(args.language)
+          provider.reasoningEffort === "none" && !isEnglishLanguage(args.language) && provider.name !== "gnani-evon"
             ? "low"
             : provider.reasoningEffort;
-        const reasoningOpt = effectiveReasoningEffort ? { reasoning_effort: effectiveReasoningEffort } : {};
+        // `reasoning_format: "hidden"` keeps Groq from ever returning the
+        // model's reasoning in the visible message (live-reproduced: a Hindi
+        // turn SPOKE "The caller is confused ... The policy says ..."). Only
+        // sent when the provider opts in and reasoning is actually enabled.
+        const reasoningOpt = effectiveReasoningEffort
+          ? {
+              reasoning_effort: effectiveReasoningEffort,
+              ...(provider.hideReasoning && effectiveReasoningEffort !== "none" ? { reasoning_format: "hidden" } : {}),
+            }
+          : {};
 
         for (let i = 0; i < 3; i++) {
           // args.enabledTools undefined = legacy demo path, full
@@ -281,7 +345,7 @@ export async function generateReply(args: {
           // means a real Agent Builder agent, filtered to its own allowlist.
           const toolsForThisCall = args.enabledTools !== undefined ? getToolsForAgent(args.enabledTools) : TOOLS;
           const baseParams = {
-            model: provider.model,
+            model: modelForCall,
             messages,
             max_tokens: args.maxOutputTokens ?? CONFIG.llm.maxOutputTokens,
             ...(useTools && toolsForThisCall.length > 0 ? { tools: toolsForThisCall as any, tool_choice: "auto" as const } : {}),
@@ -367,7 +431,7 @@ export async function generateReply(args: {
         if (!finalResponseText.trim()) {
           console.warn(`[LLM] Tool-call loop exhausted without a final reply — forcing a text-only follow-up.`);
           const closingResp = await openai.chat.completions.create({
-            model: provider.model,
+            model: modelForCall,
             messages: [
               ...messages,
               { role: "user", content: "Reply to the caller now in one or two spoken sentences, summarizing what you just did. Do not call any more tools." },
@@ -402,10 +466,27 @@ export async function generateReply(args: {
           if (remainder) emitClauseOnce(remainder);
         }
 
-        return { text: sanitizeReply(finalResponseText), model: provider.model, usedLive: true, provider: provider.name };
-      }, ...retryBudget);
+        let finalText = sanitizeReply(finalResponseText);
+        // Everything the model wrote was planning text -> never go silent.
+        if (!finalText && !anyClauseEmitted) {
+          finalText = "माफ़ कीजिए, क्या आप एक बार फिर से बोल सकते हैं?";
+          if (!isEnglishLanguage(args.language)) {
+            if (streaming) emitClauseOnce(finalText);
+          } else {
+            finalText = "Sorry, could you say that one more time?";
+            if (streaming) emitClauseOnce(finalText);
+          }
+        }
+        return { text: finalText, model: modelForCall, usedLive: true, provider: provider.name };
+      },
+      retryBudget[0],
+      // Whole-operation ceiling. Streaming turns are protected by the stall
+      // watchdog + the client's own connect timeout instead of a 5s race.
+      streaming ? 30_000 : retryBudget[1],
+      retryBudget[2]);
 
       console.log(`[LLM] Success via provider: ${provider.name}`);
+      rotator.advanceKey();
       return result;
     } catch (err) {
       console.warn(`[LLM] Provider "${provider.name}" failed:`, err instanceof Error ? err.message : err);
@@ -450,7 +531,7 @@ export async function generateReply(args: {
  */
 export function sanitizeReply(text: string): string {
   return humanizeEscalationLanguage(
-    text
+    stripReasoningLeak(text)
       .replace(/<function[^>]*>[\s\S]*?<\/function>/gi, "")
       .replace(/<\/?function[^>]*>/gi, "")
       .replace(/[ \t]{2,}/g, " ")

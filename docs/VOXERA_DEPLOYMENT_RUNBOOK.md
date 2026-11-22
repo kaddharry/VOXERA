@@ -159,6 +159,7 @@ Do this before applying anything.
 | `CRON_SECRET` | **Required** | Yes | Generate: openssl rand -hex 32 | Production | Authenticates Vercel Cron calls to /api/cron/dispatch (refused in Production without it). |
 | `DEEPGRAM_API_KEY` | **Required** | Yes | Deepgram Console → API Keys | Production | Live speech-to-text and text-to-speech on every call. |
 | `GNANI_API_KEY` | If you use the feature | Yes | Gnani / Vachana dashboard | Production | Indian-language speech, for agents whose speech provider is Gnani. |
+| `GNANI_LLM_API_KEY` | If you use the feature | Yes | Gnani API dashboard (key with the LLM scope — early access) | Production | Optional Gnani Evon LLM, used as a fallback for Indian-language replies. |
 | `ELEVENLABS_API_KEY` | If you use the feature | Yes | ElevenLabs → Profile → API key | Production | Custom voice cloning. |
 | `GROQ_API_KEYS` | **Required: at least one of the two** | Yes | Groq Console → API Keys (comma-separated for rotation) | Production | Primary LLM provider. |
 | `GROQ_API_KEYS_2` | Optional | Yes | Keys from a second Groq account | Production, only if needed | Second Groq quota, tried before ZenMux. |

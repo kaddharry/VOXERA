@@ -76,6 +76,11 @@ export class TestAgentStreamHandler {
   private sessionId: string;
 
   private isBusy = false; // prevent overlapping turns while a reply is being generated
+  // Text of the turn currently being generated — lets a second transcript
+  // fragment that arrives while the agent is still thinking be merged into
+  // one sentence instead of being dropped (same fix as
+  // lib/telephony/stream-handler.ts's caller_turn_merged, BUG-E7).
+  private currentTurnText = "";
   // Tracks whether TTS audio is currently being sent — used by the
   // server-side RMS barge-in fallback below. Previously this path had no
   // server-side barge-in detection at all, relying entirely on the browser's
@@ -327,8 +332,23 @@ export class TestAgentStreamHandler {
   }
 
   private async onFinalTranscript(text: string): Promise<void> {
-    if (!text.trim() || this.isBusy) return;
+    if (!text.trim()) return;
+    if (this.isBusy) {
+      // Agent already talking: interruptions arrive via barge-in, which frees
+      // the turn before a transcript gets here.
+      if (this.isSpeaking || !this.currentTurnText) return;
+      // The caller paused mid-sentence and the STT finalized a fragment
+      // ("मुझे सिर में दर्द है।" … "क्या मुझे डॉक्टर से मिलना चाहिए?"). That
+      // used to be dropped, so the agent answered half a question. Cancel
+      // the half-built reply and answer the whole sentence.
+      console.log(`[TestAgentStream] Merging caller fragments: "${this.currentTurnText}" + "${text.trim()}"`);
+      text = `${this.currentTurnText} ${text.trim()}`;
+      this.generation++;
+      this.currentAbortController?.abort();
+      this.currentSpeakStream?.clear();
+    }
     this.isBusy = true;
+    this.currentTurnText = text;
     const myGeneration = this.generation;
     this.ws.send(JSON.stringify({ type: "turn_start" }));
 
@@ -480,10 +500,19 @@ export class TestAgentStreamHandler {
         );
       }
     } finally {
-      this.isSpeaking = false;
-      this.isBusy = false;
-      this.currentAbortController = null;
-      this.ws.send(JSON.stringify({ type: "turn_end" }));
+      // A superseded turn (barge-in, or merged into a longer sentence) must
+      // not reset state the turn that replaced it is now using.
+      if (myGeneration === this.generation) {
+        this.isSpeaking = false;
+        this.isBusy = false;
+        this.currentTurnText = "";
+        this.currentAbortController = null;
+        this.ws.send(JSON.stringify({ type: "turn_end" }));
+      } else if (!this.isBusy) {
+        // Superseded by a barge-in (which freed the turn), not by a merge: the
+        // client still needs turn_end to leave its "thinking" state.
+        this.ws.send(JSON.stringify({ type: "turn_end" }));
+      }
     }
   }
 

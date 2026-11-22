@@ -29,7 +29,7 @@ const ORIGINAL_ENV = { ...process.env };
 
 describe("CONFIG.llm.providers — explicit priority order", () => {
   it("tries Groq first (fastest/smallest-model provider), then a second Groq org, then ZenMux — no direct OpenAI", () => {
-    expect(CONFIG.llm.providers.map((p) => p.name)).toEqual(["groq", "groq-2", "zenmux"]);
+    expect(CONFIG.llm.providers.map((p) => p.name)).toEqual(["groq", "groq-2", "gnani-evon", "zenmux"]);
     expect(CONFIG.llm.providers.some((p) => p.baseURL.includes("api.openai.com") || p.envKey === "OPENAI_API_KEY")).toBe(false);
   });
 

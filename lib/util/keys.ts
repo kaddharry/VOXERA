@@ -113,6 +113,24 @@ export class KeyRotator {
   }
 
   /**
+   * Quietly moves to the next non-cooldown key (round-robin). Called after a
+   * SUCCESSFUL request so consecutive requests spread across every configured
+   * key instead of burning one key's per-minute token budget until it 429s —
+   * Groq's limit is 8000 tokens/minute per key, and one voice turn is a few
+   * thousand tokens. No-op with a single key.
+   */
+  public advanceKey(): void {
+    if (this.keys.length <= 1) return;
+    for (let i = 1; i <= this.keys.length; i++) {
+      const idx = (this.currentIndex + i) % this.keys.length;
+      if (!this.isOnCooldown(idx)) {
+        this.currentIndex = idx;
+        return;
+      }
+    }
+  }
+
+  /**
    * Marks the current key as exhausted/rate-limited and rotates to the next one.
    * Returns true if there are more keys to try, false if all keys have been exhausted.
    */
