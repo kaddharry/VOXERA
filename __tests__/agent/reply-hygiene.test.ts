@@ -80,3 +80,15 @@ describe("reply-hygiene: script guards", () => {
     expect(stripForeignScript("તાવ માટે આરામ કરો")).toBe("તાવ માટે આરામ કરો");
   });
 });
+
+describe("detectCallerLanguage: shared danda does not mean Hindi", () => {
+  it.each([
+    ["নমস্কার, আমি ভালো আছি।", "Bengali"],
+    ["નમસ્તે, હું ઠીક છું।", "Gujarati"],
+    ["ਮੈਂ ਠੀਕ ਹਾਂ।", "Punjabi"],
+    ["नमस्ते, मैं ठीक हूँ।", "Hindi"],
+    ["नमस्कार, मी ठीक आहे।", "Marathi"],
+  ])("%s -> %s", (text, lang) => {
+    expect(detectCallerLanguage(text)).toMatch(new RegExp(`^${lang}`));
+  });
+});
