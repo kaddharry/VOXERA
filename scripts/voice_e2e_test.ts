@@ -90,9 +90,9 @@ function summarize(evs: Ev[], speechEnd: number) {
 
 // ───────────── Language scenarios ─────────────
 const LANGS: { name: string; code: string; turns: string[] }[] = [
-  { name: "Hindi", code: "hi-IN", turns: ["नमस्ते, मैं ठीक हूँ।", "मुझे सिर में थोड़ा दर्द है, क्या मुझे डॉक्टर से मिलना चाहिए?"] },
-  { name: "English", code: "en-IN", turns: ["Hello, I'm doing fine, thank you.", "I want to book a follow up appointment for tomorrow morning."] },
-  { name: "Hinglish", code: "hi-en", turns: ["Hello, haan main theek hoon, bas thoda weak feel kar raha hoon.", "Mujhe agle hafte ka appointment chahiye, Monday ko possible hai?"] },
+  { name: "Hindi", code: "hi-IN", turns: ["नमस्ते, मैं ठीक हूँ।", "मुझे सिर में थोड़ा दर्द है, क्या मुझे डॉक्टर से मिलना चाहिए?", "कल सुबह दस बजे का अपॉइंटमेंट चाहिए।", "मेरा नाम राहुल शर्मा है।", "क्या आप दोबारा बता सकती हैं?", "धन्यवाद, अब मुझे जाना है।"] },
+  { name: "English", code: "en-IN", turns: ["Hello, I'm doing fine, thank you.", "I want to book a follow up appointment for tomorrow morning.", "Ten o'clock works for me.", "My name is Rahul Sharma.", "Sorry, could you repeat that?", "Thank you, that is all I needed."] },
+  { name: "Hinglish", code: "hi-en", turns: ["Hello, haan main theek hoon, bas thoda weak feel kar raha hoon.", "Mujhe agle hafte ka appointment chahiye, Monday ko possible hai?", "Subah 10 baje ka slot mil jayega kya?", "Mera naam Rahul Sharma hai.", "Aap dobara bata sakti hain?", "Thank you, bas itna hi chahiye tha."] },
   { name: "Tamil", code: "ta-IN", turns: ["வணக்கம், நான் நலமாக இருக்கிறேன்.", "எனக்கு கொஞ்சம் காய்ச்சல் இருக்கிறது, என்ன செய்யலாம்?"] },
   { name: "Telugu", code: "te-IN", turns: ["నమస్కారం, నేను బాగున్నాను.", "నాకు కొంచెం కడుపు నొప్పిగా ఉంది, నేను ఏమి చేయాలి?"] },
   { name: "Kannada", code: "kn-IN", turns: ["ನಮಸ್ಕಾರ, ನಾನು ಚೆನ್ನಾಗಿದ್ದೇನೆ.", "ನನಗೆ ಸ್ವಲ್ಪ ತಲೆನೋವು ಇದೆ, ಏನು ಮಾಡಬೇಕು?"] },
@@ -195,6 +195,8 @@ async function interactionSuite() {
   // 5. silence only -> no spurious reply
   {
     const s = new Session(); await s.open(); await s.waitFor(() => false, 5000);
+    // let the greeting finish first (no events for 2.5s) so only NEW events count
+    for (let i = 0; i < 20 && Date.now() - (s.events.at(-1)?.t ?? 0) < 2500; i++) await sleep(500);
     const m = s.mark(); await s.idleFor(8000);
     const replies = s.since(m).filter((e) => e.type === "reply_text" || e.type === "reply_audio_chunk").length;
     rec("8s of silence produces no reply", replies === 0, `${replies} unexpected reply events`);
