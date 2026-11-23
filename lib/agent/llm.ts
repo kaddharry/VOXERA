@@ -6,7 +6,7 @@ import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";
 import { TOOLS, dispatchToolCall, getToolsForAgent } from "./tools";
 import { ClauseChunker } from "./clause-chunker";
-import { isReasoningClause, isWrongIndicScript, stripForeignScript, stripReasoningLeak, stripWrappingQuotes } from "./reply-hygiene";
+import { isReasoningClause, isWrongIndicScript, matchSpeakerGender, stripForeignScript, stripReasoningLeak, stripWrappingQuotes } from "./reply-hygiene";
 
 /**
  * One OpenAI-compatible client per (baseURL, key, timeout), reused across
@@ -255,6 +255,7 @@ export async function generateReply(args: {
   const seenClauses = new Set<string>();
   // Language the context builder pinned for this turn ("CALLER LANGUAGE THIS TURN: Bengali (...)").
   const callerLang = /CALLER LANGUAGE THIS TURN:\s*([A-Za-z]+)/.exec(args.user)?.[1];
+  const speakerGender = /YOUR voice is (FEMALE|MALE)/.exec(args.system)?.[1]?.toLowerCase() as "female" | "male" | undefined;
   const emitClauseOnce = (raw: string) => {
     // A clause in the wrong Indic script (Bengali caller, Hindi reply). Before anything
     // is spoken, throw so the same turn is regenerated; once speech has started it
@@ -270,7 +271,7 @@ export async function generateReply(args: {
       console.warn(`[LLM] Dropped leaked reasoning clause: "${raw.slice(0, 80)}"`);
       return;
     }
-    const cleaned = stripWrappingQuotes(sanitizeReply(raw));
+    const cleaned = matchSpeakerGender(stripWrappingQuotes(sanitizeReply(raw)), speakerGender);
     const key = cleaned.toLowerCase();
     if (!cleaned || seenClauses.has(key)) return;
     seenClauses.add(key);
