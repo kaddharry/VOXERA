@@ -665,7 +665,7 @@ export async function generateReply(args: {
     }
   }
 
-  console.warn("[LLM] All providers exhausted. Using offline fallback.");
+  console.warn("[LLM] All providers exhausted (quota or outage). Speaking the honest technical-problem line.");
   const fallbackText = offlineFallback(args.user);
   // Every provider failed before speaking a single clause (anyClauseEmitted
   // is false here — if it were true we'd have thrown above instead of
@@ -718,27 +718,17 @@ function humanizeEscalationLanguage(text: string): string {
     .replace(/\bescalate(?:d)?\b/gi, "loop in someone from the team");
 }
 
-function offlineFallback(userBlock: string): string {
-  const turnMatch = userBlock.match(/USER:\s*(.+)/i);
-  const current = turnMatch?.[1] ?? userBlock;
-  const lc = current.toLowerCase();
-
-  if (/book|schedule|appointment/.test(lc)) {
-    console.log("[LLM] Offline fallback triggered mock tool invocation for check_availability & create_booking");
-    dispatchToolCall("check_availability", { date: "2026-10-10", time: "19:00" }, { clientId: "offline-test" }).then(() => {
-        dispatchToolCall("create_booking", { userId: "U-123", date: "2026-10-10", time: "19:00", partySize: 4 }, { clientId: "offline-test" });
-    });
-    return "Let me check our calendar for that time. Yes, we have a slot available. I've locked that in for you!";
-  }
-
-  if (/signal|dropp|outage|coverage/.test(lc)) {
-    return "I completely understand — losing signal when you're trying to work is genuinely frustrating. I can see this isn't the first time you've raised it. Let me connect you to a senior specialist who can look into the pattern on your line.";
-  }
-  if (/charge|bill|refund/.test(lc)) {
-    return "I hear you — an unexpected charge is upsetting. I don't want to guess at the details, so let me pull your most recent billing record and walk you through exactly what it is.";
-  }
-  if (/thank|great|love/.test(lc)) {
-    return "Thank you — I'm really glad that helped. Is there anything else I can take care of for you today?";
-  }
-  return "Thanks for letting me know. To make sure I help you correctly, could you tell me a little more about what you'd like me to do next?";
+/**
+ * The line spoken when EVERY model provider has failed (quota exhausted, outage). It must be honest: say there is
+ * a technical problem and ask the caller to try again. It used to be a leftover demo script that said "I've locked
+ * that in for you!" to anything mentioning booking (and wrote a fake reservation for a made-up user), invented
+ * telecom/billing replies, or pretended to understand with "tell me a little more". It never claims an action and
+ * never calls a tool, and it answers in the caller's own script.
+ */
+export function offlineFallback(userBlock: string): string {
+  const lastUser = [...userBlock.matchAll(/^USER:\s*(.*)$/gm)].pop()?.[1] ?? userBlock;
+  if (/[\u0900-\u097F]/.test(lastUser)) return "माफ़ कीजिए, मेरी तरफ़ से अभी थोड़ी तकनीकी दिक्कत है। क्या आप थोड़ी देर बाद, एक बार फिर से बोल सकते हैं?";
+  if (/[\u0A00-\u0A7F]/.test(lastUser)) return "ਮਾਫ਼ ਕਰਨਾ, ਮੇਰੇ ਪਾਸੇ ਹੁਣੇ ਥੋੜ੍ਹੀ ਤਕਨੀਕੀ ਦਿੱਕਤ ਹੈ। ਕੀ ਤੁਸੀਂ ਥੋੜ੍ਹੀ ਦੇਰ ਬਾਅਦ ਇੱਕ ਵਾਰ ਫਿਰ ਦੱਸ ਸਕਦੇ ਹੋ?";
+  if (/[\u0A80-\u0AFF]/.test(lastUser)) return "માફ કરશો, મારી બાજુએ હમણાં થોડી ટેકનિકલ તકલીફ છે. શું તમે થોડી વાર પછી ફરીથી કહી શકશો?";
+  return "I'm sorry, I'm having a technical problem on my side right now. Could you please say that again in a moment?";
 }
