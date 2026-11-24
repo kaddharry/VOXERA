@@ -425,12 +425,17 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
             .map((r: any) => ({ startsAt: r.starts_at, endsAt: r.ends_at })),
         });
         const nowMs = Date.now();
-        const open = slots.filter((s) => s.available && new Date(s.start).getTime() > nowMs);
+        const allOpen = slots.filter((s) => s.available && new Date(s.start).getTime() > nowMs);
+        // The model offers two or three; listing every slot of the day cost ~1.5k tokens per call and pushed
+        // requests over the per-minute token limit. Eight evenly spread slots are plenty.
+        const MAX_SLOTS = 8;
+        const open = allOpen.length <= MAX_SLOTS ? allOpen : Array.from({ length: MAX_SLOTS }, (_, i) => allOpen[Math.round((i * (allOpen.length - 1)) / (MAX_SLOTS - 1))]);
         result = JSON.stringify({
           provider: provider.name,
           date: args.date,
           timezone,
-          slots: open.map((s) => ({ start: s.start, end: s.end, label: formatSlotLabel(s.start, timezone) })),
+          slots: open.map((s) => ({ start: s.start, label: formatSlotLabel(s.start, timezone) })),
+          ...(allOpen.length > MAX_SLOTS ? { moreSlotsAvailable: true } : {}),
           ...(mine.length ? { alreadyBookedForThisPatient: mine, hint: "These are already booked for this patient — confirm them, never say they are unavailable." } : {}),
           note: open.length === 0 ? "No open slots that day — offer another date." : "Offer 2-3 of these; use the exact start value when booking.",
         });

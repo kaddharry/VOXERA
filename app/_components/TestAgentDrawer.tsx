@@ -99,11 +99,32 @@ interface TurnTimings {
   totalMs: number;
 }
 
+/** Real per-turn latency, measured on the server (ms). firstWordMs is what the caller waits for. */
+interface TurnLatency {
+  listenMs: number;
+  thinkMs?: number;
+  voiceMs?: number;
+  firstWordMs?: number;
+  replyMs: number;
+}
+
+/** "0:12.345" — time since the call started, to the millisecond. */
+function fmtCallTime(ms: number): string {
+  const t = Math.max(0, Math.round(ms));
+  const m = Math.floor(t / 60000);
+  const sec = Math.floor((t % 60000) / 1000);
+  return `${m}:${String(sec).padStart(2, "0")}.${String(t % 1000).padStart(3, "0")}`;
+}
+const fmtMs = (n: number | undefined) => (n === undefined ? "–" : `${Math.round(n).toLocaleString("en-US")} ms`);
+
 interface TranscriptTurn {
   id: string;
   role: "user" | "assistant";
   text: string;
   ts: number;
+  /** Milliseconds since the call started (for the timestamp shown on each message). */
+  callMs?: number;
+  latency?: TurnLatency;
   emotion?: string;
   diagnostics?: DiagnosticEmotionResult;
   cai?: { score: number; category: string };
@@ -437,6 +458,8 @@ export function TestAgentDrawer() {
   // Audio chunks received for the in-progress turn: if a reply finishes with none (the speech service failed), the
   // screen must not stay on "thinking" forever.
   const audioThisTurnRef = useRef(0);
+  const callStartAtRef = useRef(0);
+  const latencyByTurnRef = useRef(new Map<string, TurnLatency>());
   const active = useRef(false);
   const vad = useVoiceActivityDetection();
   // AudioWorkletNode.process() fires once per 128-sample render quantum —
@@ -639,6 +662,7 @@ export function TestAgentDrawer() {
 
   const startCall = useCallback(async () => {
     setError(null);
+    callStartAtRef.current = Date.now();
     if (!getMicSupport()) {
       setMicSupported(false);
       setError("Microphone requires HTTPS (or localhost) and a browser that supports getUserMedia.");
@@ -712,7 +736,7 @@ export function TestAgentDrawer() {
               break;
             case "transcript_final":
               setInterim("");
-              setTurns((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text: msg.text, ts: Date.now() }]);
+              setTurns((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text: msg.text, ts: Date.now(), callMs: Date.now() - callStartAtRef.current }]);
               break;
             case "turn_start":
               audioThisTurnRef.current = 0;
@@ -743,6 +767,8 @@ export function TestAgentDrawer() {
                   role: "assistant",
                   text: msg.text,
                   ts: Date.now(),
+                  callMs: Date.now() - callStartAtRef.current,
+                  latency: latencyByTurnRef.current.get(turnId) ?? msg.latency,
                   emotion: emotion?.label,
                   diagnostics,
                   cai: msg.trace?.cai ? { score: msg.trace.cai.score, category: msg.trace.cai.category } : undefined,
@@ -797,7 +823,16 @@ export function TestAgentDrawer() {
               source.buffer = buffer;
               source.connect(analyser);
 
-              const startAt = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+              // Jitter buffer: when a reply STARTS (or playback ran dry between chunks) begin 100 ms in the future
+              // instead of "now". Starting at currentTime meant the first chunk could be late for its own slot, so
+              // the first word crackled or was clipped. A 5 ms fade-in removes the click at the very start.
+              const startingFresh = nextPlayTimeRef.current <= ctx.currentTime + 0.005;
+              if (startingFresh) {
+                const fade = Math.min(sampleCount, Math.round(sampleRate * 0.005));
+                const ch = buffer.getChannelData(0);
+                for (let i = 0; i < fade; i++) ch[i] *= i / fade;
+              }
+              const startAt = Math.max(ctx.currentTime + (startingFresh ? 0.1 : 0), nextPlayTimeRef.current);
               source.start(startAt);
               nextPlayTimeRef.current = startAt + buffer.duration;
 
@@ -810,6 +845,13 @@ export function TestAgentDrawer() {
                   setStatus("listening");
                 }
               };
+              break;
+            }
+            case "latency": {
+              // First audio just left the server: the numbers for this turn are final. The reply's text bubble may not
+              // exist yet (audio often beats reply_text), so keep them for when it does.
+              latencyByTurnRef.current.set(msg.turnId, msg.latency);
+              setTurns((prev) => prev.map((t) => (t.id === msg.turnId ? { ...t, latency: msg.latency } : t)));
               break;
             }
             case "tts_error": {
@@ -1258,7 +1300,18 @@ export function TestAgentDrawer() {
                             } ${inspectable ? "cursor-pointer hover:border-[var(--console-violet)]/40" : "cursor-default"}`
                       }`}
                     >
+                      {t.callMs !== undefined && (
+                        <span className="text-[9.5px] font-mono tracking-wide text-[var(--console-text-dim)]">+{fmtCallTime(t.callMs)}</span>
+                      )}
                       {t.text}
+                      {t.role === "assistant" && t.latency && (
+                        <span
+                          title="Measured on the server: listen = you stopped talking → transcript; think = transcript → first sentence from the model; voice = first sentence → first audio; first word = you stopped talking → first audio"
+                          className={`text-[9.5px] font-mono tracking-wide ${(t.latency.firstWordMs ?? 0) > 2000 ? "text-amber-300" : "text-emerald-300"}`}
+                        >
+                          ⏱ first word {fmtMs(t.latency.firstWordMs)} · listen {fmtMs(t.latency.listenMs)} · think {fmtMs(t.latency.thinkMs)} · voice {fmtMs(t.latency.voiceMs)}
+                        </span>
+                      )}
                       {t.role === "assistant" && t.emotion && (
                         <span className="text-[9px] font-mono uppercase tracking-widest text-[var(--console-text-dim)] flex items-center gap-1">
                           responded to: {t.emotion}

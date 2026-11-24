@@ -11,7 +11,9 @@ import { parseGnaniPersona } from "../tts/gnani-voices";
 import type { LiveSttConnection, SpeakStreamHandle, SpeechProvider } from "../speech/types";
 import { extractAcousticFeatures, computeRmsEnergy, isolateLastUtterance } from "../audio/acoustic";
 import { int16ToFloat32Pcm } from "../emotion/local-audio-detect";
-import { learnFromCall } from "../learning";
+import { learnFromCall, getLearningContext } from "../learning";
+import { getAgentWithTenantCached, getPatientCallContextCached } from "../db/agent-cache";
+import { getInlineKnowledgeBase } from "../knowledge/inline";
 import { detectLanguageRequest } from "../agent/language-request";
 import { DEMO, ensureSeeded } from "../bootstrap";
 import { CONFIG } from "../config";
@@ -74,6 +76,8 @@ export class TestAgentStreamHandler {
   /** Language the caller explicitly asked for; pins the reply language and STT. */
   private languageLock: "english" | "hindi" | null = null;
   private loudChunkStreak = 0;
+  /** Server clock: the last audio chunk with real sound in it. */
+  private lastCallerSoundAt = 0;
   private ws: WebSocket;
   private agentId?: string;
   private clientId: string;
@@ -293,6 +297,16 @@ export class TestAgentStreamHandler {
       }
       this.greeting = agentInfo?.greeting ?? null;
 
+      // Warm the caches the FIRST turn would otherwise fetch cold (each is a round trip to the database, 200-500 ms):
+      // the agent, the patient's context, what was learned, and the knowledge base. All fire-and-forget and cached.
+      if (this.agentId && agentInfo) {
+        const tenantClientId = agentInfo.tenant_auth_user_id;
+        void getAgentWithTenantCached(supabase, this.agentId).catch(() => {});
+        if (this.patientId) void getPatientCallContextCached(supabase, this.patientId).catch(() => {});
+        void getLearningContext({ clientId: tenantClientId, agentId: this.agentId, patientId: this.patientId }).catch(() => {});
+        void getInlineKnowledgeBase(tenantClientId).catch(() => {});
+      }
+
       if (voiceSettings?.provider === "elevenlabs" && voiceSettings.voiceId) {
         // Neither streaming Speak WS (Deepgram or Gnani) covers a tenant's
         // custom cloned ElevenLabs voice — fall back to the original
@@ -338,6 +352,7 @@ export class TestAgentStreamHandler {
 
   private async onFinalTranscript(text: string): Promise<void> {
     if (!text.trim()) return;
+    const transcriptAt = Date.now();
     if (this.isBusy) {
       // Agent already talking: interruptions arrive via barge-in, which frees
       // the turn before a transcript gets here.
@@ -360,7 +375,18 @@ export class TestAgentStreamHandler {
     this.isBusy = true;
     this.currentTurnText = text;
     const myGeneration = this.generation;
-    this.ws.send(JSON.stringify({ type: "turn_start" }));
+    this.ws.send(JSON.stringify({ type: "turn_start", serverTs: transcriptAt }));
+    // Per-turn latency marks (server clock, ms): see the `latency` object sent with reply_text.
+    const marks: { firstClauseAt?: number; ttsSendAt?: number; firstAudioAt?: number } = {};
+    // when the caller actually stopped making sound (server clock) — the start of the clock for "time to first word"
+    const stoppedAt = this.lastCallerSoundAt && this.lastCallerSoundAt <= transcriptAt ? this.lastCallerSoundAt : transcriptAt;
+    const turnLatency = () => ({
+      listenMs: transcriptAt - stoppedAt,
+      thinkMs: marks.firstClauseAt ? marks.firstClauseAt - transcriptAt : undefined,
+      voiceMs: marks.firstAudioAt && marks.ttsSendAt ? marks.firstAudioAt - marks.ttsSendAt : undefined,
+      firstWordMs: marks.firstAudioAt ? marks.firstAudioAt - stoppedAt : undefined,
+      replyMs: Date.now() - transcriptAt,
+    });
 
     const turnPcm = Buffer.concat(this.turnAudioChunks);
     this.turnAudioChunks = [];
@@ -455,6 +481,14 @@ export class TestAgentStreamHandler {
       speakStream.setAudioHandler((audioChunk) => {
         if (myGeneration !== this.generation) return; // stale — dropped by barge-in
         this.isSpeaking = true;
+        if (!marks.firstAudioAt) {
+          marks.firstAudioAt = Date.now();
+          // The audio for a sentence usually lands AFTER the model has finished the whole reply, so the numbers
+          // are sent now, when the first sound really goes out, not with reply_text.
+          const L = turnLatency();
+          console.log(`[Latency] listen ${L.listenMs}ms · think ${L.thinkMs ?? "-"}ms · voice ${L.voiceMs ?? "-"}ms · FIRST WORD ${L.firstWordMs}ms`);
+          this.ws.send(JSON.stringify({ type: "latency", turnId: replyTurnId, latency: L }));
+        }
         this.ws.send(
           JSON.stringify({
             type: "reply_audio_chunk",
@@ -479,8 +513,10 @@ export class TestAgentStreamHandler {
         onReplyChunk: (clause) => {
           if (myGeneration !== this.generation) return; // stale — dropped by barge-in
           const shaped = prosodyParams ? applyEmotionProsody(clause, prosodyParams) : clause;
+          if (!marks.firstClauseAt) marks.firstClauseAt = Date.now();
           void speakStreamReady.then(() => {
             if (myGeneration !== this.generation) return;
+            if (!marks.ttsSendAt) marks.ttsSendAt = Date.now();
             speakStream.sendText(shaped);
             speakStream.flush();
           });
@@ -501,7 +537,12 @@ export class TestAgentStreamHandler {
       // synthesizing again here (unlike the pre-streaming version) — every
       // clause's audio (already prosody-shaped — see onReplyChunk above)
       // was sent as it was generated.
-      this.ws.send(JSON.stringify({ type: "reply_text", turnId: replyTurnId, text: output.reply, trace: output.trace }));
+      // listenMs = caller stopped talking -> final transcript (speech recognition + its end-of-speech wait)
+      // thinkMs  = transcript -> first sentence from the model     voiceMs = first sentence sent to TTS -> first audio
+      // firstWordMs = caller stopped talking -> first audio leaves the server: what the caller actually waits for
+      const latency = turnLatency();
+      if (!marks.firstAudioAt) console.log(`[Latency] listen ${latency.listenMs}ms · think ${latency.thinkMs ?? "-"}ms · reply complete ${latency.replyMs}ms (audio not out yet)`);
+      this.ws.send(JSON.stringify({ type: "reply_text", turnId: replyTurnId, text: output.reply, trace: output.trace, latency }));
     } catch (err) {
       if (myGeneration !== this.generation) {
         console.log(`[TestAgentStream] Turn cancelled by barge-in for ${this.sessionId}.`);
@@ -560,8 +601,11 @@ export class TestAgentStreamHandler {
       // of the agent's own voice, a keyboard tap) used to cut the agent off
       // mid-sentence. The client VAD is the primary signal; this is only a
       // backstop for sustained speech.
+      const chunkRms = computeRmsEnergy(message);
+      // when the caller last made real sound: the start of the clock for "how long until the agent speaks"
+      if (chunkRms > 400) this.lastCallerSoundAt = Date.now();
       if (this.isSpeaking) {
-        const rms = computeRmsEnergy(message);
+        const rms = chunkRms;
         if (rms > CONFIG.telephony.bargeInEnergyThreshold * 1.5) {
           this.loudChunkStreak++;
           if (this.loudChunkStreak >= 6) {
