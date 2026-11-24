@@ -3,7 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // A scriptable stand-in for the Gnani websocket.
 const sent: string[] = [];
 let scripted: Array<"ok" | "error"> = [];
-let emit: (msg: unknown) => void = () => {};
 vi.mock("ws", () => {
   class FakeWS {
     static OPEN = 1;
