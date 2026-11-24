@@ -7,9 +7,15 @@ export const LEARNING_LIMITS = {
   promoteAt: 2,
   /** Same-topic threshold for token overlap. */
   sameTopic: 0.6,
-  /** Embedding cosine at/above which two differently-worded statements mean the same thing. Measured with the local
-   * bge-small model: paraphrases scored 0.70-0.77, unrelated lessons <= 0.58. */
+  /** Embedding cosine at/above which two differently-worded statements are the same thing. Measured with the local
+   * bge-small model: paraphrases of one lesson scored 0.69-0.90, but lessons that are merely on the same TOPIC
+   * ("verify availability" vs "limit options to two") also reach 0.63-0.70, so the middle band is not decidable
+   * from the vector alone. */
   sameMeaning: 0.65,
+  /** Lessons: >= this is the same lesson outright; below `differentBelow` they are different; in between a
+   * yes/no judge decides whether they ask for the SAME behaviour. */
+  sameLessonAbove: 0.80,
+  differentBelow: 0.62,
   /** A re-worded fact below this overlap counts as a CHANGE, not a repeat. */
   sameValue: 0.8,
   maxPatientFacts: 40,
@@ -37,6 +43,8 @@ async function trim(store: LearningStore, rows: Learning[], max: number): Promis
 }
 
 export type Embedder = (text: string) => Promise<number[]>;
+/** Do these two instructions ask an agent for the same behaviour (not merely the same topic)? */
+export type LessonJudge = (a: string, b: string) => Promise<boolean>;
 
 function cosine(a: number[], b: number[]): number {
   let dot = 0, na = 0, nb = 0;
@@ -47,6 +55,8 @@ function cosine(a: number[], b: number[]): number {
 export async function applyExtraction(args: {
   /** Optional semantic matcher so reworded lessons still count as the same lesson. */
   embed?: Embedder;
+  /** Breaks ties in the embedding's gray band; without it the plain threshold is used. */
+  judge?: LessonJudge;
   store: LearningStore;
   clientId: string;
   agentId?: string | null;
@@ -63,11 +73,22 @@ export async function applyExtraction(args: {
     if (!vecs.has(t)) vecs.set(t, await args.embed(t).catch(() => null));
     return vecs.get(t)!;
   };
-  /** Same lesson? Token overlap OR close meaning (when an embedder is available). */
-  const sameLesson = async (a: Learning, b: { category: string; text: string }): Promise<boolean> => {
+  /** Same TOPIC (used to find the fact a new statement updates): token overlap or close embedding. */
+  const sameTopic = async (a: Learning, b: { category: string; text: string }): Promise<boolean> => {
     if (similarity(a.text, b.text) >= LEARNING_LIMITS.sameTopic) return true;
     const [va, vb] = [await vec(a.text), await vec(b.text)];
     return !!va && !!vb && cosine(va, vb) >= LEARNING_LIMITS.sameMeaning;
+  };
+  /** Same LESSON (agent/global): clear matches and clear misses come from the embedding; the gray band goes to the judge. */
+  const sameLesson = async (a: Learning, b: { category: string; text: string }): Promise<boolean> => {
+    if (similarity(a.text, b.text) >= LEARNING_LIMITS.sameTopic) return true;
+    const [va, vb] = [await vec(a.text), await vec(b.text)];
+    if (!va || !vb) return false;
+    const c = cosine(va, vb);
+    if (c >= LEARNING_LIMITS.sameLessonAbove) return true;
+    if (c < LEARNING_LIMITS.differentBelow) return false;
+    if (!args.judge) return c >= LEARNING_LIMITS.sameMeaning;
+    return args.judge(a.text, b.text).catch(() => false);
   };
   const findSame = async (pool: Learning[], b: { category: string; text: string }) => {
     for (const e of pool) if (await sameLesson(e, b)) return e;
@@ -81,7 +102,7 @@ export async function applyExtraction(args: {
     for (const fact of extraction.patientFacts) {
       let match = existing.find((e) => e.key === fact.key);
       if (!match) {
-        for (const e of existing) if (e.category === fact.category && (await sameLesson(e, fact))) { match = e; break; }
+        for (const e of existing) if (e.category === fact.category && (await sameTopic(e, fact))) { match = e; break; }
       }
       if (match) {
         if (match.sourceCallIds.includes(callId)) continue; // same call re-processed

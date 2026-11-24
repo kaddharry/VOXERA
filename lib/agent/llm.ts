@@ -157,6 +157,36 @@ async function streamChatCompletion(
   };
 }
 
+/** A tool call the model wrote as TEXT instead of really calling it, in any of the shapes seen live:
+ * "</tool_call>", "[Tool call: check_appointment_availability {providerId: ...}]", a bare function name with
+ * JSON-ish arguments. Spoken aloud it is nonsense, and nothing actually ran. */
+const TOOL_NAME_RE = /\b(check_appointment_availability|book_appointment|reschedule_appointment|cancel_appointment|confirm_appointment|check_availability|create_booking|modify_booking|cancel_booking)\b/i;
+export function looksLikeToolMarkup(text: string): boolean {
+  return /<\/?tool_call|<function=|\[TOOL_CALLS?\]|\[\s*tool[\s_-]?call\b|\btool[\s_-]?call\s*:/i.test(text) || TOOL_NAME_RE.test(text) || /\b(providerId|startsAt|durationMinutes|appointmentId)\s*:/i.test(text);
+}
+
+const MARKUP_START_RE = new RegExp(`\\[\\s*tool[\\s_-]?call\\b|${TOOL_NAME_RE.source}|\\b(?:providerId|startsAt|durationMinutes|appointmentId)\\s*:`, "i");
+
+/** Cuts a text-form tool call ("[Tool call: name {args}]", possibly split over several streamed clauses) out of
+ * a clause, keeping the real speech around it. `open` carries "we are inside one" into the next clause. */
+export function stripToolMarkup(raw: string, open: boolean): { text: string; open: boolean } {
+  let text = raw;
+  if (open) {
+    const close = /[\]}]+/.exec(text);
+    if (!close) return { text: "", open: true };
+    text = text.slice(close.index + close[0].length);
+  }
+  const start = text.search(MARKUP_START_RE);
+  if (start < 0) return { text, open: false };
+  const prefix = text.slice(0, start);
+  const rest = text.slice(start);
+  const closers = [...rest.matchAll(/[\]}]+/g)];
+  const last = closers[closers.length - 1];
+  if (!last) return { text: prefix, open: true };
+  const tail = stripToolMarkup(rest.slice(last.index! + last[0].length), false);
+  return { text: prefix + tail.text, open: tail.open };
+}
+
 const MUTATING_TOOLS = new Set(["book_appointment", "reschedule_appointment", "cancel_appointment", "confirm_appointment", "create_booking", "modify_booking", "cancel_booking"]);
 
 /** A short line spoken while a tool runs, so the caller never sits in silence
@@ -275,7 +305,17 @@ export async function generateReply(args: {
   // Language the context builder pinned for this turn ("CALLER LANGUAGE THIS TURN: Bengali (...)").
   const callerLang = /CALLER LANGUAGE THIS TURN:\s*([A-Za-z]+)/.exec(args.user)?.[1];
   const speakerGender = /YOUR voice is (FEMALE|MALE)/.exec(args.system)?.[1]?.toLowerCase() as "female" | "male" | undefined;
+  // While a text-form tool call is being streamed, every fragment of it (the chunker splits at commas)
+  // must be swallowed, up to and including its closing bracket. Real speech around it is kept.
+  let inToolMarkup = false;
   const emitClauseOnce = (raw: string, isFiller = false) => {
+    if (!isFiller) {
+      const stripped = stripToolMarkup(raw, inToolMarkup);
+      if (stripped.text !== raw) console.warn(`[LLM] Removed tool-call text that was about to be spoken: "${raw.slice(0, 70)}"`);
+      inToolMarkup = stripped.open;
+      raw = stripped.text;
+      if (!raw.trim()) return;
+    }
     // A clause in the wrong Indic script (Bengali caller, Hindi reply). Before anything
     // is spoken, throw so the same turn is regenerated; once speech has started it
     // cannot be retried, so just skip the clause.
@@ -473,7 +513,7 @@ export async function generateReply(args: {
 
           // The model sometimes writes a tool call as plain text ("</tool_call>") instead of really calling
           // it. Nothing runs, and the agent then talks as if it had. Push back once so the action happens.
-          if (useTools && toolsForThisCall.length > 0 && !toolNudged && /<\/?tool_call|<function=|\[TOOL_CALLS?\]/i.test(message.content || "")) {
+          if (useTools && toolsForThisCall.length > 0 && !toolNudged && looksLikeToolMarkup(message.content || "")) {
             toolNudged = true;
             console.warn("[LLM] Model wrote a tool call as text — asking it to make a real tool call.");
             messages.push({ role: "user", content: "That was tool-call text, not a real tool call, so nothing ran. Call the tool properly now (function calling), then tell the caller the result." });
@@ -601,6 +641,7 @@ export function sanitizeReply(text: string): string {
     stripForeignScript(stripReasoningLeak(text))
       .replace(/<tool_call[^>]*>[\s\S]*?<\/tool_call>/gi, "")
       .replace(/<function[^>]*>[\s\S]*?<\/function>/gi, "")
+      .replace(/\[\s*tool[\s_-]?call\b[^\]]*\]/gi, "")
       .replace(/<\/?tool_call[^>]*>|<\/?tool_response[^>]*>|\[TOOL_CALLS?\]/gi, "")
       .replace(/<\/?function[^>]*>/gi, "")
       .replace(/[ \t]{2,}/g, " ")
