@@ -3,6 +3,8 @@ import { parse } from "url";
 import type { Socket } from "net";
 import next from "next";
 import { WebSocketServer } from "ws";
+import { TestAgentStreamHandler } from "./lib/testagent/stream-handler";
+import { DEMO } from "./lib/bootstrap";
 import { TelephonyStreamHandler } from "./lib/telephony/stream-handler";
 import { warmupModels } from "./lib/warmup";
 import { startSchedulerPolling } from "./lib/scheduler/dispatcher";
@@ -57,6 +59,7 @@ const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
 const telephonyWss = new WebSocketServer({ noServer: true });
+const testAgentWss = new WebSocketServer({ noServer: true });
 
 app.prepare().then(() => {
   const server = createServer((req, res) => {
@@ -87,6 +90,18 @@ app.prepare().then(() => {
         console.log(`[TelephonyStream] New connection: callSid=${callSid}${agentId ? ` agentId=${agentId}` : ""}`);
         new TelephonyStreamHandler({ ws, callSid, clientId, callerNumber, agentId, patientId });
       });
+    } else if (pathname === "/api/test-agent/stream") {
+      // Admin "Live Test Call" drawer. Next's own dev/prod server can't
+      // upgrade a route-handler WebSocket (that only works on Vercel via
+      // upgradeWebSocket), so this host accepts it directly.
+      testAgentWss.handleUpgrade(req, socket, head, (ws) => {
+        new TestAgentStreamHandler({
+          ws,
+          agentId: query.agentId ? String(query.agentId) : undefined,
+          clientId: query.clientId ? String(query.clientId) : DEMO.clientId,
+          patientId: query.patientId ? String(query.patientId) : undefined,
+        });
+      });
     } else {
       nextUpgradeHandler(req, socket, head);
     }
@@ -104,7 +119,8 @@ app.prepare().then(() => {
   server.on = ((event: string, listener: (...args: any[]) => void) => {
     if (event !== "upgrade") return addListener(event, listener);
     return addListener(event, (req: IncomingMessage, socket: Socket, head: Buffer) => {
-      if (parse(req.url || "/").pathname !== "/api/telephony/stream") listener(req, socket, head);
+      const path = parse(req.url || "/").pathname;
+      if (path !== "/api/telephony/stream" && path !== "/api/test-agent/stream") listener(req, socket, head);
     });
   }) as typeof server.on;
 

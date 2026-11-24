@@ -35,6 +35,15 @@ function resolveRealtimeWsUrl(): string {
 
 type CallStatus = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "error";
 
+interface TestPatient {
+  id: string;
+  name: string;
+  phone: string;
+  condition: string | null;
+  riskLevel: string;
+  assignedAgentId: string | null;
+}
+
 interface Agent {
   id: string;
   name: string;
@@ -379,6 +388,12 @@ export function TestAgentDrawer() {
   const [emotionHistory, setEmotionHistory] = useState<EmotionHistoryPoint[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string>(""); // "" = demo agent
+  // Roster patient the test call simulates — gives the agent that patient's
+  // notes/history/appointments exactly like a real outbound call. "" = an
+  // anonymous caller (booking tools then refuse, as they would on a real
+  // call from an unknown number).
+  const [patients, setPatients] = useState<TestPatient[]>([]);
+  const [selectedPatientId, setSelectedPatientId] = useState<string>("");
   const [activeAgentName, setActiveAgentName] = useState<string | null>(null);
   const [showReasoning, setShowReasoning] = useState(true);
   /** Manual acoustic-engine calibration knob (-1..1, default 0) — see
@@ -448,6 +463,24 @@ export function TestAgentDrawer() {
       .then((data: { agents: Agent[] }) => setAgents(data.agents ?? []))
       .catch(() => {});
   }, [open, agents.length]);
+
+  // Roster for the patient picker. Needs an admin session, so on the public
+  // /demo page this just 401s and the picker stays hidden.
+  useEffect(() => {
+    if (!open || patients.length > 0) return;
+    fetch("/api/admin/patients")
+      .then((r) => (r.ok ? r.json() : { patients: [] }))
+      .then((data: { patients?: TestPatient[] }) => setPatients(data.patients ?? []))
+      .catch(() => {});
+  }, [open, patients.length]);
+
+  // Picking an agent preselects a patient assigned to it, so the common
+  // "test this agent calling its own patient" case is one click.
+  useEffect(() => {
+    if (!selectedAgentId) return;
+    const mine = patients.find((p) => p.assignedAgentId === selectedAgentId);
+    setSelectedPatientId((cur) => (cur && patients.find((p) => p.id === cur)?.assignedAgentId === selectedAgentId ? cur : mine?.id ?? cur));
+  }, [selectedAgentId, patients]);
 
   // Deep-link support: /demo?agentId=<id> (used by the "Test this agent"
   // button in /admin/agents) pre-selects that agent and opens the drawer
@@ -632,9 +665,11 @@ export function TestAgentDrawer() {
       const selectedAgent = agents.find((a) => a.id === selectedAgentId);
       const effectiveAgentId = selectedAgent?.id ?? (selectedAgentId || undefined);
       const wsBaseUrl = resolveRealtimeWsUrl();
-      const wsUrl = effectiveAgentId
-        ? `${wsBaseUrl}?agentId=${encodeURIComponent(effectiveAgentId)}`
-        : wsBaseUrl;
+      const wsParams = new URLSearchParams();
+      if (effectiveAgentId) wsParams.set("agentId", effectiveAgentId);
+      if (selectedPatientId) wsParams.set("patientId", selectedPatientId);
+      const wsQuery = wsParams.toString();
+      const wsUrl = wsQuery ? `${wsBaseUrl}?${wsQuery}` : wsBaseUrl;
       setActiveAgentName(selectedAgent?.name ?? null);
 
       const ws = new WebSocket(wsUrl);
@@ -649,7 +684,7 @@ export function TestAgentDrawer() {
       };
 
       ws.onerror = () => {
-        setError(`Couldn't reach the realtime voice server at ${wsBaseUrl}. Make sure it's running: npm run server`);
+        setError(`Couldn't reach the realtime voice server at ${wsBaseUrl}. Start the app with npm run dev (plain next dev can't accept WebSocket calls).`);
         setStatus("error");
         endCall();
       };
@@ -840,7 +875,7 @@ export function TestAgentDrawer() {
       setStatus("error");
       endCall();
     }
-  }, [endCall, startLevelLoop, vad, bargeIn, agents, selectedAgentId, sensitivityBias, micMuted]);
+  }, [endCall, startLevelLoop, vad, bargeIn, agents, selectedAgentId, selectedPatientId, sensitivityBias, micMuted]);
 
   const isLive = status !== "idle" && status !== "error";
 
@@ -955,7 +990,10 @@ export function TestAgentDrawer() {
         <div className="flex-none border-b border-[var(--console-border)] px-5 py-2 flex items-center gap-2 text-[11px]">
           <span className="font-mono uppercase tracking-widest text-[var(--console-text-dim)] flex-none">Testing:</span>
           {isLive ? (
-            <span className="font-semibold text-[var(--console-text)]">{activeAgentName ?? "Demo agent"}</span>
+            <span className="font-semibold text-[var(--console-text)]">
+              {activeAgentName ?? "Demo agent"}
+              {selectedPatientId && patients.find((p) => p.id === selectedPatientId) ? ` → ${patients.find((p) => p.id === selectedPatientId)!.name}` : ""}
+            </span>
           ) : (
             <div className="relative flex-1 min-w-0 max-w-[280px]">
               <select
@@ -972,6 +1010,26 @@ export function TestAgentDrawer() {
               </select>
               <ChevronDown className="w-3 h-3 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-[var(--console-text-dim)]" />
             </div>
+          )}
+          {!isLive && patients.length > 0 && (
+            <>
+              <span className="font-mono uppercase tracking-widest text-[var(--console-text-dim)] flex-none">Calling:</span>
+              <div className="relative flex-1 min-w-0 max-w-[280px]">
+                <select
+                  value={selectedPatientId}
+                  onChange={(e) => setSelectedPatientId(e.target.value)}
+                  className="w-full appearance-none bg-[var(--console-surface-raised)] border border-[var(--console-border)] rounded-lg px-2.5 py-1 pr-6 text-[11px] font-semibold text-[var(--console-text)] focus:outline-none focus:border-[var(--console-border-active)]"
+                >
+                  <option value="">Unknown caller (no patient)</option>
+                  {patients.map((p) => (
+                    <option key={p.id} value={p.id} className="bg-[var(--console-surface)] text-[var(--console-text)]">
+                      {p.name}{p.condition ? ` · ${p.condition}` : ""} · {p.riskLevel}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-3 h-3 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-[var(--console-text-dim)]" />
+              </div>
+            </>
           )}
           {agents.length === 0 && (
             <span className="text-[var(--console-text-dim)]">(no custom agents found — testing the demo agent)</span>

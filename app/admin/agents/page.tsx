@@ -172,7 +172,8 @@ export default function AgentBuilderPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           description: `Business/agent: ${draft.name}\nAgent role: ${draft.description || draft.name}`,
-          tone: draft.voice_persona,
+          tone: draft.voice_persona && !draft.voice_persona.includes(":") ? draft.voice_persona : undefined,
+          currentPrompt: draft.system_prompt?.trim() || undefined,
           language: draft.language ?? "en-IN",
           speechProvider: draft.speech_provider ?? (draft.language && draft.language !== "en-IN" ? "gnani" : "deepgram"),
           enabledTools: draft.enabledTools,

@@ -73,8 +73,16 @@ export function useVoiceActivityDetection() {
             resumeStream: async (s: MediaStream) => s,
           }
         : {}),
+      // minSpeechMs: a blip shorter than this (a click, a cough, speaker
+      // bleed) counts as a misfire instead of real speech.
+      minSpeechMs: 400,
       onSpeechStart: () => {
         setIsSpeaking(true);
+      },
+      // Fires only once the speech has lasted minSpeechMs. Barge-in hangs off
+      // this, not the raw onSpeechStart: reacting to the first frame cut the
+      // agent off mid-sentence on any noise or echo of its own voice.
+      onSpeechRealStart: () => {
         handlersRef.current.onSpeechStart?.();
       },
       onSpeechEnd: () => {

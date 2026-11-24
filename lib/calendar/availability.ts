@@ -81,7 +81,7 @@ export function computeDaySlots(args: {
  * imported) to keep this module dependency-free and usable from both the
  * API route and the agent tool handler without pulling in scheduler
  * internals. */
-function zonedDateTimeToUtc(dateKey: string, minuteOfDay: number, timezone: string): number {
+export function zonedDateTimeToUtc(dateKey: string, minuteOfDay: number, timezone: string): number {
   const [year, month, day] = dateKey.split("-").map(Number);
   const guessUtc = Date.UTC(year, month - 1, day, Math.floor(minuteOfDay / 60), minuteOfDay % 60);
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -98,4 +98,39 @@ function zonedDateTimeToUtc(dateKey: string, minuteOfDay: number, timezone: stri
   const asUtcIfLocal = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
   const offset = asUtcIfLocal - guessUtc;
   return guessUtc - offset;
+}
+
+/** Clinic default timezone — matches context.ts's todayLine(). */
+export const DEFAULT_CLINIC_TIMEZONE = "Asia/Kolkata";
+
+/** Parses an LLM-supplied ISO datetime. A string with an explicit offset/Z is
+ * taken as-is; a bare "2026-11-24T11:00" (what models usually emit) is read as
+ * wall-clock time in `timezone` instead of the server's timezone, which is what
+ * silently shifted bookings by hours. Returns null if unparseable. */
+export function parseStartsAt(input: string, timezone: string = DEFAULT_CLINIC_TIMEZONE): Date | null {
+  if (typeof input !== "string") return null;
+  const trimmed = input.trim();
+  if (/(Z|[+-]\d{2}:?\d{2})$/i.test(trimmed)) {
+    const d = new Date(trimmed);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const m = trimmed.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{1,2}):(\d{2})/);
+  if (!m) {
+    const d = new Date(trimmed);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return new Date(zonedDateTimeToUtc(m[1], Number(m[2]) * 60 + Number(m[3]), timezone));
+}
+
+/** "YYYY-MM-DD" of an instant as seen in `timezone`. */
+export function dateKeyInZone(d: Date, timezone: string = DEFAULT_CLINIC_TIMEZONE): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+}
+
+/** Human "Tue 24 Nov, 11:00 AM" in `timezone` — used in tool results so the
+ * model reads back times in the clinic's zone instead of raw UTC. */
+export function formatSlotLabel(iso: string, timezone: string = DEFAULT_CLINIC_TIMEZONE): string {
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone: timezone, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hour12: true,
+  }).format(new Date(iso));
 }

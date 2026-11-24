@@ -12,7 +12,7 @@ import {
   getAppointmentByIdUnscoped,
   rescheduleAppointment,
 } from "../db/appointments";
-import { computeDaySlots } from "../calendar/availability";
+import { computeDaySlots, parseStartsAt, dateKeyInZone, formatSlotLabel, DEFAULT_CLINIC_TIMEZONE } from "../calendar/availability";
 import { cancelAppointmentReminders, scheduleAppointmentReminders, triggerWaitlistBackfill } from "../scheduler/appointment-reminders";
 import { dispatchMCPTool, getMCPToolsForAgent } from "../mcp/client";
 import { dispatchCustomTool, getCustomToolsForAgent } from "../tools/custom";
@@ -115,7 +115,7 @@ export const APPOINTMENT_TOOLS: ToolDef[] = [
         properties: {
           providerId: { type: "string", description: "The provider's id" },
           date: { type: "string", description: "YYYY-MM-DD" },
-          timezone: { type: "string", description: "IANA timezone, e.g. Asia/Kolkata. Defaults to UTC." },
+          timezone: { type: "string", description: "IANA timezone. Defaults to Asia/Kolkata (the clinic's timezone) — usually omit." },
         },
         required: ["providerId", "date"],
       },
@@ -260,6 +260,49 @@ async function resolveVerifiedPatient(
   return { ok: true, patientId: data[0].id, doNotContact: data[0].doNotContact };
 }
 
+/** Verifies `startsAt` is a real open slot for the provider (working hours +
+ * existing bookings, clinic timezone). On failure returns nearby open slots so
+ * the agent can offer alternatives instead of guessing. */
+async function checkProviderSlot(
+  providerId: string,
+  startsAt: Date,
+): Promise<{ ok: true; providerName: string } | { ok: false; error: string; alternatives: { start: string; label: string }[] }> {
+  const provider = await getProviderById(supabaseService, providerId);
+  if (!provider) return { ok: false, error: "Unknown provider.", alternatives: [] };
+  const dateKey = dateKeyInZone(startsAt);
+  const dayStart = new Date(`${dateKey}T00:00:00Z`);
+  const { data: existingRows } = await supabaseService
+    .from("appointments")
+    .select("starts_at, ends_at, status")
+    .eq("provider_id", providerId)
+    .lt("starts_at", new Date(dayStart.getTime() + 48 * 3600_000).toISOString())
+    .gt("ends_at", new Date(dayStart.getTime() - 24 * 3600_000).toISOString());
+  const slots = computeDaySlots({
+    dateKey,
+    timezone: DEFAULT_CLINIC_TIMEZONE,
+    slotMinutes: provider.default_slot_minutes,
+    workingHours: provider.working_hours as any,
+    existingRanges: (existingRows ?? [])
+      .filter((r: any) => r.status !== "cancelled" && r.status !== "no_show")
+      .map((r: any) => ({ startsAt: r.starts_at, endsAt: r.ends_at })),
+  });
+  const target = slots.find((sl) => new Date(sl.start).getTime() === startsAt.getTime());
+  if (target?.available) return { ok: true, providerName: provider.name };
+  const now = Date.now();
+  const alternatives = slots
+    .filter((sl) => sl.available && new Date(sl.start).getTime() > now)
+    .sort((a, b) => Math.abs(new Date(a.start).getTime() - startsAt.getTime()) - Math.abs(new Date(b.start).getTime() - startsAt.getTime()))
+    .slice(0, 4)
+    .map((sl) => ({ start: sl.start, label: formatSlotLabel(sl.start) }));
+  return {
+    ok: false,
+    error: target
+      ? "That slot is already taken."
+      : `That time isn't on ${provider.name}'s schedule (slots are every ${provider.default_slot_minutes} minutes within working hours).`,
+    alternatives,
+  };
+}
+
 export async function dispatchToolCall(name: string, args: Record<string, any>, context: ToolCallContext): Promise<string> {
   const { clientId, sessionId, userId } = context;
   const loggedArguments = name.startsWith("mcp_") ? { redacted: true, keys: Object.keys(args).slice(0, 30) } : args;
@@ -359,7 +402,7 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
           result = JSON.stringify({ error: "Unknown provider." });
           break;
         }
-        const timezone = args.timezone || "UTC";
+        const timezone = args.timezone || DEFAULT_CLINIC_TIMEZONE;
         const dayStart = new Date(`${args.date}T00:00:00Z`);
         const { data: existingRows } = await supabaseService
           .from("appointments")
@@ -376,7 +419,15 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
             .filter((r: any) => r.status !== "cancelled" && r.status !== "no_show")
             .map((r: any) => ({ startsAt: r.starts_at, endsAt: r.ends_at })),
         });
-        result = JSON.stringify({ slots: slots.filter((s) => s.available).map((s) => ({ start: s.start, end: s.end })) });
+        const nowMs = Date.now();
+        const open = slots.filter((s) => s.available && new Date(s.start).getTime() > nowMs);
+        result = JSON.stringify({
+          provider: provider.name,
+          date: args.date,
+          timezone,
+          slots: open.map((s) => ({ start: s.start, end: s.end, label: formatSlotLabel(s.start, timezone) })),
+          note: open.length === 0 ? "No open slots that day — offer another date." : "Offer 2-3 of these; use the exact start value when booking.",
+        });
         break;
       }
 
@@ -395,8 +446,24 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
           result = JSON.stringify({ error: "Could not resolve the hospital's account — please try again later." });
           break;
         }
-        const startsAt = new Date(args.startsAt);
-        const endsAt = new Date(startsAt.getTime() + Number(args.durationMinutes) * 60_000);
+        const startsAt = parseStartsAt(args.startsAt);
+        if (!startsAt) {
+          result = JSON.stringify({ error: "startsAt must be an ISO 8601 datetime like 2026-11-24T11:00:00+05:30." });
+          break;
+        }
+        if (startsAt.getTime() < Date.now()) {
+          result = JSON.stringify({ error: "That time has already passed — ask the patient for a later time." });
+          break;
+        }
+        const durationMinutes = Number(args.durationMinutes) > 0 ? Number(args.durationMinutes) : 30;
+        const endsAt = new Date(startsAt.getTime() + durationMinutes * 60_000);
+        // Real-time slot check against the provider's working hours and existing
+        // bookings, so a free-hand time can't land outside the schedule.
+        const slotCheck = await checkProviderSlot(args.providerId, startsAt);
+        if (!slotCheck.ok) {
+          result = JSON.stringify({ error: slotCheck.error, availableSlots: slotCheck.alternatives });
+          break;
+        }
         try {
           const appointment = await bookAppointment(supabaseService, {
             tenantId,
@@ -413,9 +480,16 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
           await scheduleAppointmentReminders(supabaseService, appointment, tenantId).catch((err) =>
             console.error("[tools] scheduleAppointmentReminders failed:", err),
           );
-          result = JSON.stringify({ success: true, appointment });
+          result = JSON.stringify({
+            success: true,
+            appointmentId: appointment.id,
+            provider: slotCheck.providerName,
+            when: formatSlotLabel(appointment.starts_at),
+            appointment,
+          });
         } catch (err) {
-          result = JSON.stringify({ error: err instanceof AppointmentConflictError ? err.message : "Failed to book the appointment." });
+          const alts = err instanceof AppointmentConflictError ? await (async () => { const r = await checkProviderSlot(args.providerId, startsAt); return r.ok ? undefined : r.alternatives; })() : undefined;
+          result = JSON.stringify({ error: err instanceof AppointmentConflictError ? err.message : "Failed to book the appointment.", availableSlots: alts });
         }
         break;
       }
@@ -431,8 +505,17 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
           result = JSON.stringify({ error: "Could not find that appointment for this caller." });
           break;
         }
-        const newStartsAt = new Date(args.newStartsAt);
-        const newEndsAt = new Date(newStartsAt.getTime() + Number(args.newDurationMinutes) * 60_000);
+        const newStartsAt = parseStartsAt(args.newStartsAt);
+        if (!newStartsAt || newStartsAt.getTime() < Date.now()) {
+          result = JSON.stringify({ error: "newStartsAt must be a valid future ISO 8601 datetime." });
+          break;
+        }
+        const newEndsAt = new Date(newStartsAt.getTime() + (Number(args.newDurationMinutes) > 0 ? Number(args.newDurationMinutes) : 30) * 60_000);
+        const reslot = await checkProviderSlot(appointment.provider_id, newStartsAt);
+        if (!reslot.ok) {
+          result = JSON.stringify({ error: reslot.error, availableSlots: reslot.alternatives });
+          break;
+        }
         try {
           const updated = await rescheduleAppointment(supabaseService, args.appointmentId, clientId, newStartsAt.toISOString(), newEndsAt.toISOString());
           if (updated) {

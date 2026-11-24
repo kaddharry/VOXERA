@@ -74,6 +74,7 @@ export async function POST(request: NextRequest) {
       // off mid-sentence.
       maxOutputTokens: 800,
       useTools: false,
+      raw: true,
     });
 
     if (!reply.usedLive) {

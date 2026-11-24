@@ -171,6 +171,12 @@ export async function generateReply(args: {
    * latency/tokens) for one-off generation tasks like drafting a prompt,
    * as opposed to an actual live conversational turn. Defaults to true. */
   useTools?: boolean;
+  /** For non-spoken generation (JSON drafts, summaries, insights). Skips
+   * sanitizeReply, which is built for spoken lines: it drops lines that look
+   * like reasoning, strips foreign-script words and rewrites "escalate", and
+   * on a JSON reply that left fragments (the agent generator got back only its
+   * greeting field and reported "returned something unexpected"). */
+  raw?: boolean;
   /** An Agent Builder agent's tool allowlist (agents."enabledTools",
    * migration_v29.sql). When provided (even as []), the tool set offered to
    * the model is filtered down to exactly these names via getToolsForAgent
@@ -480,9 +486,11 @@ export async function generateReply(args: {
           if (remainder) emitClauseOnce(remainder);
         }
 
-        let finalText = sanitizeReply(finalResponseText);
+        let finalText = args.raw
+          ? finalResponseText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim()
+          : sanitizeReply(finalResponseText);
         // Everything the model wrote was planning text -> never go silent.
-        if (!finalText && !anyClauseEmitted) {
+        if (!finalText && !anyClauseEmitted && !args.raw) {
           finalText = "माफ़ कीजिए, क्या आप एक बार फिर से बोल सकते हैं?";
           if (!isEnglishLanguage(args.language)) {
             if (streaming) emitClauseOnce(finalText);
