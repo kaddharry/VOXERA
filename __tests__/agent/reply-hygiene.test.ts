@@ -49,7 +49,7 @@ describe("ClauseChunker: Devanagari danda ends a sentence", () => {
   });
 });
 
-import { detectCallerLanguage } from "../../lib/agent/context";
+import { todayLine, detectCallerLanguage } from "../../lib/agent/context";
 describe("detectCallerLanguage", () => {
   it.each([
     ["I want to book a follow up appointment for tomorrow morning.", "English"],
@@ -105,5 +105,14 @@ describe("matchSpeakerGender", () => {
     expect(matchSpeakerGender("आप जा रहे हैं, क्या आप आ सकते हैं?", "female")).toBe("आप जा रहे हैं, क्या आप आ सकते हैं?");
     expect(matchSpeakerGender("I am checking", "female")).toBe("I am checking");
     expect(matchSpeakerGender("समझ गया", undefined)).toBe("समझ गया");
+  });
+});
+
+describe("todayLine: the model is told the real date", () => {
+  it("formats weekday and date in the clinic timezone", () => {
+    expect(todayLine(new Date("2026-11-24T10:00:00Z"))).toBe("Tuesday, 24 November 2026");
+  });
+  it("rolls over at IST midnight, not UTC", () => {
+    expect(todayLine(new Date("2026-11-24T19:00:00Z"))).toBe("Wednesday, 25 November 2026");
   });
 });
