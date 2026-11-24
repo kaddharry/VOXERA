@@ -406,10 +406,15 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
         const dayStart = new Date(`${args.date}T00:00:00Z`);
         const { data: existingRows } = await supabaseService
           .from("appointments")
-          .select("starts_at, ends_at, status")
+          .select("starts_at, ends_at, status, patient_id")
           .eq("provider_id", args.providerId)
           .lt("starts_at", new Date(dayStart.getTime() + 48 * 3600_000).toISOString())
           .gt("ends_at", new Date(dayStart.getTime() - 24 * 3600_000).toISOString());
+        // Slots this same patient already holds: after a booking the slot disappears from the open list,
+        // and the model used to read that as "not available" and tell the patient their own slot was gone.
+        const mine = (existingRows ?? [])
+          .filter((r: any) => context.patientId && r.patient_id === context.patientId && r.status !== "cancelled" && r.status !== "no_show")
+          .map((r: any) => ({ start: r.starts_at, label: formatSlotLabel(r.starts_at, timezone) }));
         const slots = computeDaySlots({
           dateKey: args.date,
           timezone,
@@ -426,6 +431,7 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
           date: args.date,
           timezone,
           slots: open.map((s) => ({ start: s.start, end: s.end, label: formatSlotLabel(s.start, timezone) })),
+          ...(mine.length ? { alreadyBookedForThisPatient: mine, hint: "These are already booked for this patient — confirm them, never say they are unavailable." } : {}),
           note: open.length === 0 ? "No open slots that day — offer another date." : "Offer 2-3 of these; use the exact start value when booking.",
         });
         break;
@@ -457,6 +463,30 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
         }
         const durationMinutes = Number(args.durationMinutes) > 0 ? Number(args.durationMinutes) : 30;
         const endsAt = new Date(startsAt.getTime() + durationMinutes * 60_000);
+        // Idempotent: if this patient already holds exactly this slot (the model re-called the tool, or the first
+        // call succeeded but the reply was lost), report success instead of "slot taken" against their own booking.
+        {
+          const { data: dup } = await supabaseService
+            .from("appointments")
+            .select("id, starts_at")
+            .eq("provider_id", args.providerId)
+            .eq("patient_id", verified.patientId)
+            .eq("starts_at", startsAt.toISOString())
+            .not("status", "in", "(cancelled,no_show)")
+            .limit(1);
+          if (dup && dup.length > 0) {
+            const prov = await getProviderById(supabaseService, args.providerId);
+            result = JSON.stringify({
+              success: true,
+              alreadyBooked: true,
+              appointmentId: dup[0].id,
+              provider: prov?.name,
+              when: formatSlotLabel(dup[0].starts_at),
+              message: "This appointment is booked. Confirm doctor, day and time to the patient now. Do not call more tools.",
+            });
+            break;
+          }
+        }
         // Real-time slot check against the provider's working hours and existing
         // bookings, so a free-hand time can't land outside the schedule.
         const slotCheck = await checkProviderSlot(args.providerId, startsAt);
@@ -485,6 +515,7 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
             appointmentId: appointment.id,
             provider: slotCheck.providerName,
             when: formatSlotLabel(appointment.starts_at),
+            message: "Booked and confirmed in the system. Tell the patient the doctor, day and time now. Do not call more tools.",
             appointment,
           });
         } catch (err) {

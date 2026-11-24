@@ -1,5 +1,6 @@
 import WebSocket from "ws";
-import type { GnaniLanguage } from "./gnani";
+import { callGnaniTTS, type GnaniLanguage } from "./gnani";
+import { isLatinText, synthesizeDeepgramRaw } from "./deepgram-fallback";
 import type { GnaniModel } from "./gnani-voices";
 
 const GNANI_TTS_WS_URL = "wss://api.vachana.ai/api/v1/tts";
@@ -49,12 +50,21 @@ export class GnaniSpeakStream {
   /** True while a synthesis request has been sent but no complete/error has
    * arrived yet — Gnani's protocol only allows one in-flight request. */
   private busy = false;
-  /** Text queued because sendText() was called while busy. Only the latest
-   * call matters for our use (one clause at a time, same as the Deepgram
-   * path's actual call pattern in stream-handler.ts) — queuing an array
-   * would let a slow clause pile up several more behind it, which would
-   * make barge-in latency worse, not better. */
-  private queuedText: string | null = null;
+  /** Clauses waiting for the in-flight request to finish, in order. This used
+   * to be a single slot that each new clause OVERWROTE, so when the LLM
+   * produced clauses faster than Gnani synthesized them the middle ones were
+   * silently dropped and the agent spoke only part of its reply. Barge-in
+   * (clear()) still empties it, so interruptions stay instant. */
+  private queue: string[] = [];
+  /** The request currently being synthesized, for retry. */
+  private current: { text: string; attempts: number; bytes: number } | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Gnani's synthesis endpoint intermittently answers "We are facing
+   * technical difficulties" (measured: the same text fails and succeeds at
+   * random). A failed clause used to be dropped, leaving a hole in the
+   * reply, so each is retried before giving up. */
+  private static readonly MAX_ATTEMPTS = 3;
+  private static readonly RETRY_DELAYS_MS = [150, 400];
   /** Safety net: if the server's "complete"/"error" for an in-flight
    * request is ever lost (dropped by the network, or arrives as a frame
    * that doesn't parse as JSON and hits connect()'s catch) `busy` would
@@ -121,19 +131,21 @@ export class GnaniSpeakStream {
     switch (msg.type) {
       case "audio": {
         const data = msg.data as { audio?: string } | undefined;
-        if (data?.audio) this.onAudioChunk(Buffer.from(data.audio, "base64"));
+        if (data?.audio) {
+          const chunk = Buffer.from(data.audio, "base64");
+          if (this.current) this.current.bytes += chunk.length;
+          this.onAudioChunk(chunk);
+        }
         break;
       }
       case "complete":
         this.clearCompleteFallback();
-        this.busy = false;
-        this.sendQueuedIfAny();
+        this.finishCurrent();
         break;
       case "error":
         console.warn("[Gnani Speak] Server error:", msg.message);
         this.clearCompleteFallback();
-        this.busy = false;
-        this.sendQueuedIfAny();
+        this.handleFailure();
         break;
       // "start" — informational, no-op.
     }
@@ -151,16 +163,80 @@ export class GnaniSpeakStream {
   private forceComplete(): void {
     console.warn(`[Gnani Speak] No complete/error received within ${GnaniSpeakStream.COMPLETE_FALLBACK_MS}ms — forcing the stream unstuck instead of muting the rest of the call.`);
     this.completeFallbackTimer = null;
+    this.finishCurrent();
+  }
+
+  /** The in-flight request finished (or was given up on): move to the next clause. */
+  private finishCurrent(): void {
+    this.current = null;
     this.busy = false;
     this.sendQueuedIfAny();
   }
 
   private sendQueuedIfAny(): void {
-    if (this.queuedText !== null) {
-      const text = this.queuedText;
-      this.queuedText = null;
-      this.sendRequest(text);
+    const next = this.queue.shift();
+    if (next !== undefined) this.start(next);
+  }
+
+  private start(text: string): void {
+    this.current = { text, attempts: 1, bytes: 0 };
+    this.sendRequest(text);
+  }
+
+  /** A synthesis request failed. Retry it (only when nothing of it was played
+   * yet, so a retry can never repeat half a sentence); after the last attempt
+   * try Gnani's REST endpoint once, then move on rather than stall the call. */
+  private handleFailure(): void {
+    const cur = this.current;
+    if (!cur || this.closed) return this.finishCurrent();
+    if (cur.bytes === 0 && cur.attempts < GnaniSpeakStream.MAX_ATTEMPTS) {
+      const delay = GnaniSpeakStream.RETRY_DELAYS_MS[cur.attempts - 1] ?? 400;
+      cur.attempts++;
+      this.busy = true;
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        if (this.closed || this.current !== cur) return; // barge-in cleared it meanwhile
+        this.sendRequest(cur.text);
+      }, delay);
+      return;
     }
+    if (cur.bytes === 0) {
+      this.busy = true;
+      void this.restFallback(cur);
+      return;
+    }
+    console.warn("[Gnani Speak] Gave up mid-sentence after partial audio.");
+    this.finishCurrent();
+  }
+
+  private async restFallback(cur: { text: string; attempts: number; bytes: number }): Promise<void> {
+    try {
+      const audio = await callGnaniTTS({
+        text: cur.text,
+        voice: this.opts.voice,
+        model: this.opts.model,
+        language: this.opts.language,
+        speed: this.opts.speed,
+        audioConfig: { sample_rate: this.opts.sampleRate, num_channels: 1, sample_width: 2, encoding: "linear_pcm", container: "raw" },
+      });
+      if (!this.closed && this.current === cur && audio.length > 0) {
+        this.onAudioChunk(audio);
+        return this.finishCurrent();
+      }
+    } catch (err) {
+      console.warn("[Gnani Speak] REST fallback failed too:", err instanceof Error ? err.message : err);
+    }
+    // Gnani is down. English clauses can still be voiced by Deepgram (a different voice beats a hole in the reply).
+    if (this.current === cur && !this.closed && isLatinText(cur.text)) {
+      try {
+        const audio = await synthesizeDeepgramRaw(cur.text, this.opts.sampleRate);
+        if (!this.closed && this.current === cur && audio.length > 0) this.onAudioChunk(audio);
+        console.warn("[Gnani Speak] Voiced one clause with the Deepgram fallback.");
+      } catch (err) {
+        console.warn("[Gnani Speak] Deepgram fallback failed too — skipping this clause:", err instanceof Error ? err.message : err);
+      }
+    }
+    if (this.current === cur) this.finishCurrent();
   }
 
   private sendRequest(text: string): void {
@@ -194,8 +270,8 @@ export class GnaniSpeakStream {
    * `sendText(); flush();` call pattern works unchanged for both providers.
    *
    * If a request is already in flight (no complete/error yet — Gnani's
-   * protocol doesn't support more than one at a time), the new text replaces
-   * whatever was queued and is sent as soon as the current one finishes.
+   * protocol doesn't support more than one at a time), the new text is queued
+   * (in order, nothing is overwritten) and sent as soon as the current one finishes.
    * This is the real latency cost of Gnani's protocol vs Deepgram's
    * Flush/Clear model: on barge-in, a new reply's first clause may have to
    * wait out the tail of a request that was already in flight when the
@@ -207,10 +283,10 @@ export class GnaniSpeakStream {
    */
   public sendText(text: string): void {
     if (this.busy) {
-      this.queuedText = text;
+      this.queue.push(text);
       return;
     }
-    this.sendRequest(text);
+    this.start(text);
   }
 
   /** No-op — see sendText()'s doc comment. Kept for interface parity with DeepgramSpeakStream. */
@@ -225,13 +301,23 @@ export class GnaniSpeakStream {
    * check (set BEFORE calling clear()) already discards it before relaying
    * to Twilio — see this class's header comment. */
   public clear(): void {
-    this.queuedText = null;
+    this.queue = [];
+    // A request waiting to be retried is part of the reply being interrupted.
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.current = null;
+      this.clearCompleteFallback();
+      this.busy = false;
+    }
   }
 
   public close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.queuedText = null;
+    this.queue = [];
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.clearCompleteFallback();
     if (this.ws) {
       try {

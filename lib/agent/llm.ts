@@ -79,7 +79,7 @@ const STREAM_IDLE_MS = 6_000;
 async function streamChatCompletion(
   openai: OpenAI,
   params: Record<string, unknown>,
-  opts: { onContentDelta?: (delta: string) => void; signal?: AbortSignal }
+  opts: { onContentDelta?: (delta: string) => void; signal?: AbortSignal; idleMs?: number }
 ): Promise<{ content: string; tool_calls?: any[] }> {
   // Stall watchdog (replaces a whole-turn timeout): abort only when the
   // provider stops sending data for STREAM_IDLE_MS, never because a long but
@@ -102,7 +102,7 @@ async function streamChatCompletion(
     idleTimer = setTimeout(() => {
       stalled = true;
       ac.abort();
-    }, STREAM_IDLE_MS);
+    }, opts.idleMs ?? STREAM_IDLE_MS);
   };
   armIdle();
 
@@ -140,7 +140,7 @@ async function streamChatCompletion(
 
   } catch (err) {
     if (stalled && !opts.signal?.aborted) {
-      throw new Error(`Stream stalled — no data for ${STREAM_IDLE_MS}ms (timeout)`);
+      throw new Error(`Stream stalled — no data for ${opts.idleMs ?? STREAM_IDLE_MS}ms (timeout)`);
     }
     throw err;
   } finally {
@@ -155,6 +155,19 @@ async function streamChatCompletion(
       ? toolCallsArr.map((tc, i) => ({ id: tc.id ?? `call_${i}`, type: "function", function: { name: tc.function.name ?? "", arguments: tc.function.arguments } }))
       : undefined,
   };
+}
+
+const MUTATING_TOOLS = new Set(["book_appointment", "reschedule_appointment", "cancel_appointment", "confirm_appointment", "create_booking", "modify_booking", "cancel_booking"]);
+
+/** A short line spoken while a tool runs, so the caller never sits in silence
+ * (a booking takes several seconds: model -> tool -> model). Written in the
+ * caller's own script, and in neutral forms (no gendered verbs). */
+export function toolFillerPhrase(toolName: string, callerText: string): string {
+  const booking = /book|create|reschedule|modify|cancel|confirm/.test(toolName);
+  if (/[\u0900-\u097F]/.test(callerText)) return booking ? "ठीक है, एक पल, इसे अभी बुक करते हैं।" : "एक पल, कैलेंडर देखते हैं।";
+  if (/[\u0A00-\u0A7F]/.test(callerText)) return booking ? "ਠੀਕ ਹੈ, ਇੱਕ ਪਲ, ਹੁਣੇ ਬੁੱਕ ਕਰਦੇ ਹਾਂ।" : "ਇੱਕ ਪਲ, ਕੈਲੰਡਰ ਵੇਖਦੇ ਹਾਂ।";
+  if (/[\u0A80-\u0AFF]/.test(callerText)) return booking ? "ઠીક છે, એક પળ, હમણાં બુક કરીએ છીએ." : "એક પળ, કેલેન્ડર જોઈએ છીએ.";
+  return booking ? "Sure, one moment while I book that for you." : "One moment, let me check the calendar.";
 }
 
 export async function generateReply(args: {
@@ -262,7 +275,7 @@ export async function generateReply(args: {
   // Language the context builder pinned for this turn ("CALLER LANGUAGE THIS TURN: Bengali (...)").
   const callerLang = /CALLER LANGUAGE THIS TURN:\s*([A-Za-z]+)/.exec(args.user)?.[1];
   const speakerGender = /YOUR voice is (FEMALE|MALE)/.exec(args.system)?.[1]?.toLowerCase() as "female" | "male" | undefined;
-  const emitClauseOnce = (raw: string) => {
+  const emitClauseOnce = (raw: string, isFiller = false) => {
     // A clause in the wrong Indic script (Bengali caller, Hindi reply). Before anything
     // is spoken, throw so the same turn is regenerated; once speech has started it
     // cannot be retried, so just skip the clause.
@@ -281,7 +294,8 @@ export async function generateReply(args: {
     const key = cleaned.toLowerCase();
     if (!cleaned || seenClauses.has(key)) return;
     seenClauses.add(key);
-    anyClauseEmitted = true;
+    // A filler ("one moment…") is not the reply: it must not block a retry of the real reply.
+    if (!isFiller) anyClauseEmitted = true;
     args.onClause!(cleaned);
   };
 
@@ -339,10 +353,15 @@ export async function generateReply(args: {
         // above "none", is untouched) — this is strictly "give the model a
         // bit more room to get non-English generation right," not a general
         // reasoning-level override.
-        console.log(`[LLM] prompt ~${Math.round((args.system.length + args.user.length) / 3.2)} tokens (system ${args.system.length} + user ${args.user.length} chars), model=${!isEnglishLanguage(args.language) && provider.nonEnglishModel ? provider.nonEnglishModel : provider.model}`);
-        const modelForCall = !isEnglishLanguage(args.language) && provider.nonEnglishModel ? provider.nonEnglishModel : provider.model;
+        // Agents that have real actions (booking etc.) get the stronger model even for English: the
+        // fast English model (reasoning "none") talked about booking but never called the tool, then
+        // confirmed a booking that did not exist. A correct action matters more than ~1s of latency.
+        const toolAgent = useTools && (args.enabledTools?.length ?? 0) > 0;
+        const strongModel = (!isEnglishLanguage(args.language) || toolAgent) && !!provider.nonEnglishModel;
+        const modelForCall = strongModel ? provider.nonEnglishModel! : provider.model;
+        console.log(`[LLM] prompt ~${Math.round((args.system.length + args.user.length) / 3.2)} tokens (system ${args.system.length} + user ${args.user.length} chars), model=${modelForCall}${toolAgent ? " (tools)" : ""}`);
         const effectiveReasoningEffort =
-          provider.reasoningEffort === "none" && !isEnglishLanguage(args.language) && provider.name !== "gnani-evon"
+          provider.reasoningEffort === "none" && (!isEnglishLanguage(args.language) || toolAgent) && provider.name !== "gnani-evon"
             ? "low"
             : provider.reasoningEffort;
         // `reasoning_format: "hidden"` keeps Groq from ever returning the
@@ -356,11 +375,18 @@ export async function generateReply(args: {
             }
           : {};
 
+        // After a booking/cancel/reschedule succeeds, no more tools this turn: the model has
+        // to tell the patient. Left free, it re-checked the calendar, saw its own booking
+        // had taken the slot, and told the patient the slot "isn't available".
+        let toolsLocked = false;
+        let toolNudged = false;
         for (let i = 0; i < 3; i++) {
           // args.enabledTools undefined = legacy demo path, full
           // RESERVATION_TOOLS (unchanged behavior); an array (even empty)
           // means a real Agent Builder agent, filtered to its own allowlist.
-          const toolsForThisCall = args.enabledTools !== undefined ? await getToolsForAgentWithMCP(args.enabledTools, args.clientId) : TOOLS;
+          const toolsForThisCall = toolsLocked
+            ? []
+            : args.enabledTools !== undefined ? await getToolsForAgentWithMCP(args.enabledTools, args.clientId) : TOOLS;
           const baseParams = {
             model: modelForCall,
             messages,
@@ -373,6 +399,9 @@ export async function generateReply(args: {
           if (streaming) {
             const streamed = await streamChatCompletion(openai, baseParams, {
               signal: args.abortSignal,
+              // The reasoning model thinks for several seconds after a tool result before its first
+              // token; the default 6s watchdog killed those turns (the agent went silent on bookings).
+              idleMs: toolAgent ? 20_000 : undefined,
               onContentDelta: (delta) => {
                 rawAccumulated += delta;
                 args.onRawDelta?.(rawAccumulated);
@@ -402,6 +431,13 @@ export async function generateReply(args: {
           messages.push(message);
 
           if (message.tool_calls && message.tool_calls.length > 0) {
+            // Speak while the tool runs instead of going silent (live call: the agent sat in
+            // "thinking" for several seconds around every booking).
+            if (streaming && !anyClauseEmitted) {
+              const firstTool = message.tool_calls.find((t: any) => t.type === "function")?.function?.name ?? "";
+              const callerText = (args.user.match(/USER:\s*([\s\S]*)$/)?.[1] ?? args.user).slice(-400);
+              emitClauseOnce(toolFillerPhrase(firstTool, callerText), true);
+            }
             for (const toolCall of message.tool_calls) {
               if (toolCall.type !== "function") continue;
 
@@ -424,6 +460,7 @@ export async function generateReply(args: {
                 callerNumber: args.callerNumber,
               });
 
+              if (MUTATING_TOOLS.has(name) && /"success"\s*:\s*true/.test(resultStr)) toolsLocked = true;
               messages.push({
                 role: "tool",
                 tool_call_id: toolCall.id,
@@ -434,6 +471,14 @@ export async function generateReply(args: {
             continue;
           }
 
+          // The model sometimes writes a tool call as plain text ("</tool_call>") instead of really calling
+          // it. Nothing runs, and the agent then talks as if it had. Push back once so the action happens.
+          if (useTools && toolsForThisCall.length > 0 && !toolNudged && /<\/?tool_call|<function=|\[TOOL_CALLS?\]/i.test(message.content || "")) {
+            toolNudged = true;
+            console.warn("[LLM] Model wrote a tool call as text — asking it to make a real tool call.");
+            messages.push({ role: "user", content: "That was tool-call text, not a real tool call, so nothing ran. Call the tool properly now (function calling), then tell the caller the result." });
+            continue;
+          }
           finalResponseText = message.content || "";
           break;
         }
@@ -554,7 +599,9 @@ export async function generateReply(args: {
 export function sanitizeReply(text: string): string {
   return humanizeEscalationLanguage(
     stripForeignScript(stripReasoningLeak(text))
+      .replace(/<tool_call[^>]*>[\s\S]*?<\/tool_call>/gi, "")
       .replace(/<function[^>]*>[\s\S]*?<\/function>/gi, "")
+      .replace(/<\/?tool_call[^>]*>|<\/?tool_response[^>]*>|\[TOOL_CALLS?\]/gi, "")
       .replace(/<\/?function[^>]*>/gi, "")
       .replace(/[ \t]{2,}/g, " ")
       .replace(/\n{3,}/g, "\n\n")

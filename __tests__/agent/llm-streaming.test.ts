@@ -148,10 +148,30 @@ describe("generateReply — streaming mode (onClause)", () => {
       { date: "2026-10-10", time: "19:00" },
       { clientId: "c1", sessionId: undefined, userId: undefined, patientId: undefined, callerNumber: undefined }
     );
-    // Only the final, non-tool-call completion's content should ever reach onClause.
-    expect(clauses).toEqual(["Yes, that slot is available."]);
+    // A short filler is spoken while the tool runs (so the caller is never left in silence);
+    // after it, only the final, non-tool-call completion's content reaches onClause.
+    expect(clauses).toEqual(["One moment, let me check the calendar.", "Yes, that slot is available."]);
     expect(result.text).toBe("Yes, that slot is available.");
     expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("a filler never counts as the reply: if the real reply fails, it is retried instead of being blocked", async () => {
+    dispatchToolCallMock.mockResolvedValue(JSON.stringify({ available: true }));
+    let call = 0;
+    mockCreate.mockImplementation(() => {
+      call++;
+      if (call === 1) {
+        return Promise.resolve(chunkStream([
+          { tool_calls: [{ index: 0, id: "c", type: "function", function: { name: "check_availability", arguments: "{}" } }] },
+        ]));
+      }
+      if (call === 2) return Promise.reject(Object.assign(new Error("Stream stalled (timeout)"), { name: "TimeoutError" }));
+      return Promise.resolve(chunkStream(contentDeltas("All good. ")));
+    });
+    const clauses: string[] = [];
+    const result = await generateReply({ system: "sys", user: "book me in", clientId: "c1", onClause: (c) => clauses.push(c) });
+    expect(result.text).toBe("All good.");
+    expect(clauses).toEqual(["One moment, let me check the calendar.", "All good."]);
   });
 
   it("does not fall back to a different provider once part of a reply has already been spoken", async () => {

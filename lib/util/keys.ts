@@ -205,6 +205,9 @@ export class KeyRotator {
         return await withTimeout(operation(key), timeoutMs);
       } catch (error: any) {
         const status = error?.status || error?.response?.status;
+        if (!/cannot retry mid-turn/.test(String(error?.message))) {
+          console.warn(`[KeyRotator] ${this.name} attempt failed: status=${status ?? "-"} ${String(error?.message ?? error).slice(0, 300)}`);
+        }
 
         // A 429 for exceeding a tokens-per-minute OR tokens-per-day budget
         // (TPM/TPD) is scoped to the ORGANIZATION on Groq (and equivalent
