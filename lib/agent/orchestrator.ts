@@ -307,6 +307,15 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   const inlineKbPromise = agentInfoPromise.then((resolved) =>
     getInlineKnowledgeBase(resolved ? resolved.tenant_auth_user_id : input.clientId).catch((): string | null => null),
   );
+  const learningPromise: Promise<string | undefined> = agentInfoPromise
+    .then((resolved) =>
+      getLearningContext({
+        clientId: resolved ? resolved.tenant_auth_user_id : input.clientId,
+        agentId: resolved?.id ?? null,
+        patientId: input.patientId,
+      }),
+    )
+    .catch((): undefined => undefined);
   const [agentInfo, textEmoResult, queryEmbedding, patientContext] = await Promise.all([
     agentInfoPromise,
     detectTextEmotion(input.transcript, { language: input.language }).then((result) => {
@@ -604,12 +613,15 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
 
   const personaLock = await personaLockPromise;
 
-  // What earlier calls taught us (this patient + this agent + all agents).
-  // Cached for 30s and capped at 400ms so it can never hold up a live turn.
+  // What earlier calls taught us (this patient + this agent + all agents) was
+  // started right after the agent lookup (see learningPromise above) and ran in
+  // parallel with the emotion/embedding work. Capped so a slow database can never
+  // stall a live turn; cached for 30s so only a call's first turn pays for it.
   const learningContext = await Promise.race([
-    getLearningContext({ clientId: input.clientId, agentId: resolvedAgent?.id, patientId: input.patientId }),
-    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 400)),
+    learningPromise,
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1500)),
   ]).catch(() => undefined);
+  if (input.patientId) console.log(`[Orchestrator] learned context for this turn: ${learningContext ? `${learningContext.length} chars` : "none"} (client=${input.clientId} agent=${resolvedAgent?.id ?? "-"})`);
 
   const bookingContext = resolvedAgent?.tenantId
     ? await buildBookingContext(supabaseService, resolvedAgent.tenantId, resolvedAgent.enabledTools ?? []).catch(() => undefined)
