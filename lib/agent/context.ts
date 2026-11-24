@@ -265,6 +265,7 @@ export function buildLLMContext(args: {
   const protectedSuffix = [
     "",
     "=== CURRENT TURN ===",
+    `TODAY: ${todayLine()} — resolve "tomorrow", "next Monday" etc. from this date; never guess a date or weekday.`,
     ...(nonEnglish ? [`CALLER LANGUAGE THIS TURN: ${detectCallerLanguage(userTurn.text)} — reply in this language and script.`] : []),
     `USER: ${userTurn.text}${userTurn.sttConfidence != null ? ` [stt_conf=${userTurn.sttConfidence.toFixed(2)}]` : ""}`,
   ].join("\n");
@@ -345,6 +346,12 @@ function formatStm(turns: Utterance[], currentTurnId: string): string {
 function truncate(s: string, maxChars: number): string {
   if (s.length <= maxChars) return s;
   return s.slice(0, maxChars - 3) + "...";
+}
+
+/** "Tuesday, 24 November 2026" in the clinic's timezone. Without it the model invents dates
+ * (live-observed: "next Monday, 28 November" — a Saturday). */
+export function todayLine(now: Date = new Date(), timeZone = "Asia/Kolkata"): string {
+  return new Intl.DateTimeFormat("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone }).format(now);
 }
 
 const MARATHI_WORDS = /(^|\s)(मी|आहे|आहेत|काय|तुम्ही|करू|नाही|थोडं|होतंय|दुखतंय|मला|तुमचा|आपलं)(\s|[,.?!।]|$)/;
