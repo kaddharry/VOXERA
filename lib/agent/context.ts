@@ -41,7 +41,7 @@ const LANGUAGE_LABELS: Record<string, string> = {
 
 // Matches natural hand-off phrasing so we can tell the model "you already
 // offered this" instead of letting it repeat the offer verbatim every turn.
-const HANDOFF_OFFER_RE = /\b(someone|somebody)\s+from\s+the\s+team\b|\bgrab\s+someone\b|\bteammate\s+to\s+jump\s+in\b|\bconnect\s+you\s+with\b/i;
+export const HANDOFF_OFFER_RE = /\b(someone|somebody)\s+from\s+the\s+team\b|\bgrab\s+someone\b|\bteammate\s+to\s+jump\s+in\b|\bconnect\s+you\s+with\b|\bcare\s+team\b|\bfollow\s+up\s+with\s+you\b|केयर\s*टीम/i;
 
 export interface LLMContext {
   system: string;

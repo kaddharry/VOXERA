@@ -30,14 +30,14 @@ const ACK_PHRASES = [
 ];
 
 const HANDOFF_RE =
-  /(connect|transfer|supervisor|human|someone from the team|teammate|grab someone|loop (?:in|you in)|bring (?:in|someone)|टीम|साथी|जोड़|कनेक्ट|ट्रांसफ़र|ट्रांसफर|सुपरवाइज़र|नर्स|बुला)/i;
+  /(connect|transfer|supervisor|human|someone from the team|care team|follow up with you|teammate|grab someone|loop (?:in|you in)|bring (?:in|someone)|टीम|साथी|जोड़|कनेक्ट|ट्रांसफ़र|ट्रांसफर|सुपरवाइज़र|नर्स|बुला)/i;
 
 const CITATION_FENCE_RE = /\[MEM_ID=([a-zA-Z0-9_-]+)\]/g;
 const FABRICATED_TICKET_RE = /\b[A-Z]{2,}-\d{3,}\b/g;
 
 const INJECTED_ACK_SENTENCE = "I'm really sorry this is happening.";
 const RETRIEVAL_HEDGE_SENTENCE = "I don't have reliable information on that yet, so I want to avoid guessing.";
-const ESCALATION_SENTENCE = "Let me grab someone from the team to help with this.";
+const ESCALATION_SENTENCE = "I'm also letting our care team know, so someone can follow up with you.";
 const STT_CLARIFICATION = "I want to make sure I got that right — could you say that once more for me?";
 
 // Fixed guard sentences are spoken aloud, so they must be in the caller's
@@ -48,7 +48,7 @@ const STT_CLARIFICATION = "I want to make sure I got that right — could you sa
 const HI = {
   ack: "आपको ये परेशानी हो रही है, इसका मुझे बहुत अफ़सोस है।",
   hedge: "इस बारे में मेरे पास पक्की जानकारी नहीं है, इसलिए अंदाज़े से कुछ नहीं कहूँगा।",
-  escalate: "चलिए, आपकी मदद के लिए टीम से किसी को जोड़ देते हैं।",
+  escalate: "इसकी जानकारी हमारी केयर टीम तक भी पहुँचाई जा रही है, ताकि कोई आपसे संपर्क करे।",
   stt: "माफ़ कीजिए, क्या आप एक बार फिर से बोल सकते हैं?",
 };
 // Excludes U+0964/0965 (danda): it is shared by Bengali, Gujarati, Punjabi, Odia etc. as a sentence end.
@@ -73,6 +73,8 @@ export function guardOutput(args: {
   topRetrievalScore: number;
   minStt: number;
   minRetrieval: number;
+  /** Already told the caller about the care-team follow-up earlier in this call. */
+  alreadyOfferedHandoff?: boolean;
 }): GuardResult {
   const reasons: string[] = [];
   let reply = args.reply.trim();
@@ -128,7 +130,7 @@ export function guardOutput(args: {
   // doesn't get a second, robotic sentence bolted on top of it. The
   // fallback sentence itself is phrased the way a person would say it out
   // loud, matching the persona/policy prompts — never "specialist".
-  if (args.policy.escalate !== "none") {
+  if (args.policy.escalate !== "none" && !args.alreadyOfferedHandoff) {
     const alreadyMentionsHandoff = HANDOFF_RE.test(reply);
     if (!alreadyMentionsHandoff) {
       reply += ` ${escalateFor(hi)}`;
@@ -240,8 +242,11 @@ export function cleanClause(clause: string, allowedCitations: string[]): { clean
 export function guardTrailingClause(args: {
   fullSpokenText: string;
   policy: PolicyDirectives;
+  /** The agent already told the caller about the care-team follow-up earlier in this call —
+   * repeating it after every distressed turn sounds robotic. */
+  alreadyOfferedHandoff?: boolean;
 }): { trailingClause: string | null; reasons: string[] } {
-  if (args.policy.escalate === "none") return { trailingClause: null, reasons: [] };
+  if (args.policy.escalate === "none" || args.alreadyOfferedHandoff) return { trailingClause: null, reasons: [] };
   if (HANDOFF_RE.test(args.fullSpokenText)) return { trailingClause: null, reasons: [] };
   return {
     trailingClause: escalateFor(isHindi(args.fullSpokenText)),

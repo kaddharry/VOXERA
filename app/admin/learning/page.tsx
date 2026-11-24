@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Lightbulb, RefreshCw, HelpCircle, TrendingDown, History, Check, X, Loader2, RotateCcw } from "lucide-react";
+import { Lightbulb, RefreshCw, HelpCircle, TrendingDown, History, Check, X, Loader2, RotateCcw, Brain, Users, Bot, Globe2 } from "lucide-react";
 import { GlassCard } from "../../_components/GlassCard";
 
 /**
@@ -54,6 +54,22 @@ interface LearningData {
   totals: { calls: number; knowledgeGaps: number; failurePoints: number };
 }
 
+interface LearnedItem {
+  id: string;
+  text: string;
+  category: string;
+  status: "active" | "pending" | "retired";
+  supportCount: number;
+  updatedAt: number;
+}
+interface LearnedOverview {
+  patients: Array<{ id: string; name: string; facts: LearnedItem[] }>;
+  agents: Array<{ id: string; name: string; lessons: LearnedItem[] }>;
+  shared: LearnedItem[];
+  totals: { patientFacts: number; agentLessons: number; shared: number; pending: number };
+  setupNeeded?: boolean;
+}
+
 const btn = "flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12.5px] font-semibold transition-colors disabled:opacity-50";
 
 export default function AgentLearningPage() {
@@ -61,6 +77,15 @@ export default function AgentLearningPage() {
   const [error, setError] = useState<string | null>(null);
   const [migrationRequired, setMigrationRequired] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [learned, setLearned] = useState<LearnedOverview | null>(null);
+
+  const loadLearned = useCallback(async () => {
+    const res = await fetch("/api/admin/learnings");
+    if (res.ok) setLearned(await res.json());
+  }, []);
+  useEffect(() => {
+    void loadLearned();
+  }, [loadLearned]);
 
   const load = useCallback(async () => {
     const res = await fetch("/api/admin/insights");
@@ -115,6 +140,7 @@ export default function AgentLearningPage() {
             on Calls &amp; Insights.
           </GlassCard>
         )}
+        <LearnedFromCalls learned={learned} onChanged={loadLearned} />
         {error && <p className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-[13px] text-red-300">{error}</p>}
         {!data && !migrationRequired && !error && <Loader2 className="mx-auto mt-10 h-5 w-5 animate-spin text-[var(--color-text-muted)]" />}
 
@@ -217,6 +243,69 @@ export default function AgentLearningPage() {
         )}
       </div>
     </div>
+  );
+}
+
+/** What the agents have learned from calls, in three scopes: per patient, per agent, and shared by all agents. */
+function LearnedFromCalls({ learned, onChanged }: { learned: LearnedOverview | null; onChanged: () => Promise<void> }) {
+  async function forget(id: string) {
+    const res = await fetch(`/api/admin/learnings?learningId=${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (res.ok) await onChanged();
+  }
+  if (!learned) return null;
+  if (learned.setupNeeded) {
+    return <GlassCard className="p-5 text-[13.5px] text-[var(--color-text-secondary)]">Call learning isn&apos;t switched on yet — run <code>sql/migration_v36.sql</code> in Supabase.</GlassCard>;
+  }
+  const t = learned.totals;
+  const Item = ({ it, pendingNote }: { it: LearnedItem; pendingNote?: boolean }) => (
+    <li className="group flex items-start justify-between gap-2 py-1">
+      <span className="text-[13px] text-[var(--color-text-secondary)]">
+        {it.text}
+        {pendingNote && it.status === "pending" && <span className="ml-1.5 text-[11px] text-amber-400">· waiting for one more call</span>}
+      </span>
+      <button onClick={() => void forget(it.id)} title="Forget this" className="flex-none rounded p-1 text-[var(--color-text-muted)] opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100">
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </li>
+  );
+  return (
+    <section className="space-y-3">
+      <h2 className="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide text-[var(--color-text-muted)]">
+        <Brain className="h-3.5 w-3.5" /> Learned from calls
+      </h2>
+      <p className="text-[13px] text-[var(--color-text-muted)]">
+        {t.patientFacts} {t.patientFacts === 1 ? "fact" : "facts"} about patients · {t.agentLessons} agent {t.agentLessons === 1 ? "lesson" : "lessons"} · {t.shared} shared {t.shared === 1 ? "lesson" : "lessons"}
+        {t.pending > 0 ? ` · ${t.pending} waiting for a second call` : ""}. After each call the agents save what they learned; every later call starts with it.
+      </p>
+      {t.patientFacts + t.agentLessons + t.shared + t.pending === 0 ? (
+        <GlassCard className="p-5 text-[13px] text-[var(--color-text-muted)]">Nothing learned yet — it appears here after a call where the patient speaks.</GlassCard>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-3">
+          <GlassCard className="p-4">
+            <h3 className="mb-2 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide text-emerald-400"><Users className="h-3.5 w-3.5" /> About patients</h3>
+            {learned.patients.length === 0 ? <p className="text-[13px] text-[var(--color-text-muted)]">None yet.</p> : learned.patients.map((p) => (
+              <div key={p.id} className="mb-3">
+                <a href={`/admin/patients/${p.id}`} className="text-[13px] font-semibold text-[var(--color-text-primary)] hover:underline">{p.name}</a>
+                <ul className="mt-0.5">{p.facts.map((f) => <Item key={f.id} it={f} />)}</ul>
+              </div>
+            ))}
+          </GlassCard>
+          <GlassCard className="p-4">
+            <h3 className="mb-2 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide text-indigo-300"><Bot className="h-3.5 w-3.5" /> Per agent</h3>
+            {learned.agents.length === 0 ? <p className="text-[13px] text-[var(--color-text-muted)]">None yet. A lesson becomes active after two calls show it.</p> : learned.agents.map((a) => (
+              <div key={a.id} className="mb-3">
+                <p className="text-[13px] font-semibold text-[var(--color-text-primary)]">{a.name}</p>
+                <ul className="mt-0.5">{a.lessons.map((l) => <Item key={l.id} it={l} pendingNote />)}</ul>
+              </div>
+            ))}
+          </GlassCard>
+          <GlassCard className="p-4">
+            <h3 className="mb-2 flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide text-amber-300"><Globe2 className="h-3.5 w-3.5" /> Shared by all agents</h3>
+            {learned.shared.length === 0 ? <p className="text-[13px] text-[var(--color-text-muted)]">None yet. A lesson is shared once two different agents learn the same thing.</p> : <ul>{learned.shared.map((l) => <Item key={l.id} it={l} pendingNote />)}</ul>}
+          </GlassCard>
+        </div>
+      )}
+    </section>
   );
 }
 

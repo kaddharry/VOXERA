@@ -108,7 +108,7 @@ describe("guardTrailingClause", () => {
       fullSpokenText: "I've noted your complaint.",
       policy: { ...basePolicy, escalate: "human" },
     });
-    expect(trailingClause).toMatch(/grab someone from the team/i);
+    expect(trailingClause).toMatch(/care team know/i);
     expect(reasons).toContain("appended escalation sentence (policy)");
   });
 
@@ -116,6 +116,15 @@ describe("guardTrailingClause", () => {
     const { trailingClause } = guardTrailingClause({
       fullSpokenText: "Let me connect you with a teammate right away.",
       policy: { ...basePolicy, escalate: "human" },
+    });
+    expect(trailingClause).toBeNull();
+  });
+
+  it("returns null once the care team was already mentioned earlier in the call", () => {
+    const { trailingClause } = guardTrailingClause({
+      fullSpokenText: "Thanks, how long has it been swollen?",
+      policy: { ...basePolicy, escalate: "human" },
+      alreadyOfferedHandoff: true,
     });
     expect(trailingClause).toBeNull();
   });

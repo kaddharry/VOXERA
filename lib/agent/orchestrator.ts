@@ -22,7 +22,7 @@ import { writeMemory } from "../memory/writer";
 import type { Utterance, EmotionSignal, EmotionLabel, AcousticFeatures, PolicyDirectives } from "../types";
 import { embed } from "../util/embed";
 import { getInlineKnowledgeBase } from "../knowledge/inline";
-import { buildLLMContext } from "./context";
+import { buildLLMContext, HANDOFF_OFFER_RE } from "./context";
 import { parseGnaniPersona } from "../tts/gnani-voices";
 import { guardOutput, guardBeforeLLM, guardOpeningClause, cleanClause, guardTrailingClause, type GuardResult } from "./guard";
 import { guardInput, type InputGuardResult } from "./input-guard";
@@ -395,6 +395,8 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
 
   await userTurnPushed;
   const sttHistory = await stm.get(input.sessionId);
+  // Said once is enough: the care-team follow-up line must not be repeated after every distressed turn.
+  const alreadyOfferedHandoff = sttHistory.some((t) => t.role === "agent" && HANDOFF_OFFER_RE.test(t.text));
   const emotionCtx = buildEmotionContext({
     current: fused,
     stm: sttHistory,
@@ -732,7 +734,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
         },
       });
 
-      const { trailingClause, reasons: trailingReasons } = guardTrailingClause({ fullSpokenText: spokenSoFar, policy });
+      const { trailingClause, reasons: trailingReasons } = guardTrailingClause({ fullSpokenText: spokenSoFar, policy, alreadyOfferedHandoff });
       reasons.push(...trailingReasons);
       if (trailingClause) speak(trailingClause);
 
@@ -757,6 +759,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       language: input.language,
     });
     guarded = guardOutput({
+      alreadyOfferedHandoff,
       reply: llmReply.text,
       allowedCitations: llmContext.citations,
       policy,

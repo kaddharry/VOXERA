@@ -1,4 +1,5 @@
 import { embed } from "../util/embed";
+import { analyzeCall, saveCallInsights } from "../insights/analyze-call";
 import { supabase } from "../db/supabase";
 import { getAgentWithTenantCached } from "../db/agent-cache";
 import { getPatientById } from "../db/patients";
@@ -81,7 +82,7 @@ export interface LearnOutcome {
  * learning is best-effort.
  */
 export async function learnFromCall(
-  input: { sessionId: string; callId?: string; clientId: string; agentId?: string | null; patientId?: string | null },
+  input: { sessionId: string; callId?: string; clientId: string; agentId?: string | null; patientId?: string | null; recordInsights?: boolean },
   deps: LearnDeps = realDeps(),
 ): Promise<LearnOutcome> {
   if (!enabled()) return { status: "skipped", reason: "disabled" };
@@ -102,6 +103,18 @@ export async function learnFromCall(
 
     const merge = await applyExtraction({ embed: deps.embed, store: deps.store, clientId: who.clientId, agentId: input.agentId, patientId: input.patientId, callId, extraction });
     invalidateLearningContext(who.clientId);
+    // Test calls have no after-call job, so also record the call's findings (unanswered questions, emotional
+    // failure points) that the "Find suggestions" pipeline works from — real calls already do this in post-call.
+    if (input.recordInsights) {
+      try {
+        const insights = await analyzeCall(input.sessionId, who.clientId);
+        if (insights) {
+          await saveCallInsights({ callSid: callId, sessionId: input.sessionId, clientId: who.clientId, patientId: input.patientId, agentId: input.agentId, summary: {}, insights });
+        }
+      } catch (err) {
+        console.warn("[Learning] Recording call findings failed:", err);
+      }
+    }
     console.log(`[Learning] ${callId}: patient +${merge.patient.added} ~${merge.patient.updated} =${merge.patient.reinforced} -${merge.patient.retired}; lessons +${merge.lessons.added} =${merge.lessons.reinforced} promoted ${merge.lessons.promoted}, global ${merge.lessons.globalPromoted}`);
     return { status: "learned", merge, rejected };
   } catch (err) {
