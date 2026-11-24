@@ -28,7 +28,7 @@ export async function buildBookingContext(db: SupabaseClient, tenantId: string, 
     "Doctors:",
     ...lines,
     "Rules: 1) Never say a time is free or booked from memory — call check_appointment_availability for the date first, then offer 2-3 of the returned slots.",
-    "2) Once the caller picks a slot, call book_appointment with that slot's exact start value; say it's booked ONLY after the tool returns success, then read back doctor, day and time.",
+    "2) Once the caller picks a slot — or names a doctor, day and time themselves — call book_appointment RIGHT AWAY with that slot's exact start value; if the slot they named is open, that IS their choice: book it in the same turn, and never offer other slots or ask them to choose again. Say it's booked ONLY after the tool returns success, then read back doctor, day and time in one short sentence (e.g. \"You're booked with Dr. Desai on Friday 27 November at 3 pm.\"). After a successful booking never claim the slot is unavailable: it is theirs.",
     "3) If a tool returns an error or availableSlots, say that time isn't available and offer the alternatives. Never claim a booking you did not make.",
     "4) Ask for the day/time yourself when the caller mentions pain or a follow-up — don't wait for them to bring it up.",
   ].join("\n");

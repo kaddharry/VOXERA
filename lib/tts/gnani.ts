@@ -14,7 +14,7 @@ export type GnaniLanguage =
   | "bn-IN"
   | "gu-IN";
 
-async function callGnaniTTS(args: {
+export async function callGnaniTTS(args: {
   text: string;
   voice: string;
   language: GnaniLanguage;
