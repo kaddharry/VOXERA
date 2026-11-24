@@ -17,6 +17,8 @@ const mockChain = {
   select: vi.fn().mockReturnThis(),
   eq: vi.fn().mockReturnThis(),
   neq: vi.fn().mockReturnThis(),
+  gte: vi.fn().mockReturnThis(),
+  not: vi.fn().mockReturnThis(),
   in: vi.fn().mockReturnThis(),
   order: vi.fn().mockReturnThis(),
   limit: vi.fn().mockReturnThis(),

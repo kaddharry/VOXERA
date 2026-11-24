@@ -357,7 +357,7 @@ export default function PatientsPage() {
       const t = nextFollowUp(p.id);
       return t && t.nextAttemptAt < Date.now();
     }).length;
-    const openAlerts = Object.values(alertsByPatient).reduce((sum, arr) => sum + arr.length, 0);
+    const openAlerts = (patients ?? []).reduce((sum, p) => sum + (alertsByPatient[p.id]?.length ?? 0), 0);
     return { total, highRisk, overdue, openAlerts };
   }, [patients, alertsByPatient, nextFollowUp]);
 
@@ -644,7 +644,7 @@ export default function PatientsPage() {
                           <td className="px-4 py-3">
                             {alertCount > 0 ? (
                               <span
-                                className="inline-flex items-center justify-center min-w-[24px] px-2 py-0.5 rounded-full text-[11px] font-bold font-mono text-black"
+                                className="inline-flex items-center justify-center min-w-[24px] px-2 py-0.5 rounded-full text-[11px] font-bold font-mono text-white"
                                 style={{ backgroundColor: "var(--risk-critical)" }}
                               >
                                 {alertCount}
@@ -923,31 +923,21 @@ function StatCard({
    * signal rather than decoration. */
   urgent?: boolean;
 }) {
-  if (urgent) {
-    return (
-      <div
-        className="rounded-xl p-4 flex items-center gap-3 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.5)]"
-        style={{ background: `linear-gradient(135deg, ${accent}, color-mix(in oklab, ${accent} 55%, black))` }}
-      >
-        <div className="p-2.5 rounded-lg bg-black/15 flex-none">
-          <Icon className="w-4 h-4 text-black" />
-        </div>
-        <div className="min-w-0">
-          <p className="text-[10.5px] font-bold uppercase tracking-widest text-black/55 truncate">{title}</p>
-          <p className="text-[24px] font-extrabold text-black leading-none">{value}</p>
-        </div>
-      </div>
-    );
-  }
   return (
-    <div className="rounded-xl p-4 flex items-center gap-3 border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)]">
-      <div className="p-2.5 rounded-lg flex-none" style={{ backgroundColor: `color-mix(in oklab, ${accent} 20%, transparent)` }}>
-        <Icon className="w-4 h-4" style={{ color: accent }} />
+    <div
+      className="rounded-xl px-4 py-3.5 border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)]"
+      style={urgent ? { borderLeft: `3px solid ${accent}` } : undefined}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-medium text-[var(--color-text-muted)] truncate">{title}</p>
+        <Icon className="w-3.5 h-3.5 flex-none text-[var(--color-text-muted)]" />
       </div>
-      <div className="min-w-0">
-        <p className="text-[10.5px] font-bold uppercase tracking-widest text-[var(--color-text-muted)] truncate">{title}</p>
-        <p className="text-[22px] font-bold text-[var(--color-text-primary)] leading-none">{value}</p>
-      </div>
+      <p
+        className="mt-1.5 text-[26px] font-semibold leading-none tabular-nums"
+        style={{ color: urgent ? accent : "var(--color-text-primary)" }}
+      >
+        {value}
+      </p>
     </div>
   );
 }
@@ -955,7 +945,7 @@ function StatCard({
 function SortableTh({ label, active, dir, onClick }: { label: string; active: boolean; dir: "asc" | "desc"; onClick: () => void }) {
   return (
     <th className="px-4 py-3">
-      <button onClick={onClick} className={`flex items-center gap-1 transition-colors ${active ? "text-[var(--color-text-primary)]" : "hover:text-[var(--color-text-secondary)]"}`}>
+      <button onClick={onClick} className={`flex items-center gap-1 uppercase tracking-widest font-bold transition-colors ${active ? "text-[var(--color-text-primary)]" : "hover:text-[var(--color-text-secondary)]"}`}>
         {label}
         {active ? (dir === "asc" ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : null}
       </button>

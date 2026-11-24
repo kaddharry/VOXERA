@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "tsx --env-file=.env.local custom-server.ts",
+    "dev:next": "next dev",
     "dev:full": "tsx --env-file=.env.local custom-server.ts",
     "build": "next build",
     "start": "tsx custom-server.ts",

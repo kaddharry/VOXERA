@@ -11,6 +11,7 @@ import { parseGnaniPersona } from "../tts/gnani-voices";
 import type { LiveSttConnection, SpeakStreamHandle, SpeechProvider } from "../speech/types";
 import { extractAcousticFeatures, computeRmsEnergy, isolateLastUtterance } from "../audio/acoustic";
 import { int16ToFloat32Pcm } from "../emotion/local-audio-detect";
+import { detectLanguageRequest } from "../agent/language-request";
 import { DEMO, ensureSeeded } from "../bootstrap";
 import { CONFIG } from "../config";
 
@@ -69,6 +70,9 @@ export interface TestAgentStreamHandlerOptions {
  *    `upgradeWebSocket`, for the deployed app.
  */
 export class TestAgentStreamHandler {
+  /** Language the caller explicitly asked for; pins the reply language and STT. */
+  private languageLock: "english" | "hindi" | null = null;
+  private loudChunkStreak = 0;
   private ws: WebSocket;
   private agentId?: string;
   private clientId: string;
@@ -347,6 +351,11 @@ export class TestAgentStreamHandler {
       this.currentAbortController?.abort();
       this.currentSpeakStream?.clear();
     }
+    const requested = detectLanguageRequest(text);
+    if (requested && requested !== this.languageLock) {
+      this.languageLock = requested;
+      console.log(`[TestAgentStream] Caller asked for ${requested} — pinning language for this call.`);
+    }
     this.isBusy = true;
     this.currentTurnText = text;
     const myGeneration = this.generation;
@@ -395,6 +404,7 @@ export class TestAgentStreamHandler {
         // actually spoke, even though STT (Gnani, when configured) was
         // already transcribing it correctly.
         language: this.language,
+        languageLock: this.languageLock ?? undefined,
         sttConfidence: 0.9,
         acousticFeatures,
         rawAudioPcm16k,
@@ -541,11 +551,23 @@ export class TestAgentStreamHandler {
       // characteristics, so this may need its own tuning if it proves too
       // trigger-happy or too insensitive in practice; it's strictly a
       // fallback behind the (usually faster) client-side VAD either way.
+      // Needs several loud chunks IN A ROW: a single spike (speaker echo
+      // of the agent's own voice, a keyboard tap) used to cut the agent off
+      // mid-sentence. The client VAD is the primary signal; this is only a
+      // backstop for sustained speech.
       if (this.isSpeaking) {
         const rms = computeRmsEnergy(message);
-        if (rms > CONFIG.telephony.bargeInEnergyThreshold) {
-          this.triggerBargeIn(`rms=${rms.toFixed(0)}`);
+        if (rms > CONFIG.telephony.bargeInEnergyThreshold * 1.5) {
+          this.loudChunkStreak++;
+          if (this.loudChunkStreak >= 6) {
+            this.loudChunkStreak = 0;
+            this.triggerBargeIn(`rms=${rms.toFixed(0)} sustained`);
+          }
+        } else {
+          this.loudChunkStreak = 0;
         }
+      } else {
+        this.loudChunkStreak = 0;
       }
 
       // It's raw binary audio -> pump to STT, and accumulate for turn-level

@@ -10,6 +10,7 @@ import { resolvePersonaLock, type PersonaLockResult } from "../emotion/persona-l
 import { logSessionEvent, makeEvent } from "../logging/session-logger";
 import { emitSessionEvent } from "../realtime/emitter";
 import { supabase as supabaseService } from "../db/supabase";
+import { buildBookingContext } from "./booking-context";
 import { getAgentWithTenantCached } from "../db/agent-cache";
 import { getPatientCallContextCached } from "../db/agent-cache";
 import { createEscalationAlert } from "../db/alerts";
@@ -77,6 +78,8 @@ export interface TurnInput {
    * detectTextEmotion() uses (lib/emotion/detect.ts); unset/English leaves
    * the existing engine untouched. */
   language?: string;
+  /** Pinned caller language (lib/agent/language-request.ts) — see buildLLMContext. */
+  languageLock?: "english" | "hindi";
 }
 
 /** Lightweight, judge-readable view of a MemoryRecord — enough to show WHY a
@@ -221,12 +224,12 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       })
     : Promise.resolve(undefined);
   let customInstructions: string | undefined;
-  let resolvedAgent: { id: string; name: string; voicePersona?: string | null; enabledTools?: string[] } | undefined;
+  let resolvedAgent: { id: string; name: string; voicePersona?: string | null; enabledTools?: string[]; tenantId?: string } | undefined;
   function applyAgentInfo(agentInfo: Awaited<typeof agentInfoPromise>) {
     if (agentInfo) {
       input.clientId = agentInfo.tenant_auth_user_id;
       customInstructions = agentInfo.system_prompt ?? undefined;
-      resolvedAgent = { id: agentInfo.id, name: agentInfo.name, voicePersona: agentInfo.voice_persona, enabledTools: agentInfo.enabledTools };
+      resolvedAgent = { id: agentInfo.id, name: agentInfo.name, voicePersona: agentInfo.voice_persona, enabledTools: agentInfo.enabledTools, tenantId: agentInfo.tenant_id };
     }
   }
 
@@ -600,7 +603,13 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
 
   const personaLock = await personaLockPromise;
 
+  const bookingContext = resolvedAgent?.tenantId
+    ? await buildBookingContext(supabaseService, resolvedAgent.tenantId, resolvedAgent.enabledTools ?? []).catch(() => undefined)
+    : undefined;
+
   const llmContext = buildLLMContext({
+    bookingContext,
+    languageLock: input.languageLock,
     userId: input.userId,
     clientId: input.clientId,
     userTurn,

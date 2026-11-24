@@ -22,7 +22,12 @@ interface GnaniSttHeaderConfig {
  */
 function resolveGnaniSttConfig(language: GnaniLanguage): GnaniSttHeaderConfig {
   if (language === "auto") {
-    return { language_code: "indic-auto", model: "prisma-v3.0", format: "verbatim" };
+    // "codemix", not "verbatim": verbatim writes English speech in the native
+    // script ("I have a toothache" -> "आई हैव अ टूथ ऐक"), which made the agent
+    // answer English callers in Hindi/Gujarati. Measured with synthesized
+    // English, Hindi, Punjabi and Hinglish audio: codemix keeps English words
+    // in Latin and leaves Indic speech in its own script.
+    return { language_code: "indic-auto", model: "prisma-v3.0", format: "codemix" };
   }
   if (language === "hi-en") {
     return { language_code: "hi-IN", model: "prisma-v3.0", format: "codemix" };

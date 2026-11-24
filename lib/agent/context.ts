@@ -1,3 +1,4 @@
+import { looksLikeTransliteratedEnglish } from "./language-request";
 import type { EmotionContext, EmotionLabel, MemoryRecord, PolicyDirectives, RetrievedContext, Utterance } from "../types";
 import { CONFIG } from "../config";
 import { policyToPrompt } from "./policy";
@@ -89,8 +90,16 @@ export function buildLLMContext(args: {
   /** Gender of the agent's own voice (from its Gnani voice persona), so Hindi/
    * Marathi verb forms agree with the voice the caller actually hears. */
   speakerGender?: "female" | "male";
+  /** From lib/agent/booking-context.ts — providers + tool rules, present only
+   * for agents with appointment tools enabled. Lives in the protected suffix
+   * so budget trimming can never drop the provider ids. */
+  bookingContext?: string;
+  /** Language the caller explicitly asked for earlier in this call (lib/agent/
+   * language-request.ts). Overrides per-turn script detection, which is
+   * unreliable when STT writes English speech in an Indic script. */
+  languageLock?: "english" | "hindi";
 }): LLMContext {
-  const { retrieved, emotion, policy, userTurn, customInstructions, personaLock, inlineKnowledgeBase, patientContext, language, speakerGender } = args;
+  const { retrieved, emotion, policy, userTurn, customInstructions, personaLock, inlineKnowledgeBase, patientContext, language, speakerGender, bookingContext, languageLock } = args;
 
   // Uses full record `text`, not the 180-char `summary` — `summary` exists
   // to keep conversational-memory listings compact, but knowledge-base
@@ -164,6 +173,8 @@ export function buildLLMContext(args: {
             "switch or ask for a language. Hindi+English mixed → reply in the same natural mix.",
           "2. Same script as the caller: Devanagari in → Devanagari Hindi out (never romanize it; common English words like " +
             "\"appointment\", \"doctor\", \"ok\" may stay in Latin). Roman in → Roman out. Other Indian languages: their own script.",
+          "2b. STT can write English speech in an Indic script (e.g. Gujarati/Devanagari spelling of \"I am not feeling good\"). " +
+            "If the caller's words are English words in another script, it IS English: reply in English, never in that script's language.",
           "3. Devanagari is shared by Hindi and Marathi: decide from the words (Marathi: मी, आहे, काय, तुम्ही, करू, नाही, " +
             "थोडं; Hindi: मैं, है, क्या, आप, करूँ, नहीं, थोड़ा), not the script.",
           "4. Simple everyday spoken words, short sentences (≤15 words), no formal/Sanskritized Hindi. Use ONE correct " +
@@ -265,8 +276,18 @@ export function buildLLMContext(args: {
   const protectedSuffix = [
     "",
     "=== CURRENT TURN ===",
+    ...(bookingContext ? [bookingContext] : []),
     `TODAY: ${todayLine()} — resolve "tomorrow", "next Monday" etc. from this date; never guess a date or weekday.`,
-    ...(nonEnglish ? [`CALLER LANGUAGE THIS TURN: ${detectCallerLanguage(userTurn.text)} — reply in this language and script.`] : []),
+    ...(!languageLock && looksLikeTransliteratedEnglish(userTurn.text)
+      ? ["CALLER LANGUAGE THIS TURN: English — the transcript below is English words spelled in another script (STT quirk). Reply in English only, in Latin letters."]
+      : []),
+    ...(languageLock === "english"
+      ? ["CALLER LANGUAGE THIS TURN: English — the caller asked to speak English. Reply in English only, in Latin letters, even if the transcript below shows another script (that is STT error)."]
+      : languageLock === "hindi"
+        ? ["CALLER LANGUAGE THIS TURN: Hindi (Devanagari) — the caller asked for Hindi."]
+        : nonEnglish && !looksLikeTransliteratedEnglish(userTurn.text)
+          ? [`CALLER LANGUAGE THIS TURN: ${detectCallerLanguage(userTurn.text)} — reply in this language and script.`]
+          : []),
     `USER: ${userTurn.text}${userTurn.sttConfidence != null ? ` [stt_conf=${userTurn.sttConfidence.toFixed(2)}]` : ""}`,
   ].join("\n");
 

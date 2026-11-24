@@ -16,5 +16,10 @@ export const config = {
   // protected page was opened in a new tab. Excludes API routes (an extra
   // Supabase Auth round trip on every voice-turn API call would add real
   // latency to a live phone conversation) and static assets.
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)"],
+  //
+  // Also excludes /audio-worklets and /vad: AudioWorklet addModule() and the
+  // VAD model/wasm fetches must hit the static file directly. Routing them
+  // through a Supabase auth round trip made "Start Call" fail with "Unable
+  // to load a worklet's module" whenever that call was slow or errored.
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|audio-worklets|vad|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|js|mjs|wasm|onnx)$).*)"],
 };
