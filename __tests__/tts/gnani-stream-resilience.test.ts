@@ -60,6 +60,17 @@ describe("GnaniSpeakStream", () => {
     expect(audio.length).toBe(4);
   });
 
+  it("reconnects when the server has closed the long-lived socket, instead of going silent for the rest of the call", async () => {
+    const { s, audio } = await makeStream();
+    s.sendText("first.");
+    await tick(60);
+    (s as any).ws.readyState = 3; // the server closed the connection while idle
+    s.sendText("second, after the socket died.");
+    await tick(400);
+    expect(sent).toEqual(["first.", "second, after the socket died."]);
+    expect(audio.length).toBe(2); // and it was actually voiced
+  });
+
   it("retries a clause the server rejects instead of dropping it", async () => {
     const { s, audio } = await makeStream();
     scripted = ["error", "ok"];

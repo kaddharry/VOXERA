@@ -1,6 +1,7 @@
 // The `openai` package is used only as an OpenAI-COMPATIBLE client: every
 // provider in CONFIG.llm.providers (Groq, ZenMux) sets its own baseURL. VOXERA
 // makes no direct calls to the OpenAI API and needs no OpenAI key.
+import { BOOKING_HINT } from "./booking-intent";
 import OpenAI from "openai";
 import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";
@@ -187,6 +188,7 @@ export function stripToolMarkup(raw: string, open: boolean): { text: string; ope
   return { text: prefix + tail.text, open: tail.open };
 }
 
+
 const MUTATING_TOOLS = new Set(["book_appointment", "reschedule_appointment", "cancel_appointment", "confirm_appointment", "create_booking", "modify_booking", "cancel_booking"]);
 
 /** A short line spoken while a tool runs, so the caller never sits in silence
@@ -339,7 +341,34 @@ export async function generateReply(args: {
     args.onClause!(cleaned);
   };
 
+  // ── Which model does THIS turn need? ──────────────────────────────────────────────────────────────
+  // Every turn used the big reasoning model for tool agents and for "auto" language. That burns the scarce
+  // per-model daily token quota (Groq on-demand: 200k/day) in ~50 turns and costs 1-5s of "thinking" per turn;
+  // once exhausted every turn crawled through failing keys for 10-55s. Now the big model is used only when the
+  // turn needs it, and the fast model (its own quota, ~0.3s to first word) handles the rest.
+  const lastUserLine = [...args.user.matchAll(/^USER:\s*(.*)$/gm)].pop()?.[1] ?? "";
+  const turnIsIndic = /[\u0900-\u0DFF]/.test(lastUserLine); // Hindi / Punjabi / Gujarati ... need the multilingual model
+  const explicitIndicSetting = !isEnglishLanguage(args.language) && args.language !== "auto";
+  const toolAgentCfg = (args.useTools ?? true) && (args.enabledTools?.length ?? 0) > 0;
+  // Only the live conversation counts: the recent turns + the caller's latest line. NOT the rest of the prompt —
+  // the "TODAY ... tomorrow" line, the booking rules, patient notes and memories all mention appointments and
+  // would make every turn look like a booking.
+  const stmStart = args.user.indexOf("=== STM");
+  const stmEnd = args.user.indexOf("=== CURRENT TURN");
+  const recentTurns = stmStart >= 0 ? args.user.slice(stmStart, stmEnd > stmStart ? stmEnd : undefined) : "";
+  const conversation = `${recentTurns}\n${lastUserLine}`;
+  const bookingTurn = toolAgentCfg && BOOKING_HINT.test(conversation);
+  const needStrong = turnIsIndic || explicitIndicSetting || bookingTurn;
+  // Send tools only when the conversation is about booking: fewer tokens, and a chatty reply is never held up by tool rounds.
+  const toolsAllowed = !toolAgentCfg || bookingTurn;
+  const canFallToFast = !turnIsIndic && !explicitIndicSetting; // the fast model writes poor Hindi, so never fall back to it for Hindi
+  let modelOverride = "";
+
   for (const provider of CONFIG.llm.providers) {
+    const modelOrder = (needStrong
+      ? [provider.nonEnglishModel, canFallToFast ? provider.model : undefined]
+      : [provider.model, provider.nonEnglishModel]
+    ).filter((m, i, a): m is string => !!m && a.indexOf(m) === i);
     // Shared instance, not a fresh one per turn — see getKeyRotator's doc.
     // This is what lets the rotator remember which key already proved
     // exhausted (and for roughly how long) instead of re-probing every key
@@ -349,7 +378,7 @@ export async function generateReply(args: {
     if (!rotator.getKey()) continue;
 
     try {
-      const result = await rotator.executeWithRotation(async (apiKey) => {
+      const operation = async (apiKey: string) => {
         // A live-observed bug: KeyRotator retries the SAME provider on a
         // transient failure (timeout, empty-stream glitch) by calling this
         // operation again from scratch — but if part of THIS turn's reply
@@ -393,15 +422,13 @@ export async function generateReply(args: {
         // above "none", is untouched) — this is strictly "give the model a
         // bit more room to get non-English generation right," not a general
         // reasoning-level override.
-        // Agents that have real actions (booking etc.) get the stronger model even for English: the
-        // fast English model (reasoning "none") talked about booking but never called the tool, then
-        // confirmed a booking that did not exist. A correct action matters more than ~1s of latency.
-        const toolAgent = useTools && (args.enabledTools?.length ?? 0) > 0;
-        const strongModel = (!isEnglishLanguage(args.language) || toolAgent) && !!provider.nonEnglishModel;
-        const modelForCall = strongModel ? provider.nonEnglishModel! : provider.model;
-        console.log(`[LLM] prompt ~${Math.round((args.system.length + args.user.length) / 3.2)} tokens (system ${args.system.length} + user ${args.user.length} chars), model=${modelForCall}${toolAgent ? " (tools)" : ""}`);
+        const modelForCall = modelOverride || modelOrder[0] || provider.model;
+        const strongModel = modelForCall === provider.nonEnglishModel && modelForCall !== provider.model;
+        const toolAgent = toolAgentCfg && toolsAllowed;
+        console.log(`[LLM] prompt ~${Math.round((args.system.length + args.user.length) / 3.2)} tokens (system ${args.system.length} + user ${args.user.length} chars), model=${modelForCall}${toolAgent ? " (tools)" : ""}${needStrong ? "" : " (fast path)"}`);
+        // gpt-oss rejects reasoning "none" (it needs at least "low"); the fast model keeps "none".
         const effectiveReasoningEffort =
-          provider.reasoningEffort === "none" && (!isEnglishLanguage(args.language) || toolAgent) && provider.name !== "gnani-evon"
+          provider.reasoningEffort === "none" && strongModel && provider.name !== "gnani-evon"
             ? "low"
             : provider.reasoningEffort;
         // `reasoning_format: "hidden"` keeps Groq from ever returning the
@@ -424,7 +451,7 @@ export async function generateReply(args: {
           // args.enabledTools undefined = legacy demo path, full
           // RESERVATION_TOOLS (unchanged behavior); an array (even empty)
           // means a real Agent Builder agent, filtered to its own allowlist.
-          const toolsForThisCall = toolsLocked
+          const toolsForThisCall = toolsLocked || !toolsAllowed
             ? []
             : args.enabledTools !== undefined ? await getToolsForAgentWithMCP(args.enabledTools, args.clientId) : TOOLS;
           const baseParams = {
@@ -585,15 +612,38 @@ export async function generateReply(args: {
           }
         }
         return { text: finalText, model: modelForCall, usedLive: true, provider: provider.name };
-      },
-      retryBudget[0],
-      // Whole-operation ceiling. Streaming turns are protected by the stall
-      // watchdog + the client's own connect timeout instead of a 5s race.
-      streaming ? 30_000 : retryBudget[1],
-      retryBudget[2]);
+      };
+
+      // Try the model this turn needs; if its daily/minute quota is exhausted (429), try the next one for the
+      // same provider right away instead of crawling on to a slower provider. Cooldowns are scoped per model,
+      // so a full pool on one model never blocks the other.
+      let result: Awaited<ReturnType<typeof operation>> | undefined;
+      for (let mi = 0; mi < modelOrder.length; mi++) {
+        modelOverride = modelOrder[mi];
+        try {
+          result = await rotator.executeWithRotation(
+            operation,
+            retryBudget[0],
+            // Whole-operation ceiling. Streaming turns are protected by the stall
+            // watchdog + the client's own connect timeout instead of a 5s race.
+            streaming ? 30_000 : retryBudget[1],
+            retryBudget[2],
+            modelOverride,
+          );
+          break;
+        } catch (e: any) {
+          const quotaLimited = (e?.status ?? e?.response?.status) === 429;
+          if (quotaLimited && mi < modelOrder.length - 1 && !anyClauseEmitted) {
+            console.warn(`[LLM] ${modelOverride} is out of quota — switching to ${modelOrder[mi + 1]} for this turn.`);
+            continue;
+          }
+          throw e;
+        }
+      }
+      if (!result) throw new Error(`Provider "${provider.name}" produced no result`);
 
       console.log(`[LLM] Success via provider: ${provider.name}`);
-      rotator.advanceKey();
+      rotator.advanceKey(modelOverride);
       return result;
     } catch (err) {
       console.warn(`[LLM] Provider "${provider.name}" failed:`, err instanceof Error ? err.message : err);

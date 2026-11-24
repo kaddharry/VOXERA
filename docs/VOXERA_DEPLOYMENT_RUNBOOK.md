@@ -165,6 +165,7 @@ Do this before applying anything.
 | `GROQ_API_KEYS_2` | Optional | Yes | Keys from a second Groq account | Production, only if needed | Second Groq quota, tried before ZenMux. |
 | `GROQ_MODEL` | Optional | No | Groq model id | Production, only if needed | Overrides the default Groq model. |
 | `CALL_LEARNING` | Optional | No | Set to "off" to disable | Production, only if needed | Turns off learning from calls (patient facts, agent and global lessons) when set to off. |
+| `GNANI_STT_MIN_SILENCE_MS` | Optional | No | Milliseconds (100-2000) | Production, only if needed | How much silence Gnani speech recognition waits for before it closes a sentence. Lower = the agent answers sooner but a sentence may split at a pause. Default 300 (browser) / 400 (phone). |
 | `ZENMUX_API_KEY` | **Required: at least one of the two** | Yes | ZenMux dashboard | Production | LLM fallback after Groq (an OpenAI-compatible gateway; no OpenAI key needed). |
 | `ZENMUX_BASE_URL` | Optional | No | Default https://zenmux.ai/api/v1 | Production, only if needed | Overrides the ZenMux endpoint. |
 | `ZENMUX_MODEL` | Optional | No | Default openai/gpt-4o-mini (a model name served by ZenMux) | Production, only if needed | Overrides the ZenMux model. |

@@ -27,6 +27,7 @@ import { parseGnaniPersona } from "../tts/gnani-voices";
 import { guardOutput, guardBeforeLLM, guardOpeningClause, cleanClause, guardTrailingClause, type GuardResult } from "./guard";
 import { guardInput, type InputGuardResult } from "./input-guard";
 import { generateReply } from "./llm";
+import { BOOKING_HINT } from "./booking-intent";
 import { decidePolicy } from "./policy";
 
 export interface TurnInput {
@@ -625,7 +626,10 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   ]).catch(() => undefined);
   if (input.patientId) console.log(`[Orchestrator] learned context for this turn: ${learningContext ? `${learningContext.length} chars` : "none"} (client=${input.clientId} agent=${resolvedAgent?.id ?? "-"})`);
 
-  const bookingContext = resolvedAgent?.tenantId
+  // The booking block (doctors + rules, ~1.4k characters) is only useful when the conversation is about booking;
+  // llm.ts applies the same test to decide whether to send tools at all.
+  const aboutBooking = BOOKING_HINT.test(`${sttHistory.slice(-6).map((t) => t.text).join("\n")}\n${input.transcript}`);
+  const bookingContext = resolvedAgent?.tenantId && aboutBooking
     ? await buildBookingContext(supabaseService, resolvedAgent.tenantId, resolvedAgent.enabledTools ?? []).catch(() => undefined)
     : undefined;
 

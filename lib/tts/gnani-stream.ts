@@ -128,8 +128,10 @@ export class GnaniSpeakStream {
         this.onError?.(err);
       });
 
-      socket.on("close", () => {
-        this.ws = null;
+      socket.on("close", (code: number) => {
+        // Only forget the socket if it is still the current one (a reconnect may already have replaced it).
+        if (this.ws === socket) this.ws = null;
+        if (!this.closed) console.warn(`[Gnani Speak] Connection closed by the server (code ${code}) — will reconnect on the next sentence.`);
       });
     });
   }
@@ -252,7 +254,26 @@ export class GnaniSpeakStream {
   }
 
   private sendRequest(text: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.closed) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // The server closed the (long-lived) socket, e.g. after sitting idle. This used to return silently, so the
+      // agent stopped speaking for the rest of the call with no error anywhere. Reconnect, then send.
+      this.busy = true;
+      this.clearCompleteFallback();
+      this.completeFallbackTimer = setTimeout(() => this.forceComplete(), GnaniSpeakStream.COMPLETE_FALLBACK_MS);
+      void this.connect()
+        .then(() => {
+          if (this.closed) return;
+          console.warn("[Gnani Speak] Reconnected.");
+          this.sendRequest(text);
+        })
+        .catch((err) => {
+          console.warn("[Gnani Speak] Reconnect failed:", err instanceof Error ? err.message : err);
+          this.clearCompleteFallback();
+          this.handleFailure();
+        });
+      return;
+    }
     this.busy = true;
     this.clearCompleteFallback();
     this.completeFallbackTimer = setTimeout(() => this.forceComplete(), GnaniSpeakStream.COMPLETE_FALLBACK_MS);

@@ -92,6 +92,10 @@ export class GnaniLiveSttWrapper implements LiveSttConnection {
           // and silently drop the STT connection, leaving the agent deaf for
           // the rest of the call. 900 is the documented max.
           "x-idle-timeout-sec": "900",
+          // How much silence Gnani waits for before it closes the sentence and transcribes it (default 500 ms) — this
+          // is most of the "listen" delay between you stopping and the agent starting to think. Lower = faster;
+          // the cost is that a sentence can split at a natural pause, which both call handlers already merge.
+          "x-min-silence-ms": process.env.GNANI_STT_MIN_SILENCE_MS || (this.sampleRate >= 16000 ? "300" : "400"),
         },
       });
       this.ws = socket;

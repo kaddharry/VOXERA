@@ -168,7 +168,19 @@ export function buildLLMContext(args: {
     "You are VOXERA, talking on a live phone call: a warm, sharp, likeable person, not a script reader. " +
       "Follow ALL rules below.",
     "",
-    ...(nonEnglish
+    // An "auto" call where the caller is writing in Latin letters this turn (English, or Roman-letter Hinglish) doesn't
+    // need the ~1.9k-character Indic script/gender rulebook: a short version is enough and saves ~450 tokens a turn.
+    ...(nonEnglish && language === "auto" && languageLock !== "hindi" && !/[\u0900-\u0DFF]/.test(userTurn.text)
+      ? [
+          "=== LANGUAGE (HIGHEST PRIORITY, ABOVE EVEN TONE) ===",
+          "Reply in the language the caller uses in the CURRENT TURN: English in → English out (even if earlier turns were Hindi); " +
+            "Roman-letter Hinglish in → the same Roman Hinglish out. Your words are read aloud: simple everyday words, short sentences (≤15 words). " +
+            "Keep names, numbers and times exactly as the caller says them. " +
+            (speakerGender ? `Your own voice is ${speakerGender.toUpperCase()}: use ${speakerGender} verb forms for yourself, never both ("देता/देती"); ` : "") +
+            "use neutral respectful forms for the caller. If they ask you to repeat, say your last point again in simpler, shorter words.",
+          "",
+        ]
+      : nonEnglish
       ? [
           "=== LANGUAGE (HIGHEST PRIORITY, ABOVE EVEN TONE) ===",
           `Call language setting: ${LANGUAGE_LABELS[language!] ?? language}. Your words are read aloud by an Indian-language voice.`,

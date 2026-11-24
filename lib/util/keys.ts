@@ -53,7 +53,8 @@ export class KeyRotator {
   // skipped without trying it again. This is what lets a session "remember"
   // which key already failed instead of re-probing every key on every
   // single turn — the whole point being avoiding a live check per call.
-  private cooldownUntil: number[];
+  /** Cooldowns are per (key, scope): a daily-token limit on one MODEL says nothing about the key's quota on another. */
+  private cooldownUntil = new Map<string, number>();
 
   constructor(envVarName: string) {
     this.name = envVarName;
@@ -62,7 +63,6 @@ export class KeyRotator {
       .split(",")
       .map((k) => k.trim())
       .filter((k) => k.length > 0);
-    this.cooldownUntil = new Array(this.keys.length).fill(0);
 
     if (this.keys.length === 0) {
       console.warn(`[KeyRotator] No keys found in process.env.${envVarName}`);
@@ -82,12 +82,12 @@ export class KeyRotator {
     return this.keys[this.currentIndex];
   }
 
-  private isOnCooldown(index: number): boolean {
-    return this.cooldownUntil[index] > Date.now();
+  private isOnCooldown(index: number, scope = ""): boolean {
+    return (this.cooldownUntil.get(`${index}|${scope}`) ?? 0) > Date.now();
   }
 
-  private markCooldown(index: number, ms: number): void {
-    this.cooldownUntil[index] = Date.now() + ms;
+  private markCooldown(index: number, ms: number, scope = ""): void {
+    this.cooldownUntil.set(`${index}|${scope}`, Date.now() + ms);
   }
 
   /**
@@ -101,11 +101,11 @@ export class KeyRotator {
    * key is on cooldown, leaves currentIndex as-is — a stale cooldown
    * estimate is still worth trying rather than refusing to try at all.
    */
-  private skipToAvailableKey(): void {
+  private skipToAvailableKey(scope = ""): void {
     if (this.keys.length <= 1) return;
     for (let i = 0; i < this.keys.length; i++) {
       const idx = (this.currentIndex + i) % this.keys.length;
-      if (!this.isOnCooldown(idx)) {
+      if (!this.isOnCooldown(idx, scope)) {
         this.currentIndex = idx;
         return;
       }
@@ -119,11 +119,11 @@ export class KeyRotator {
    * Groq's limit is 8000 tokens/minute per key, and one voice turn is a few
    * thousand tokens. No-op with a single key.
    */
-  public advanceKey(): void {
+  public advanceKey(scope = ""): void {
     if (this.keys.length <= 1) return;
     for (let i = 1; i <= this.keys.length; i++) {
       const idx = (this.currentIndex + i) % this.keys.length;
-      if (!this.isOnCooldown(idx)) {
+      if (!this.isOnCooldown(idx, scope)) {
         this.currentIndex = idx;
         return;
       }
@@ -161,6 +161,8 @@ export class KeyRotator {
      * matter how generous it is for a background/one-off generation task.
      */
     backoffBaseMs: number = 1000,
+    /** What the cooldowns are scoped to — llm.ts passes the model name, since provider quotas are per model. */
+    scope: string = "",
   ): Promise<T> {
     let attempts = 0;
     // A 429 whose message names an "organization" LOOKS org-wide, but
@@ -179,7 +181,14 @@ export class KeyRotator {
     // instance's own memory of past failures (no live probe call), jump
     // straight past any key already known to be on cooldown from an
     // earlier turn instead of re-discovering that the hard way every time.
-    this.skipToAvailableKey();
+    this.skipToAvailableKey(scope);
+    // Every key is already known to be rate/quota limited for this scope (model): don't spend ~0.5 s per key
+    // re-discovering that on every turn — fail at once as a 429 so the caller moves to its next model/provider.
+    if (scope && this.keys.length > 0 && this.keys.every((_, i) => this.isOnCooldown(i, scope))) {
+      const err: Error & { status?: number } = new Error(`All ${this.name} keys are cooling down for ${scope} (quota/rate limit)`);
+      err.status = 429;
+      throw err;
+    }
 
     // Deliberately NOT `attempts < maxRetries || orgWideRotationsUsed <
     // maxOrgWideRotations` — an earlier version of this loop used exactly
@@ -232,14 +241,14 @@ export class KeyRotator {
           // the provider's own reported retry window when available
           // (Groq's "try again in Xm Ys.s") rather than a blind guess.
           const retryMs = parseRetryAfterMs(error?.message) ?? DEFAULT_COOLDOWN_MS;
-          this.markCooldown(this.currentIndex, retryMs);
+          this.markCooldown(this.currentIndex, retryMs, scope);
 
           if (orgWideRotationsUsed < maxOrgWideRotations) {
             console.warn(
               `[KeyRotator] Org/account-wide rate or quota limit hit for ${this.name} key index ${this.currentIndex} — cooling it down for ~${Math.round(retryMs / 1000)}s and trying the next configured key immediately (no backoff) in case it belongs to a different account.`,
             );
             this.rotate();
-            this.skipToAvailableKey();
+            this.skipToAvailableKey(scope);
             orgWideRotationsUsed++;
             continue;
           }
