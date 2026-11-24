@@ -1,3 +1,4 @@
+import { blockedFromPrompts } from "./clinical";
 import type { Learning } from "./types";
 
 const DAY = 86_400_000;
@@ -42,7 +43,7 @@ export function buildLearningContext(args: {
 
   const lessons = (list: Learning[]) =>
     [...list]
-      .filter((l) => l.status === "active")
+      .filter((l) => l.status === "active" && !blockedFromPrompts(l))
       .sort((a, b) => b.supportCount * b.confidence - a.supportCount * a.confidence)
       .slice(0, maxLessons)
       .map((l) => `- ${l.text}`);

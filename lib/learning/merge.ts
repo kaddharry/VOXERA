@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import { similarity } from "./grounding";
+import { isClinicalLesson, REVIEW_APPROVED, REVIEW_PENDING, REVIEW_REJECTED } from "./clinical";
 import type { Extraction, Learning, LearningStore } from "./types";
 
 export const LEARNING_LIMITS = {
@@ -167,12 +168,18 @@ export async function applyExtraction(args: {
     // it has shown up for two different agents (see below) — the model's own
     // "general" flag is too eager to be trusted on its own.
     if (!agentId) continue;
-    const pool = await store.listAgent(clientId, agentId, ["active", "pending"]);
-    const match = await findSame(pool, lesson);
+    // retired lessons are in the pool only so a REJECTED one is never proposed again
+    const pool = await store.listAgent(clientId, agentId, ["active", "pending", "retired"]);
+    const found = await findSame(pool, lesson);
+    if (found?.key === REVIEW_REJECTED) continue; // a human said no to this lesson
+    const match = found && found.status !== "retired" ? found : undefined;
+    const clinical = lesson.clinical === true || isClinicalLesson(lesson.text);
     if (match) {
       if (match.sourceCallIds.includes(callId)) continue;
       const support = match.supportCount + 1;
-      const becomesActive = match.status === "pending" && support >= LEARNING_LIMITS.promoteAt;
+      // a lesson waiting for human review never goes live on its own, however many calls show it
+      const awaitingReview = match.key === REVIEW_PENDING;
+      const becomesActive = match.status === "pending" && support >= LEARNING_LIMITS.promoteAt && !awaitingReview;
       const patch = {
         supportCount: support,
         confidence: Math.max(match.confidence, lesson.confidence),
@@ -188,7 +195,7 @@ export async function applyExtraction(args: {
       if (becomesActive) result.lessons.promoted++;
     } else {
       const row: Learning = {
-        id: nanoid(12), clientId, scope: "agent", agentId, patientId: null, category: lesson.category, key: null,
+        id: nanoid(12), clientId, scope: "agent", agentId, patientId: null, category: lesson.category, key: clinical ? REVIEW_PENDING : null,
         text: lesson.text, evidence: [lesson.evidence], sourceCallIds: [callId], supportCount: 1, confidence: lesson.confidence,
         status: "pending", createdAt: now, updatedAt: now,
       };
@@ -207,20 +214,25 @@ export async function applyExtraction(args: {
       for (const o of allAgent) if (o.id === t.id || (await sameLesson(o, t))) family.push(o);
       const agentsInFamily = new Set(family.map((o) => o.agentId));
       const calls = [...new Set(family.flatMap((o) => o.sourceCallIds))];
+      // clinical lessons stay behind a human decision when they become shared too
+      const reviewPending = family.some((o) => o.key === REVIEW_PENDING);
+      const reviewKey = reviewPending ? REVIEW_PENDING : family.some((o) => o.key === REVIEW_APPROVED) ? REVIEW_APPROVED : null;
       // shared once two different agents learned it, or once enough separate calls show it
       if (agentsInFamily.size < 2 && calls.length < LEARNING_LIMITS.globalFromCalls) continue;
       const evidence = [...new Set(family.flatMap((o) => o.evidence))].slice(0, LEARNING_LIMITS.maxEvidence);
       const existingGlobal = await findSame(globals, t);
       if (existingGlobal) {
+        if (existingGlobal.key === REVIEW_REJECTED) continue;
         if (existingGlobal.sourceCallIds.length === calls.length && existingGlobal.status === "active") continue;
-        const patch = { sourceCallIds: calls.slice(-SRC_CAP), supportCount: calls.length, evidence, status: "active" as const, updatedAt: now };
+        const stillPending = existingGlobal.key === REVIEW_PENDING || (existingGlobal.key == null && reviewPending);
+        const patch = { sourceCallIds: calls.slice(-SRC_CAP), supportCount: calls.length, evidence, status: (stillPending ? "pending" : "active") as "pending" | "active", key: stillPending ? REVIEW_PENDING : existingGlobal.key, updatedAt: now };
         await store.update(existingGlobal.id, patch);
         Object.assign(existingGlobal, patch);
       } else {
         const row: Learning = {
-          id: nanoid(12), clientId, scope: "global", agentId: null, patientId: null, category: t.category, key: null, text: t.text, evidence,
+          id: nanoid(12), clientId, scope: "global", agentId: null, patientId: null, category: t.category, key: reviewKey, text: t.text, evidence,
           sourceCallIds: calls.slice(-SRC_CAP), supportCount: calls.length, confidence: Math.max(...family.map((o) => o.confidence)),
-          status: "active", createdAt: now, updatedAt: now,
+          status: reviewPending ? "pending" : "active", createdAt: now, updatedAt: now,
         };
         await store.insert(row);
         globals.push(row);

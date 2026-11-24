@@ -67,6 +67,8 @@ export interface ExtractedLesson {
   evidence: string;
   /** true when it is generic enough to help every agent (no patient details). */
   general: boolean;
+  /** true when it gives medical guidance and so needs a human's approval (see clinical.ts). */
+  clinical?: boolean;
 }
 export interface Extraction {
   patientFacts: ExtractedFact[];
