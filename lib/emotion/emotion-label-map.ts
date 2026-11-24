@@ -29,4 +29,8 @@ export const HF_VAD_MAP: Record<EmotionLabel, VAD> = {
   excitement: { v: 0.9, a: 0.8, d: 0.5 },
   disappointment: { v: -0.5, a: -0.1, d: -0.2 },
   neutral: { v: 0, a: 0, d: 0 },
+  relief: { v: 0.5, a: -0.3, d: 0.2 },
+  surprise: { v: 0.2, a: 0.7, d: 0 },
+  worry: { v: -0.4, a: 0.4, d: -0.4 },
+  pain: { v: -0.8, a: 0.5, d: -0.6 },
 };

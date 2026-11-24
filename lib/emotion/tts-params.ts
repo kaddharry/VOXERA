@@ -84,6 +84,10 @@ const EMOTION_TO_TONE: Record<EmotionLabel, ToneMode> = {
   excitement: "pleasing",
   sadness: "empathetic",
   disappointment: "empathetic",
+  relief: "pleasing",
+  surprise: "pleasing",
+  worry: "empathetic",
+  pain: "empathetic",
 };
 
 /**

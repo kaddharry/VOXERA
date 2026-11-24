@@ -3,6 +3,8 @@ import { CONFIG } from "../config";
 import { clamp } from "../util/math";
 import { classifyConfidence } from "./confidence";
 import { LEXICON } from "./lexicon";
+import { matchMultilingualEmotion } from "./lexicon-multilingual";
+import { HF_VAD_MAP } from "./emotion-label-map";
 import type { HFDetectResult } from "./ml-detect";
 import { detectTextEmotionLocalONNX, type LocalOnnxDetectResult } from "./local-onnx-detect";
 import { detectTextEmotionXLMEmo, type XlmEmoDetectResult } from "./xlm-emo-detect";
@@ -241,7 +243,11 @@ export async function detectTextEmotionLocal(text: string): Promise<EmotionSigna
     gratitude: { v: 0.7, a: 0.2, d: 0.1 },
     excitement: { v: 0.9, a: 0.8, d: 0.5 },
     disappointment: { v: -0.5, a: -0.1, d: -0.2 },
-    neutral: { v: 0, a: 0, d: 0 }
+    neutral: { v: 0, a: 0, d: 0 },
+    relief: { v: 0.5, a: -0.3, d: 0.2 },
+    surprise: { v: 0.2, a: 0.7, d: 0 },
+    worry: { v: -0.4, a: 0.4, d: -0.4 },
+    pain: { v: -0.8, a: 0.5, d: -0.6 }
   };
 
   let vad = lexSignal.vad;
@@ -400,6 +406,37 @@ export async function detectTextEmotion(text: string, opts?: { language?: string
       localOnnx: { signal: null, latencyMs: 0, errored: false },
       xlmEmo: XLM_EMO_DISABLED_RESULT,
       selection: { engine: "lexicon", reason: "Small-talk guard: bare greeting, forced neutral" },
+    };
+  }
+
+  // Multilingual rules (English/Hindi/Hinglish/Punjabi, all 16 labels). Instant,
+  // and clearly better than the English-only keyword list on non-English text.
+  const multiRaw = matchMultilingualEmotion(text);
+  // Safety bias: a hand-tuned distress keyword ("desperate", "emergency") is not downgraded to fear/worry.
+  const keepLexicon =
+    lexiconResult.matchedKeywords.length > 0 &&
+    (multiRaw?.label === lexiconResult.label ||
+      (lexiconResult.label === "distress" && (multiRaw?.label === "fear" || multiRaw?.label === "worry")));
+  const multi = keepLexicon ? null : multiRaw;
+  if (multi) {
+    const confidence = Math.min(0.9, 0.6 + multi.score * 0.15);
+    const vad = HF_VAD_MAP[multi.label];
+    const signal: EmotionSignal = {
+      label: multi.label,
+      intensity: clamp(Math.sqrt(vad.v * vad.v + vad.a * vad.a + vad.d * vad.d) / Math.sqrt(3) + 0.2),
+      confidence,
+      confidenceCategory: classifyConfidence(confidence),
+      vad,
+      source: "text",
+      at: Date.now(),
+    };
+    return {
+      primary: signal,
+      lexicon: lexiconResult,
+      hf: HF_DISABLED_RESULT,
+      localOnnx: { signal: null, latencyMs: 0, errored: false },
+      xlmEmo: XLM_EMO_DISABLED_RESULT,
+      selection: { engine: "lexicon", reason: `Multilingual rules → label=${multi.label}` },
     };
   }
 

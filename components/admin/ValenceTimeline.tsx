@@ -45,14 +45,18 @@ export function dotColor(label: string, confidence: number): string {
     case "frustration":
     case "distress":
     case "sadness":
+    case "pain":
       return "#f87171"; // red-400
     case "fear":
+    case "worry":
+    case "surprise":
     case "confusion":
     case "disappointment":
       return "#fbbf24"; // amber-400
     case "joy":
     case "gratitude":
     case "excitement":
+    case "relief":
     case "calm":
       return "#34d399"; // emerald-400
     default:
@@ -76,6 +80,14 @@ export function plainLanguage(label: string, confidence: number): string {
       return "Sounded sad or down";
     case "fear":
       return "Sounded anxious or fearful";
+    case "worry":
+      return "Sounded worried";
+    case "pain":
+      return "Sounded like they are in pain";
+    case "surprise":
+      return "Sounded surprised";
+    case "relief":
+      return "Sounded relieved";
     case "confusion":
       return "Sounded confused";
     case "disappointment":

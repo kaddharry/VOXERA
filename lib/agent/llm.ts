@@ -222,6 +222,9 @@ export async function generateReply(args: {
    * on a JSON reply that left fragments (the agent generator got back only its
    * greeting field and reported "returned something unexpected"). */
   raw?: boolean;
+  /** Always use the small, fast model (its own quota, ~0.3 s): for short classification jobs that never need the big
+   * reasoning model, whatever script the text is in. */
+  fastModel?: boolean;
   /** An Agent Builder agent's tool allowlist (agents."enabledTools",
    * migration_v29.sql). When provided (even as []), the tool set offered to
    * the model is filtered down to exactly these names via getToolsForAgent
@@ -358,16 +361,16 @@ export async function generateReply(args: {
   const recentTurns = stmStart >= 0 ? args.user.slice(stmStart, stmEnd > stmStart ? stmEnd : undefined) : "";
   const conversation = `${recentTurns}\n${lastUserLine}`;
   const bookingTurn = toolAgentCfg && BOOKING_HINT.test(conversation);
-  const needStrong = turnIsIndic || explicitIndicSetting || bookingTurn;
+  const needStrong = !args.fastModel && (turnIsIndic || explicitIndicSetting || bookingTurn);
   // Send tools only when the conversation is about booking: fewer tokens, and a chatty reply is never held up by tool rounds.
   const toolsAllowed = !toolAgentCfg || bookingTurn;
-  const canFallToFast = !turnIsIndic && !explicitIndicSetting; // the fast model writes poor Hindi, so never fall back to it for Hindi
+  const canFallToFast = args.fastModel || (!turnIsIndic && !explicitIndicSetting); // the fast model writes poor Hindi, so never fall back to it for Hindi
   let modelOverride = "";
 
   for (const provider of CONFIG.llm.providers) {
     const modelOrder = (needStrong
       ? [provider.nonEnglishModel, canFallToFast ? provider.model : undefined]
-      : [provider.model, provider.nonEnglishModel]
+      : args.fastModel ? [provider.model] : [provider.model, provider.nonEnglishModel]
     ).filter((m, i, a): m is string => !!m && a.indexOf(m) === i);
     // Shared instance, not a fresh one per turn — see getKeyRotator's doc.
     // This is what lets the rotator remember which key already proved

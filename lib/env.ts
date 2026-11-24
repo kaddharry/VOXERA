@@ -64,6 +64,7 @@ export const ENV_SPEC: EnvVar[] = [
   // ── Emotion models (optional remote paths; the local ONNX models need no key) ──
   { name: "HF_TOKEN", level: "feature", secret: true, source: "Hugging Face → Settings → Access Tokens", purpose: "Remote Hugging Face emotion models (multilingual XLM-EMO)." },
   { name: "HUGGINGFACE_API_KEY", level: "optional", secret: true, source: "Same as HF_TOKEN", purpose: "Older alias of HF_TOKEN." },
+  { name: "EMOTION_LLM", level: "optional", secret: false, source: "Leave unset", purpose: "Set to 'off' to disable the small-model emotion classifier (falls back to the instant multilingual rules)." },
   { name: "EMOTION_DIAGNOSTICS", level: "optional", secret: false, source: "Leave unset", purpose: "'on' turns on per-turn emotion diagnostics." },
   // ── Product features ──
   { name: "CREDENTIALS_ENCRYPTION_KEY", level: "feature", secret: true, source: "Generate: openssl rand -base64 32. If credentials were already saved without it, ask before setting it: changing the key makes them unreadable", purpose: "Encrypts tenants' stored integration credentials (falls back to a built-in key when unset, which is not secure)." },

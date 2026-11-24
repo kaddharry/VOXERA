@@ -3,6 +3,9 @@ import { CONFIG } from "../config";
 import { buildEmotionContext } from "../emotion/context";
 import { detectTextEmotion, fuseEmotion } from "../emotion/detect";
 import { detectAudioEmotion } from "../emotion/audio-emotion";
+import { classifyConfidence } from "../emotion/confidence";
+import { classifyEmotionLLM } from "../emotion/llm-emotion";
+import { HF_VAD_MAP } from "../emotion/emotion-label-map";
 import { importanceScore, novelty, policyFlag, taskCriticality } from "../emotion/importance";
 import { calculateCAI, type CAIResult } from "../emotion/cai";
 import { runDiagnosticEmotion, type DiagnosticEmotionResult } from "../emotion/emotion-debug";
@@ -192,6 +195,10 @@ export interface HandleTurnOpts {
   deferDiagnostics?: boolean;
 }
 
+/** Feelings worth a human look even when the keyword policy didn't escalate. */
+const ALERT_LABELS: ReadonlySet<EmotionLabel> = new Set(["distress", "pain", "fear", "anger"]);
+const alertedEmotions = new Set<string>();
+
 export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promise<TurnOutput> {
   const turnStart = Date.now();
   const ts = turnStart;
@@ -300,6 +307,12 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // other work here, so its own start-to-finish time is what counts.
   const emotionStartedAt = performance.now();
   let textEmotionMs = 0;
+  // Small-model, 16-class, any-language read of the words. Runs alongside
+  // everything below and is only awaited AFTER the reply — it never delays
+  // the first spoken word. Resolves to null on timeout/quota errors.
+  const modelEmotionPromise: Promise<EmotionLabel | null> = classifyEmotionLLM(input.transcript, {
+    clientId: input.clientId,
+  });
   // The inline knowledge base only needs the resolved tenant, so it starts the
   // instant the agent lookup returns — overlapping the emotion model and the
   // embedding — instead of being awaited serially after all of them.
@@ -475,8 +488,52 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     audioSignal: audioEmo ? { label: audioEmo.label, confidence: audioEmo.confidence } : null,
     latencyMs: emotionLatencyMs,
   };
-  void logSessionEvent(makeEvent(evBase, "emotion", emotionData));
-  void emitSessionEvent(input.sessionId, "emotion", emotionData);
+  // The durable "emotion" event and the live SSE are published ONCE, with the
+  // model-refined label, as soon as the classifier answers (usually while the
+  // reply is still being generated). If it fails, the fast-path label is used.
+  let finalFused = fused;
+  let finalEmotionData = emotionData;
+  let policyEscalated = false;
+  const emotionPublished: Promise<void> = modelEmotionPromise.then((modelLabel) => {
+    if (modelLabel) {
+      const textSignal: EmotionSignal = {
+        label: modelLabel,
+        intensity: Math.max(textEmo.intensity, modelLabel === "neutral" ? 0 : 0.5),
+        confidence: 0.85,
+        confidenceCategory: classifyConfidence(0.85),
+        vad: HF_VAD_MAP[modelLabel],
+        source: "text",
+        at: Date.now(),
+      };
+      finalFused = fuseEmotion(textSignal, audioEmo);
+      finalEmotionData = {
+        ...emotionData,
+        label: finalFused.label,
+        intensity: finalFused.intensity,
+        confidence: finalFused.confidence,
+        confidenceCategory: finalFused.confidenceCategory,
+        vad: finalFused.vad,
+        textSignal: { label: modelLabel, confidence: 0.85, engine: "llm-classifier" as unknown as typeof emotionData.textSignal.engine },
+      };
+      userTurn.emotion = finalFused;
+    }
+    void logSessionEvent(makeEvent(evBase, "emotion", finalEmotionData));
+    void emitSessionEvent(input.sessionId, "emotion", finalEmotionData);
+    // Alert on severe feelings the keyword policy missed (one per session and kind).
+    if (!policyEscalated && ALERT_LABELS.has(finalFused.label) && finalFused.confidence >= 0.5) {
+      const key = `${input.sessionId}:${finalFused.label}`;
+      if (!alertedEmotions.has(key)) {
+        if (alertedEmotions.size > 2000) alertedEmotions.clear();
+        alertedEmotions.add(key);
+        void createEscalationAlert(supabaseService, {
+          clientId: evBase.clientId,
+          patientId: input.patientId ?? null,
+          sessionId: input.sessionId,
+          reason: `Caller sounded ${finalFused.label}: "${input.transcript.slice(0, 120)}"`,
+        });
+      }
+    }
+  });
 
   // Issue #14: Use real acoustic metrics for CAI when available, fall back to heuristics
   const responseLength = input.transcript.split(/\s+/).length;
@@ -598,6 +655,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   }));
 
   if (policy.escalate !== "none") {
+    policyEscalated = true;
     void logSessionEvent(makeEvent(evBase, "escalation", {
       type: policy.escalate,
       reason: policy.notes.join(", ")
@@ -862,6 +920,10 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // entirely under deferDiagnostics — see that option's doc for why real
   // phone calls can never let this gate their own turn-taking, however
   // small the worst case.
+  // Normally settled long ago; the cap keeps a slow classifier off the hot path.
+  await Promise.race([emotionPublished, new Promise<void>((r) => setTimeout(r, 400))]);
+  const emotionCtxFinal =
+    finalFused === fused ? emotionCtx : buildEmotionContext({ current: finalFused, stm: sttHistory, ltmUser: ltmUserAll });
   const emotionDiagnostics = opts?.deferDiagnostics ? undefined : await diagnosticsPromise;
   // Started before the LLM call; long since settled by the time the reply
   // finished, so this costs nothing on the hot path.
@@ -871,7 +933,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     reply: guarded.cleaned,
     trace: {
       utterance: userTurn,
-      emotion: emotionCtx,
+      emotion: emotionCtxFinal,
       importance: I,
       memoryWrite,
       retrieved: {

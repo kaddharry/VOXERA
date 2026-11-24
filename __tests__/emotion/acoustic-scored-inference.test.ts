@@ -192,7 +192,7 @@ describe("Issue #28: Upgraded acoustic emotion engine", () => {
   });
 
   describe("Issue: acoustic emotion coverage was imbalanced (5 reachable labels, gratitude dead)", () => {
-    it("classifies a warm, calm, sincere voice as gratitude (previously unreachable — no scoring rule ever added to it)", () => {
+    it("reads a warm, calm, sincere voice as calm (a voice alone cannot name gratitude; the words do that)", () => {
       const warmVoice: AcousticFeatures = {
         rmsEnergy: 2200, // moderate-low energy
         zeroCrossingRate: 0.1, // low ZCR — distinguishes from laughter
@@ -207,7 +207,7 @@ describe("Issue #28: Upgraded acoustic emotion engine", () => {
       };
       const emotion = detectAudioEmotion(warmVoice);
       expect(emotion).not.toBeNull();
-      expect(emotion!.label).toBe("gratitude");
+      expect(emotion!.label).toBe("calm");
     });
 
     it("still classifies laughter as joy, not gratitude, despite overlapping pitch/rate ranges", () => {
@@ -287,7 +287,7 @@ describe("Issue #28: Upgraded acoustic emotion engine", () => {
       expect(emotion!.label).not.toBe("sadness");
     });
 
-    it("does not classify a calm, positive (gratitude-toned) voice as sadness just because it's quiet-ish", () => {
+    it("does not classify a calm, positive (warm-toned) voice as sadness just because it's quiet-ish", () => {
       const warmVoice: AcousticFeatures = {
         rmsEnergy: 2200,
         zeroCrossingRate: 0.1,
@@ -302,7 +302,7 @@ describe("Issue #28: Upgraded acoustic emotion engine", () => {
       };
       const emotion = detectAudioEmotion(warmVoice);
       expect(emotion).not.toBeNull();
-      expect(emotion!.label).toBe("gratitude");
+      expect(emotion!.label).toBe("calm");
     });
 
     it("still reaches sadness for a genuinely low energy AND low pitch voice, not just a quiet one", () => {

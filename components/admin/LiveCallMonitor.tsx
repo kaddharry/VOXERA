@@ -195,14 +195,18 @@ export function LiveCallMonitor({
       case "anger":
       case "frustration":
       case "distress":
+      case "pain":
         return "text-red-400 border-red-500/30 bg-red-500/10";
       case "fear":
+      case "worry":
+      case "surprise":
       case "confusion":
       case "disappointment":
         return "text-amber-400 border-amber-500/30 bg-amber-500/10";
       case "joy":
       case "gratitude":
       case "excitement":
+      case "relief":
       case "calm":
         return "text-emerald-400 border-emerald-500/30 bg-emerald-500/10";
       default:

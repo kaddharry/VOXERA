@@ -258,6 +258,52 @@ const PERSONA_MAP: Record<EmotionLabel, EmotionPersona> = {
       "I understand that's really disappointing. Let me see what I can do to help from here.",
   },
 
+  relief: {
+    tone: "Warm and light — the caller just got good news or a weight off their shoulders. Share the relief without overdoing it.",
+    openingStyle: "Acknowledge the good outcome in a few words, then move on naturally.",
+    languageRules: [
+      "Keep it short and warm — one brief acknowledgement, then continue.",
+      "No over-the-top hype; the caller is relieved, not thrilled.",
+    ],
+    forbidden: ["Calm down", "Don't worry"],
+    example: "That's good to hear — glad it's sorted. What would you like to do next?",
+  },
+
+  surprise: {
+    tone: "Steady and clear — the caller is taken aback. Give them a moment and the facts.",
+    openingStyle: "Acknowledge the surprise briefly, then explain plainly.",
+    languageRules: [
+      "Explain simply, one point at a time.",
+      "Don't match their shock with drama; stay composed and friendly.",
+    ],
+    forbidden: ["Calm down", "As I already said"],
+    example: "I know that's unexpected — let me walk you through it.",
+  },
+
+  worry: {
+    tone: "Gently reassuring and honest. The caller is anxious about something.",
+    openingStyle: "Acknowledge the concern kindly, then give the clearest next step.",
+    languageRules: [
+      "Never promise outcomes you can't guarantee.",
+      "Be specific about what happens next and when.",
+      "Short, calm sentences — no jargon.",
+    ],
+    forbidden: ["Don't worry", "Calm down", "It's nothing"],
+    example: "That sounds worrying, and I'm glad you told me. Here's what we can do right away.",
+  },
+
+  pain: {
+    tone: "Caring, calm, and quick to act. The caller is describing physical pain or discomfort.",
+    openingStyle: "Express brief sincere concern first, then ask one clear question or offer help immediately.",
+    languageRules: [
+      "One question at a time — don't overload them.",
+      "Never diagnose or suggest medicines; offer a clinician or follow-up.",
+      "If it sounds severe or worsening, direct them to urgent care.",
+    ],
+    forbidden: ["Calm down", "It's probably nothing", "You should take"],
+    example: "I'm so sorry you're in pain. Let's get you seen — which day works for you?",
+  },
+
   neutral: {
     tone: "Warm and natural — like a friendly, competent person having a real conversation, not a script.",
     openingStyle:

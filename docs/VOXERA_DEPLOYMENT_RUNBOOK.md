@@ -171,6 +171,7 @@ Do this before applying anything.
 | `ZENMUX_MODEL` | Optional | No | Default openai/gpt-4o-mini (a model name served by ZenMux) | Production, only if needed | Overrides the ZenMux model. |
 | `HF_TOKEN` | If you use the feature | Yes | Hugging Face → Settings → Access Tokens | Production | Remote Hugging Face emotion models (multilingual XLM-EMO). |
 | `HUGGINGFACE_API_KEY` | Optional | Yes | Same as HF_TOKEN | Production, only if needed | Older alias of HF_TOKEN. |
+| `EMOTION_LLM` | Optional | No | Leave unset | Production, only to disable | 'off' disables the small-model emotion classifier (instant multilingual rules are used instead). |
 | `EMOTION_DIAGNOSTICS` | Optional | No | Leave unset | Production, only if needed | 'on' turns on per-turn emotion diagnostics. |
 | `CREDENTIALS_ENCRYPTION_KEY` | If you use the feature | Yes | Generate: openssl rand -base64 32. If credentials were already saved without it, ask before setting it: changing the key makes them unreadable | Production | Encrypts tenants' stored integration credentials (falls back to a built-in key when unset, which is not secure). |
 | `RESEND_API_KEY` | If you use the feature | Yes | Resend → API Keys | Production | Sending email. |
