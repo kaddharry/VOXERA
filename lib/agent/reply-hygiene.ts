@@ -131,3 +131,30 @@ export function isWrongIndicScript(clause: string, callerLanguage: string | unde
   const inExpected = clause.match(expected)?.length ?? 0;
   return inExpected < indic / 2;
 }
+
+// Lookahead: not followed by a Devanagari letter. The danda (U+0964/5) is excluded from the
+// range because it ends sentences in every Indic script and is not part of a word.
+const NOT_DEVANAGARI = String.raw`(?![ऀ-ॣ०-ॿ])`;
+const FEMALE_FORMS: [RegExp, string][] = [
+  [new RegExp(String.raw`रहा हूँ${NOT_DEVANAGARI}`, "g"), "रही हूँ"],
+  [new RegExp(String.raw`सकता हूँ${NOT_DEVANAGARI}`, "g"), "सकती हूँ"],
+  [new RegExp(String.raw`चाहता हूँ${NOT_DEVANAGARI}`, "g"), "चाहती हूँ"],
+  [new RegExp(String.raw`समझ गया${NOT_DEVANAGARI}`, "g"), "समझ गई"],
+  [new RegExp(String.raw`([ूऊ])ँगा${NOT_DEVANAGARI}`, "g"), "$1ँगी"],
+];
+const MALE_FORMS: [RegExp, string][] = [
+  [new RegExp(String.raw`रही हूँ${NOT_DEVANAGARI}`, "g"), "रहा हूँ"],
+  [new RegExp(String.raw`सकती हूँ${NOT_DEVANAGARI}`, "g"), "सकता हूँ"],
+  [new RegExp(String.raw`चाहती हूँ${NOT_DEVANAGARI}`, "g"), "चाहता हूँ"],
+  [new RegExp(String.raw`समझ गई${NOT_DEVANAGARI}`, "g"), "समझ गया"],
+  [new RegExp(String.raw`([ूऊ])ँगी${NOT_DEVANAGARI}`, "g"), "$1ँगा"],
+];
+/**
+ * Hindi first-person verbs carry the speaker's gender, and the voice has one (live-observed:
+ * a female voice said "समझ गया"). Only unambiguous first-person patterns are rewritten, so
+ * addressing the caller ("आप जा रहे हैं") is never touched.
+ */
+export function matchSpeakerGender(text: string, gender: "female" | "male" | undefined): string {
+  if (!gender || !/[ऀ-ॿ]/.test(text)) return text;
+  return (gender === "female" ? FEMALE_FORMS : MALE_FORMS).reduce((t, [re, to]) => t.replace(re, to), text);
+}

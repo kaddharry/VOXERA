@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isReasoningClause, isWrongIndicScript, stripForeignScript, stripReasoningLeak, stripWrappingQuotes } from "../../lib/agent/reply-hygiene";
+import { matchSpeakerGender, isReasoningClause, isWrongIndicScript, stripForeignScript, stripReasoningLeak, stripWrappingQuotes } from "../../lib/agent/reply-hygiene";
 import { sanitizeReply } from "../../lib/agent/llm";
 import { ClauseChunker } from "../../lib/agent/clause-chunker";
 
@@ -90,5 +90,20 @@ describe("detectCallerLanguage: shared danda does not mean Hindi", () => {
     ["नमस्कार, मी ठीक आहे।", "Marathi"],
   ])("%s -> %s", (text, lang) => {
     expect(detectCallerLanguage(text)).toMatch(new RegExp(`^${lang}`));
+  });
+});
+
+describe("matchSpeakerGender", () => {
+  it("rewrites masculine first-person Hindi for a female voice", () => {
+    expect(matchSpeakerGender("समझ गया, मैं देख रहा हूँ और बता सकता हूँ।", "female")).toBe("समझ गई, मैं देख रही हूँ और बता सकती हूँ।");
+    expect(matchSpeakerGender("मैं बुक करूँगा और बताऊँगा।", "female")).toBe("मैं बुक करूँगी और बताऊँगी।");
+  });
+  it("rewrites feminine forms for a male voice", () => {
+    expect(matchSpeakerGender("मैं देख रही हूँ, बता सकती हूँ।", "male")).toBe("मैं देख रहा हूँ, बता सकता हूँ।");
+  });
+  it("leaves the caller's forms, English and unknown gender alone", () => {
+    expect(matchSpeakerGender("आप जा रहे हैं, क्या आप आ सकते हैं?", "female")).toBe("आप जा रहे हैं, क्या आप आ सकते हैं?");
+    expect(matchSpeakerGender("I am checking", "female")).toBe("I am checking");
+    expect(matchSpeakerGender("समझ गया", undefined)).toBe("समझ गया");
   });
 });
