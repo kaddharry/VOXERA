@@ -18,6 +18,7 @@ import {
   PhoneOff,
   AlertTriangle,
   Phone,
+  Brain,
 } from "lucide-react";
 import { GlassCard } from "@/app/_components/GlassCard";
 import { FollowUpSchedulesPanel } from "../../../../components/admin/FollowUpSchedules";
@@ -82,15 +83,25 @@ interface Alert {
   sessionId: string | null;
 }
 
+interface LearnedFact {
+  id: string;
+  text: string;
+  category: string;
+  evidence: string[];
+  sourceCallIds: string[];
+  updatedAt: number;
+}
+
 const PRIORITY_COLOR: Record<string, string> = {
   high: "var(--risk-critical)",
   normal: "var(--risk-medium)",
   low: "var(--color-text-muted)",
 };
 
-type TabId = "summary" | "documents" | "schedule" | "timeline" | "insights";
+type TabId = "summary" | "learned" | "documents" | "schedule" | "timeline" | "insights";
 const TABS: Array<{ id: TabId; label: string; icon: React.ComponentType<{ className?: string }> }> = [
   { id: "summary", label: "Summary", icon: UserCheck },
+  { id: "learned", label: "What agents learned", icon: Brain },
   { id: "documents", label: "Records & Documents", icon: FileText },
   { id: "schedule", label: "Follow-up Plan", icon: CalendarClock },
   { id: "timeline", label: "Calls & Timeline", icon: History },
@@ -109,6 +120,8 @@ export default function PatientProfilePage() {
   const [alerts, setAlerts] = useState<Alert[] | null>(null);
   const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
   const [editOpen, setEditOpen] = useState(false);
+  const [learnings, setLearnings] = useState<LearnedFact[] | null>(null);
+  const [learningSetupNeeded, setLearningSetupNeeded] = useState(false);
 
   // Every fetch here needs its own .catch() — without one, a failed
   // request (network blip, a non-JSON error response, anything) leaves
@@ -129,6 +142,13 @@ export default function PatientProfilePage() {
         console.error("[PatientProfilePage] Failed to load documents:", e);
         setDocuments([]);
       });
+    fetch(`/api/admin/patients/${id}/learnings`)
+      .then((r) => r.json())
+      .then((d: { learnings?: LearnedFact[]; setupNeeded?: boolean }) => {
+        setLearnings(d.learnings ?? []);
+        setLearningSetupNeeded(!!d.setupNeeded);
+      })
+      .catch(() => setLearnings([]));
     fetch("/api/admin/agents")
       .then((r) => r.json())
       .then((d: { agents?: { id: string; name: string }[] }) => setAgents(d.agents ?? []))
@@ -360,6 +380,45 @@ export default function PatientProfilePage() {
             </GlassCard>
           </div>
         </div>
+      )}
+
+      {tab === "learned" && (
+        <GlassCard className="p-5">
+          <p className="text-[14px] text-[var(--color-text-secondary)] mb-4">
+            After each call, the agents save what this patient told them, so the next call — from any agent — starts informed. Remove anything that is wrong or that the patient asked to be forgotten.
+          </p>
+          {learningSetupNeeded ? (
+            <p className="text-[14px] text-[var(--color-text-muted)] italic">Call learning isn't switched on yet — run sql/migration_v36.sql in Supabase.</p>
+          ) : learnings === null ? (
+            <Loader2 className="w-4 h-4 animate-spin text-[var(--color-text-muted)]" />
+          ) : learnings.length === 0 ? (
+            <p className="text-[15px] text-[var(--color-text-muted)] italic">Nothing learned yet — it appears here after this patient's first conversation.</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {learnings.map((l) => (
+                <div key={l.id} className="flex items-start justify-between gap-3 p-3.5 rounded-lg bg-black/30 border border-[var(--color-border-subtle)]">
+                  <div className="min-w-0">
+                    <div className="text-[14.5px] text-[var(--color-text-primary)]">{l.text}</div>
+                    <div className="text-[12.5px] text-[var(--color-text-muted)] mt-1">
+                      {l.category.replace(/_/g, " ")} · updated {new Date(l.updatedAt).toLocaleDateString()} · from {l.sourceCallIds.length} call{l.sourceCallIds.length === 1 ? "" : "s"}
+                    </div>
+                    {l.evidence[0] && <div className="text-[12.5px] text-[var(--color-text-muted)] italic mt-1">“{l.evidence[l.evidence.length - 1]}”</div>}
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const res = await fetch(`/api/admin/patients/${id}/learnings?learningId=${encodeURIComponent(l.id)}`, { method: "DELETE" });
+                      if (res.ok) setLearnings((cur) => (cur ?? []).filter((x) => x.id !== l.id));
+                    }}
+                    title="Forget this"
+                    className="p-1.5 rounded-lg text-[var(--color-text-muted)] hover:text-red-400 hover:bg-red-500/10 transition-colors flex-none"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </GlassCard>
       )}
 
       {tab === "documents" && (

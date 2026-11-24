@@ -10,6 +10,7 @@ import { resolvePersonaLock, type PersonaLockResult } from "../emotion/persona-l
 import { logSessionEvent, makeEvent } from "../logging/session-logger";
 import { emitSessionEvent } from "../realtime/emitter";
 import { supabase as supabaseService } from "../db/supabase";
+import { getLearningContext } from "../learning";
 import { buildBookingContext } from "./booking-context";
 import { getAgentWithTenantCached } from "../db/agent-cache";
 import { getPatientCallContextCached } from "../db/agent-cache";
@@ -603,12 +604,20 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
 
   const personaLock = await personaLockPromise;
 
+  // What earlier calls taught us (this patient + this agent + all agents).
+  // Cached for 30s and capped at 400ms so it can never hold up a live turn.
+  const learningContext = await Promise.race([
+    getLearningContext({ clientId: input.clientId, agentId: resolvedAgent?.id, patientId: input.patientId }),
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 400)),
+  ]).catch(() => undefined);
+
   const bookingContext = resolvedAgent?.tenantId
     ? await buildBookingContext(supabaseService, resolvedAgent.tenantId, resolvedAgent.enabledTools ?? []).catch(() => undefined)
     : undefined;
 
   const llmContext = buildLLMContext({
     bookingContext,
+    learningContext,
     languageLock: input.languageLock,
     userId: input.userId,
     clientId: input.clientId,

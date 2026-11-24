@@ -11,6 +11,7 @@ import { parseGnaniPersona } from "../tts/gnani-voices";
 import type { LiveSttConnection, SpeakStreamHandle, SpeechProvider } from "../speech/types";
 import { extractAcousticFeatures, computeRmsEnergy, isolateLastUtterance } from "../audio/acoustic";
 import { int16ToFloat32Pcm } from "../emotion/local-audio-detect";
+import { learnFromCall } from "../learning";
 import { detectLanguageRequest } from "../agent/language-request";
 import { DEMO, ensureSeeded } from "../bootstrap";
 import { CONFIG } from "../config";
@@ -604,6 +605,13 @@ export class TestAgentStreamHandler {
     console.log(`[TestAgentStream] Client disconnected (session ${this.sessionId}), code=${code}, reason="${reason.toString()}", audioChunksReceived=${this.audioChunkCount}.`);
     this.stt.close();
     this.currentSpeakStream?.close();
+    // A test call teaches the agents the same way a real one does, so
+    // learning can be verified end to end from the test drawer.
+    if (this.agentId) {
+      const { sessionId, clientId, agentId, patientId } = this;
+      // Session events are written fire-and-forget; give the last ones a moment to land.
+      setTimeout(() => void learnFromCall({ sessionId, clientId, agentId, patientId }), 2500);
+    }
   }
 
   private onError(err: Error): void {
