@@ -155,6 +155,20 @@ describe("generateReply — streaming mode (onClause)", () => {
     expect(mockCreate).toHaveBeenCalledTimes(2);
   });
 
+  it("never speaks a tool call the model wrote as text, even when the chunker splits it across clauses", async () => {
+    mockCreate.mockImplementation(() =>
+      Promise.resolve(
+        chunkStream(contentDeltas('Sure thing. [Tool call: check_appointment_availability {providerId: "40d245b2", date: "2026-11-26"}] Tomorrow has openings. ')),
+      ),
+    );
+    const clauses: string[] = [];
+    await generateReply({ system: "sys", user: "any slots?", clientId: "c1", onClause: (c) => clauses.push(c), enabledTools: [] });
+    const spoken = clauses.join(" ");
+    expect(spoken).not.toMatch(/tool call|providerId|check_appointment_availability|\]|\{/i);
+    expect(spoken).toContain("Sure thing.");
+    expect(spoken).toContain("Tomorrow has openings.");
+  });
+
   it("a filler never counts as the reply: if the real reply fails, it is retried instead of being blocked", async () => {
     dispatchToolCallMock.mockResolvedValue(JSON.stringify({ available: true }));
     let call = 0;

@@ -5,7 +5,8 @@ import { getAgentWithTenantCached } from "../db/agent-cache";
 import { getPatientById } from "../db/patients";
 import { buildLearningContext } from "./context";
 import { extractWithLlm, validateExtraction, type TranscriptTurn } from "./extract";
-import { applyExtraction, type MergeResult } from "./merge";
+import { applyExtraction, type LessonJudge, type MergeResult } from "./merge";
+import { generateReply } from "../agent/llm";
 import { createSupabaseLearningStore, LearningTableMissingError } from "./store";
 import type { Learning, LearningStore } from "./types";
 
@@ -22,6 +23,8 @@ export interface LearnDeps {
   extract: (args: { clientId: string; turns: TranscriptTurn[]; known: Pick<Learning, "key" | "text">[]; agentName?: string }) => Promise<string>;
   /** Optional semantic matcher; defaults to the local embedding model. */
   embed?: (text: string) => Promise<number[]>;
+  /** Breaks ties when two lessons are close but not clearly the same; defaults to a short model call. */
+  judge?: LessonJudge;
   /** Resolves who/what the call was with; overridable for tests. */
   resolveIdentity: (args: { clientId: string; agentId?: string | null; patientId?: string | null }) => Promise<{ clientId: string; agentName?: string; names: string[]; phones: string[] }>;
 }
@@ -62,10 +65,26 @@ async function resolveIdentityFromDb(args: { clientId: string; agentId?: string 
   return { clientId, agentName, names, phones };
 }
 
+/** One short yes/no model call: do the two instructions ask for the same behaviour, not just share a topic? */
+async function judgeSameLesson(a: string, b: string): Promise<boolean> {
+  const reply = await generateReply({
+    system:
+      "You compare two instructions written for a phone agent. Answer with exactly one word: YES if they ask the agent to do the SAME thing " +
+      "(they may be worded differently), NO if they are different behaviours even though they are about the same subject (for example " +
+      "\"verify availability before offering slots\" and \"offer at most two slots\" are NO).",
+    user: `A: ${a}\nB: ${b}\nSame behaviour? Answer YES or NO.`,
+    clientId: "learning-judge",
+    useTools: false,
+    raw: true,
+    maxOutputTokens: 60,
+  });
+  return /^\s*yes\b/i.test(reply.text.replace(/<think>[\s\S]*?<\/think>/gi, ""));
+}
+
 let defaultStore: LearningStore | null = null;
 function realDeps(): LearnDeps {
   defaultStore ??= createSupabaseLearningStore(supabase);
-  return { store: defaultStore, loadTranscript: loadTranscriptFromSession, extract: extractWithLlm, embed: (t) => embed(t), resolveIdentity: resolveIdentityFromDb };
+  return { store: defaultStore, loadTranscript: loadTranscriptFromSession, extract: extractWithLlm, embed: (t) => embed(t), judge: judgeSameLesson, resolveIdentity: resolveIdentityFromDb };
 }
 
 export interface LearnOutcome {
@@ -101,7 +120,7 @@ export async function learnFromCall(
     const { extraction, rejected } = validateExtraction(raw, { patientText, fullText, identifiers: { names: who.names, phones: who.phones } });
     if (rejected.length) console.log(`[Learning] ${callId}: dropped ${rejected.length} ungrounded/unsafe item(s): ${rejected.slice(0, 5).join(" | ")}`);
 
-    const merge = await applyExtraction({ embed: deps.embed, store: deps.store, clientId: who.clientId, agentId: input.agentId, patientId: input.patientId, callId, extraction });
+    const merge = await applyExtraction({ embed: deps.embed, judge: deps.judge, store: deps.store, clientId: who.clientId, agentId: input.agentId, patientId: input.patientId, callId, extraction });
     invalidateLearningContext(who.clientId);
     // Test calls have no after-call job, so also record the call's findings (unanswered questions, emotional
     // failure points) that the "Find suggestions" pipeline works from — real calls already do this in post-call.

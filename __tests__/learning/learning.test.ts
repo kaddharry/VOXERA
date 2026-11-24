@@ -156,6 +156,42 @@ describe("applyExtraction: agent and global lessons", () => {
     expect(await store.listGlobal(CLIENT)).toHaveLength(1); // unrelated lesson did not merge
   });
 
+  describe("gray-band lessons are decided by the judge, not by the vector alone", () => {
+    const vecs: Record<string, number[]> = {
+      "Verify slot availability before offering times": [1, 0],
+      "Limit the options to two": [0.7, Math.sqrt(1 - 0.49)], // cosine 0.70 with the first: same topic, different behaviour
+      "Offer no more than two choices": [0.99, 0.14], // cosine ~0.99 with... (set below)
+      "Ask for the callback number": [0, 1], // cosine 0 with the first
+    };
+    const embed = async (t: string) => vecs[t] ?? [0, 0, 1];
+    const run = async (judge: ((a: string, b: string) => Promise<boolean>) | undefined, second: string) => {
+      const store = createMemoryLearningStore();
+      await applyExtraction({ store, embed, judge, clientId: CLIENT, agentId: "a1", callId: "c1", extraction: ex({ lessons: [lesson("Verify slot availability before offering times")] }) });
+      await applyExtraction({ store, embed, judge, clientId: CLIENT, agentId: "a2", callId: "c2", extraction: ex({ lessons: [lesson(second)] }) });
+      return store;
+    };
+    it("topic-adjacent lessons (cosine 0.70) are NOT merged when the judge says they differ", async () => {
+      const judge = vi.fn().mockResolvedValue(false);
+      const store = await run(judge, "Limit the options to two");
+      expect(judge).toHaveBeenCalledTimes(1);
+      expect(await store.listGlobal(CLIENT)).toHaveLength(0);
+    });
+    it("…and ARE merged into a global lesson when the judge says they are the same", async () => {
+      const store = await run(vi.fn().mockResolvedValue(true), "Limit the options to two");
+      expect(await store.listGlobal(CLIENT)).toHaveLength(1);
+    });
+    it("a clear miss never reaches the judge", async () => {
+      const judge = vi.fn().mockResolvedValue(true);
+      const store = await run(judge, "Ask for the callback number");
+      expect(judge).not.toHaveBeenCalled();
+      expect(await store.listGlobal(CLIENT)).toHaveLength(0);
+    });
+    it("a judge that errors is treated as 'different' (never merges on a failure)", async () => {
+      const store = await run(vi.fn().mockRejectedValue(new Error("llm down")), "Limit the options to two");
+      expect(await store.listGlobal(CLIENT)).toHaveLength(0);
+    });
+  });
+
   it("a different tenant never sees these", async () => {
     const store = createMemoryLearningStore();
     await applyExtraction({ store, clientId: CLIENT, agentId: "a1", patientId: "p1", callId: "c1", extraction: ex({ patientFacts: [fact("k", "secret fact")], lessons: [lesson("x lesson one")] }) });
