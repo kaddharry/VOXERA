@@ -94,6 +94,7 @@ async function draftGuidelines(clientId: string, agentId: string, failures: Insi
       user: formatFailuresForReview(failures) + already,
       clientId,
       useTools: false,
+      raw: true,
       maxOutputTokens: 700,
     });
     return parseGuidelines(reply.text, agentId, failures) ?? [];

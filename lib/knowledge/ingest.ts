@@ -253,6 +253,7 @@ async function writeStackSummaries(args: {
         user: groupText.slice(0, CONFIG.llm.maxInputTokens * 3),
         clientId,
         useTools: false,
+      raw: true,
         maxOutputTokens: 80,
       });
       const summaryText = summaryReply.text.trim();

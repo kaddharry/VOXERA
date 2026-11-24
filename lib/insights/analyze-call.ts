@@ -44,6 +44,7 @@ export async function analyzeCall(sessionId: string, clientId: string): Promise<
       user: `${formatTranscript(turns)}\n\nCandidate turns for failurePoints:\n${candidates}`,
       clientId,
       useTools: false,
+      raw: true,
       maxOutputTokens: 700,
     });
     return applyReview(reply.text, turns, drops) ?? fallback;

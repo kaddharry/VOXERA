@@ -155,6 +155,7 @@ export async function generateCallSummary(sessionId: string, clientId: string): 
       user: userPrompt,
       clientId,
       useTools: false,
+      raw: true,
       maxOutputTokens: 400,
     });
     const llmSummary = parseSummary(reply.text);
