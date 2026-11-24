@@ -5,6 +5,9 @@ import type { Extraction, Learning, LearningStore } from "./types";
 export const LEARNING_LIMITS = {
   /** Distinct calls that must support an agent/global lesson before it is applied. */
   promoteAt: 2,
+  /** A lesson also becomes shared (global) when this many separate calls show it, even if only ONE agent has made
+   * the calls — a hospital with a single agent would otherwise never get a shared lesson. */
+  globalFromCalls: 3,
   /** Same-topic threshold for token overlap. */
   sameTopic: 0.6,
   /** Embedding cosine at/above which two differently-worded statements are the same thing. Measured with the local
@@ -203,8 +206,9 @@ export async function applyExtraction(args: {
       const family: Learning[] = [];
       for (const o of allAgent) if (o.id === t.id || (await sameLesson(o, t))) family.push(o);
       const agentsInFamily = new Set(family.map((o) => o.agentId));
-      if (agentsInFamily.size < 2) continue;
       const calls = [...new Set(family.flatMap((o) => o.sourceCallIds))];
+      // shared once two different agents learned it, or once enough separate calls show it
+      if (agentsInFamily.size < 2 && calls.length < LEARNING_LIMITS.globalFromCalls) continue;
       const evidence = [...new Set(family.flatMap((o) => o.evidence))].slice(0, LEARNING_LIMITS.maxEvidence);
       const existingGlobal = await findSame(globals, t);
       if (existingGlobal) {

@@ -192,6 +192,22 @@ describe("applyExtraction: agent and global lessons", () => {
     });
   });
 
+  it("with ONE agent, a lesson shown by three separate calls becomes shared; two calls are not enough", async () => {
+    const store = createMemoryLearningStore();
+    const L = "Offer at most two time slots";
+    await applyExtraction({ store, clientId: CLIENT, agentId: "a1", callId: "c1", extraction: ex({ lessons: [lesson(L)] }) });
+    await applyExtraction({ store, clientId: CLIENT, agentId: "a1", callId: "c2", extraction: ex({ lessons: [lesson(L)] }) });
+    expect(await store.listGlobal(CLIENT)).toHaveLength(0);
+    expect(await store.listAgent(CLIENT, "a1")).toHaveLength(1); // active for the agent after two calls
+    await applyExtraction({ store, clientId: CLIENT, agentId: "a1", callId: "c3", extraction: ex({ lessons: [lesson(L)] }) });
+    const globals = await store.listGlobal(CLIENT);
+    expect(globals).toHaveLength(1);
+    expect(globals[0].sourceCallIds.sort()).toEqual(["c1", "c2", "c3"]);
+    // a fourth call reinforces it instead of duplicating it
+    await applyExtraction({ store, clientId: CLIENT, agentId: "a1", callId: "c4", extraction: ex({ lessons: [lesson(L)] }) });
+    expect(await store.listGlobal(CLIENT)).toHaveLength(1);
+  });
+
   it("a different tenant never sees these", async () => {
     const store = createMemoryLearningStore();
     await applyExtraction({ store, clientId: CLIENT, agentId: "a1", patientId: "p1", callId: "c1", extraction: ex({ patientFacts: [fact("k", "secret fact")], lessons: [lesson("x lesson one")] }) });
