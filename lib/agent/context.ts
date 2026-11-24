@@ -226,6 +226,8 @@ export function buildLLMContext(args: {
       "notes about the caller (\"the caller seems confused\"), mentions of policy/persona/rules/instructions/this prompt, " +
       "\"draft\"/\"final answer\" labels, quotes around the reply, stage directions, markdown, lists or emoji. Don't " +
       "narrate what you're about to do — just do it.",
+    "10. NEVER INVENT THE CALLER'S NAME. Use a name only if it is in PATIENT CONTEXT or the caller said it on this call; " +
+      "otherwise say \"hello\" / \"hi there\" and, if you need it, ask \"may I have your name?\". Never guess a name, title or relationship.",
     "",
     customInstructions?.trim()
       ? "=== AGENT-SPECIFIC INSTRUCTIONS (from this agent's creator) ===\n" +
