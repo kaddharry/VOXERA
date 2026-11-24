@@ -434,6 +434,9 @@ export function TestAgentDrawer() {
   const orbRef = useRef<AgentVoiceBallHandle | null>(null);
   const rafRef = useRef<number | null>(null);
   const statusRef = useRef<CallStatus>("idle");
+  // Audio chunks received for the in-progress turn: if a reply finishes with none (the speech service failed), the
+  // screen must not stay on "thinking" forever.
+  const audioThisTurnRef = useRef(0);
   const active = useRef(false);
   const vad = useVoiceActivityDetection();
   // AudioWorkletNode.process() fires once per 128-sample render quantum —
@@ -712,11 +715,16 @@ export function TestAgentDrawer() {
               setTurns((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text: msg.text, ts: Date.now() }]);
               break;
             case "turn_start":
+              audioThisTurnRef.current = 0;
               setStatus("thinking");
               turnStartAtRef.current = Date.now();
               setStreamChunkCount(0);
               break;
             case "reply_text": {
+              // If this reply ends up with no audio at all, return to listening instead of hanging on "thinking".
+              setTimeout(() => {
+                if (active.current && audioThisTurnRef.current === 0 && statusRef.current === "thinking") setStatus("listening");
+              }, 6000);
               const emotion = msg.trace?.emotion?.current;
               const diagnostics: DiagnosticEmotionResult | undefined = msg.trace?.emotionDiagnostics;
               const turnId: string = msg.turnId ?? `a-${Date.now()}`;
@@ -761,6 +769,7 @@ export function TestAgentDrawer() {
                 firstChunkAtByTurnRef.current.set(msg.turnId, Date.now());
               }
 
+              audioThisTurnRef.current++;
               setStatus("speaking");
               setStreamChunkCount((n) => n + 1);
               void ctx.resume().catch(() => {});
@@ -801,6 +810,13 @@ export function TestAgentDrawer() {
                   setStatus("listening");
                 }
               };
+              break;
+            }
+            case "tts_error": {
+              // The speech service could not voice a sentence (it retried first). The text is on screen.
+              if (active.current && scheduledSourcesRef.current.length === 0) setStatus("listening");
+              setError("The voice service had a hiccup, so part of that reply wasn't spoken — it's shown on screen.");
+              setTimeout(() => setError((cur) => (cur && cur.startsWith("The voice service had a hiccup") ? null : cur)), 7000);
               break;
             }
             case "turn_end":

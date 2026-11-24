@@ -448,6 +448,10 @@ export class TestAgentStreamHandler {
       }
 
       const { stream: speakStream, ready: speakStreamReady } = this.ensureSpeakStream();
+      // If the speech service cannot voice a sentence at all, say so instead of leaving the screen on "thinking".
+      (speakStream as { setFailureHandler?: (cb: (t: string) => void) => void }).setFailureHandler?.(() => {
+        if (myGeneration === this.generation) this.ws.send(JSON.stringify({ type: "tts_error", turnId: undefined }));
+      });
       speakStream.setAudioHandler((audioChunk) => {
         if (myGeneration !== this.generation) return; // stale — dropped by barge-in
         this.isSpeaking = true;
