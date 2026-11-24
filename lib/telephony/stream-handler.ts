@@ -1,3 +1,6 @@
+import { CallerSoundClock, TurnMarks } from "../realtime/turn-latency";
+import { emitSessionEvent } from "../realtime/emitter";
+import { computeRmsEnergy } from "../audio/acoustic";
 import { nanoid } from "nanoid";
 import WebSocket from "ws";
 import { resolveVoiceModel, getClientVoiceSettings } from "../deepgram/tts";
@@ -194,6 +197,8 @@ export class TelephonyStreamHandler {
   private stt: LiveSttConnection;
   private streamSid: string | null = null;
   private startedAt: number;
+  /** When the caller last made real sound — the start of the clock for "time to first word". */
+  private callerSound = new CallerSoundClock();
   private isBusy = false; // prevent overlapping LLM turns
   private isSpeaking = false; // Issue #8: track if TTS is playing for barge-in
   /** The caller's sentence the in-flight turn is answering ("" when idle). */
@@ -640,6 +645,7 @@ export class TelephonyStreamHandler {
 
           // Issue #14: Accumulate PCM for turn-level acoustic analysis
           this.turnAudioChunks.push(pcmBuf);
+          this.callerSound.note(computeRmsEnergy(pcmBuf), 300);
 
           // Local VAD first (microseconds), STT second: lets a real
           // interruption be acted on without waiting for a transcript.
@@ -775,6 +781,7 @@ export class TelephonyStreamHandler {
     this.isBusy = true;
     this.currentTurnText = text;
     const myGeneration = this.generation;
+    const marks = new TurnMarks(Date.now(), this.callerSound.at);
 
     console.info(JSON.stringify({ service: "telephony", event: "transcript_received", timestamp: new Date().toISOString(), callSid: this.callSid, streamSid: this.streamSid, clientId: this.clientId, agentId: this.agentId ?? null, patientId: this.patientId ?? null, sessionId: this.sessionId, final: isFinal, characterCount: text.length }));
 
@@ -856,6 +863,11 @@ export class TelephonyStreamHandler {
       const { stream: speakStream, ready: speakStreamReady } = this.ensureSpeakStream();
       speakStream.setAudioHandler((audioChunk) => {
         if (myGeneration !== this.generation) return; // stale — barge-in happened
+        const first = marks.firstAudio();
+        if (first) {
+          console.log(`[Latency] ${this.callSid}: listen ${first.listenMs}ms · think ${first.thinkMs ?? "-"}ms · voice ${first.voiceMs ?? "-"}ms · FIRST WORD ${first.firstWordMs}ms`);
+          void emitSessionEvent(this.sessionId, "latency", first as unknown as Record<string, unknown>);
+        }
         this.sendAudioChunkToTwilio(audioChunk);
       });
 
@@ -877,9 +889,11 @@ export class TelephonyStreamHandler {
           if (myGeneration !== this.generation) return; // stale — dropped by barge-in
           trulySpokenClauses.push(clause);
           this.isSpeaking = true;
+          marks.firstClause();
           const shaped = prosodyParams ? applyEmotionProsody(clause, prosodyParams, this.speechProvider) : clause;
           void speakStreamReady.then(() => {
             if (myGeneration !== this.generation) return;
+            marks.ttsSend();
             speakStream.sendText(shaped);
             speakStream.flush();
           });
