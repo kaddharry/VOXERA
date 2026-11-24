@@ -377,6 +377,7 @@ const EMOTION_COLOR: Record<string, string> = {
   sadness: "bg-blue-400", disappointment: "bg-blue-300", fear: "bg-amber-500", confusion: "bg-amber-400",
   joy: "bg-emerald-500", gratitude: "bg-emerald-400", excitement: "bg-emerald-600",
   neutral: "bg-[var(--color-text-muted)]", calm: "bg-sky-400",
+  relief: "bg-emerald-300", surprise: "bg-sky-500", worry: "bg-amber-500", pain: "bg-red-600",
 };
 
 export function EmotionTimeline({ history }: { history: EmotionHistoryPoint[] }) {

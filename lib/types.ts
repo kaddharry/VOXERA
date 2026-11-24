@@ -12,7 +12,12 @@ export type EmotionLabel =
   | "joy"
   | "gratitude"
   | "excitement"
-  | "disappointment";
+  | "disappointment"
+  // added with the multilingual engine (lib/emotion/engine.ts)
+  | "relief"
+  | "surprise"
+  | "worry"
+  | "pain";
 
 export interface ConfidenceCategory {
   level: "high" | "medium" | "low";

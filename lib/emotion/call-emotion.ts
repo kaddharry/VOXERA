@@ -25,7 +25,7 @@ export interface CallEmotion {
   peakNegative: { turn: number; label: EmotionLabel; intensity: number } | null;
 }
 
-const NEGATIVE: ReadonlySet<EmotionLabel> = new Set(["anger", "frustration", "sadness", "distress", "fear", "disappointment", "confusion"]);
+const NEGATIVE: ReadonlySet<EmotionLabel> = new Set(["anger", "frustration", "sadness", "distress", "fear", "disappointment", "confusion", "worry", "pain"]);
 const POSITIVE: ReadonlySet<EmotionLabel> = new Set(["joy", "gratitude", "excitement", "calm"]);
 
 /** Valence change between the first and last third of the call that counts as a real shift. */

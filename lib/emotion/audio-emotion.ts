@@ -197,6 +197,10 @@ function inferLabelScored(
     gratitude: 0,
     excitement: 0,
     disappointment: 0,
+    relief: 0,
+    surprise: 0,
+    worry: 0,
+    pain: 0,
   };
 
   // ── Anger: high energy, high pitch, fast rate, LOW pitch variation (controlled rage)
@@ -351,6 +355,15 @@ function inferLabelScored(
   } else if (bestLabel === "joy" && f.zcr > 0.3 && f.energyMod > 0.4) {
     signalHint = "laughing";
   }
+
+  // A voice carries arousal and valence, not meaning: it cannot tell gratitude from calm, disappointment
+  // from sadness. Name the nearest acoustic class and leave the specific
+  // label to the words (fusion lets the text label win when the words are clear).
+  const ACOUSTIC_NEIGHBOUR: Partial<Record<EmotionLabel, EmotionLabel>> = {
+    gratitude: "calm",
+    disappointment: "sadness",
+  };
+  bestLabel = ACOUSTIC_NEIGHBOUR[bestLabel] ?? bestLabel;
 
   return { label: bestLabel, patternStrength, signalHint };
 }

@@ -63,7 +63,7 @@ export interface CallInsights {
 
 type Row = { type: string; payload: Record<string, any> };
 
-const NEGATIVE: ReadonlySet<EmotionLabel> = new Set(["anger", "frustration", "sadness", "distress", "fear", "disappointment", "confusion"]);
+const NEGATIVE: ReadonlySet<EmotionLabel> = new Set(["anger", "frustration", "sadness", "distress", "fear", "disappointment", "confusion", "worry", "pain"]);
 /** Valence fall between consecutive patient turns that counts as "got worse". */
 export const VALENCE_DROP_THRESHOLD = 0.25;
 

@@ -13,7 +13,9 @@ function getBarColor(label: string) {
     case "anger":
     case "frustration":
     case "distress":
+    case "pain":
       return "bg-red-500";
+    case "worry":
     case "fear":
     case "confusion":
     case "disappointment":
@@ -21,6 +23,7 @@ function getBarColor(label: string) {
     case "joy":
     case "gratitude":
     case "excitement":
+    case "relief":
       return "bg-emerald-500";
     default:
       return "bg-cyan-500";

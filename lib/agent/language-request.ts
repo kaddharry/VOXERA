@@ -18,7 +18,7 @@ export function detectLanguageRequest(text: string): RequestedLanguage | null {
 
 /** Safety net: common English words as STT spells them in Devanagari / Gujarati /
  * Gurmukhi. If most of a turn is these, the caller spoke English. */
-const TRANSLIT_ENGLISH = new Set([
+export const TRANSLIT_ENGLISH_WORDS = new Set([
   "आई", "आय", "हैव", "हेव", "अ", "ए", "एन", "द", "दी", "टू", "टु", "कैन", "कैन", "वांट", "वाँट", "एम", "नोट", "इज़", "इज", "इट", "यस", "येस", "नो", "ओके", "सो", "बट", "एंड", "एण्ड", "विथ", "फॉर", "माय", "यू", "योर", "प्लीज", "प्लीज़", "बुक", "अपॉइंटमेंट", "डॉक्टर", "पेन", "टूथ", "टुमारो", "टुडे", "थैंक", "थैंक्स", "हेलो", "हाय", "फीलिंग", "गुड", "बैड", "बेसिकली", "वुड", "लाइक", "टाइम", "मी", "इन", "ऑन", "एट", "वी", "दिस", "दैट", "हाउ", "व्हाट", "वॉट", "व्हेन", "आर", "वाज", "बी", "दो", "डू", "डोंट", "नाउ", "टुमॉरो", "ऐक", "ऑल", "राइट", "सॉरी", "वेल",
   "આઈ", "એમ", "નોટ", "ફીલિંગ", "ગુડ", "હેવ", "ટૂ", "ટુ", "બુક", "એપોઇન્ટમેન્ટ", "ડૉક્ટર", "ડોક્ટર", "પેઇન", "યસ", "નો", "ઓકે", "પ્લીઝ", "થેંક્સ", "કેન", "વોન્ટ",
   "ਆਈ", "ਹੈਵ", "ਅ", "ਟੂ", "ਬੁੱਕ", "ਐਪੋਇੰਟਮੈਂਟ", "ਡਾਕਟਰ", "ਪੇਨ", "ਯੈਸ", "ਨੋ", "ਓਕੇ", "ਪਲੀਜ਼", "ਕੈਨ", "ਵਾਂਟ",
@@ -27,6 +27,6 @@ const TRANSLIT_ENGLISH = new Set([
 export function looksLikeTransliteratedEnglish(text: string): boolean {
   const tokens = text.split(/[\s,.!?।॥]+/).filter(Boolean);
   if (tokens.length < 3) return false;
-  const hits = tokens.filter((t) => TRANSLIT_ENGLISH.has(t)).length;
+  const hits = tokens.filter((t) => TRANSLIT_ENGLISH_WORDS.has(t)).length;
   return hits / tokens.length >= 0.6;
 }

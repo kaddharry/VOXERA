@@ -1,4 +1,5 @@
 import { CallerSoundClock, TurnMarks } from "../realtime/turn-latency";
+import { normalizeTranscript } from "../agent/transcript-language";
 import { emitSessionEvent } from "../realtime/emitter";
 import { computeRmsEnergy } from "../audio/acoustic";
 import { nanoid } from "nanoid";
@@ -813,6 +814,9 @@ export class TelephonyStreamHandler {
 
       if (this.voiceSetupPromise) await this.voiceSetupPromise;
 
+      // One language per utterance: "yes आई एम हार्दिक" (English split across scripts) becomes "yes I am Hardik".
+      const spoken = await normalizeTranscript(text, { clientId: this.clientId });
+
       const turnInput = {
         sessionId: this.sessionId,
         userId: this.userId,
@@ -820,7 +824,7 @@ export class TelephonyStreamHandler {
         agentId: this.agentId,
         patientId: this.patientId,
         callerNumber: this.callerNumber,
-        transcript: text,
+        transcript: spoken,
         language: this.language,
         sttConfidence: 0.9,
         audioEmotion: null,
@@ -1103,7 +1107,7 @@ export class TelephonyStreamHandler {
           const lastUserUtterance = userUtterances[userUtterances.length - 1];
           const lastEmotion = lastUserUtterance?.emotion?.label || "neutral";
 
-          const NEGATIVE_EMOTIONS = new Set(["anger", "frustration", "sadness", "distress", "disappointment"]);
+          const NEGATIVE_EMOTIONS = new Set(["anger", "frustration", "sadness", "distress", "disappointment", "pain"]);
 
           if (NEGATIVE_EMOTIONS.has(lastEmotion)) {
             console.log(`[TelephonyStream] Call ended with negative emotion "${lastEmotion}". Triggering recovery SMS to ${this.callerNumber}`);

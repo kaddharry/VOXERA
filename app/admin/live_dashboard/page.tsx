@@ -88,6 +88,10 @@ const EMOTION_HUE: Record<string, string> = {
   excitement: "#10B981",
   calm: "#38BDF8",
   neutral: "#A78BFA",
+  relief: "#34D399",
+  surprise: "#38BDF8",
+  worry: "#F59E0B",
+  pain: "#DC2626",
 };
 
 interface PatientInfo {

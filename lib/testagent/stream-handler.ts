@@ -16,6 +16,7 @@ import { emitSessionEvent } from "../realtime/emitter";
 import { getAgentWithTenantCached, getPatientCallContextCached } from "../db/agent-cache";
 import { getInlineKnowledgeBase } from "../knowledge/inline";
 import { detectLanguageRequest } from "../agent/language-request";
+import { normalizeTranscript } from "../agent/transcript-language";
 import { DEMO, ensureSeeded } from "../bootstrap";
 import { CONFIG } from "../config";
 
@@ -415,6 +416,9 @@ export class TestAgentStreamHandler {
 
       await this.voiceSetupPromise;
 
+      // One language per utterance: "yes आई एम हार्दिक" (English split across scripts) becomes "yes I am Hardik".
+      const spoken = await normalizeTranscript(text, { clientId: this.clientId });
+
       const turnInput = {
         sessionId: this.sessionId,
         // A browser test call is a fresh synthetic caller. Reusing the one
@@ -425,7 +429,7 @@ export class TestAgentStreamHandler {
         clientId: this.clientId,
         agentId: this.agentId,
         patientId: this.patientId,
-        transcript: text,
+        transcript: spoken,
         // buildLLMContext's language-matching rule (lib/agent/context.ts)
         // only fires when this is set — without it the browser test drawer
         // always replied in English regardless of what language the caller
