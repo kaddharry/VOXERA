@@ -18,7 +18,8 @@ describe("guardOutput — escalation sentence never says 'specialist'", () => {
       minRetrieval: 0,
     });
     expect(result.cleaned).not.toMatch(/specialist/i);
-    expect(result.cleaned.toLowerCase()).toContain("someone from the team");
+    expect(result.cleaned.toLowerCase()).toContain("care team");
+    expect(result.cleaned.toLowerCase()).not.toContain("grab someone"); // we cannot transfer the call, so never promise it
   });
 
   it("does NOT double up when the reply already offered a hand-off naturally", () => {
@@ -35,6 +36,14 @@ describe("guardOutput — escalation sentence never says 'specialist'", () => {
     // Should be unchanged — no second escalation sentence appended.
     expect(result.cleaned).toBe(naturalReply);
     expect(result.reasons).not.toContain("appended escalation sentence (policy)");
+  });
+
+  it("says the care-team line only ONCE per call", () => {
+    const base = { allowedCitations: [], policy: policy("human"), sttConfidence: 1, topRetrievalScore: 1, minStt: 0, minRetrieval: 0 };
+    const first = guardOutput({ ...base, reply: "That sounds tough. What's going on?" });
+    expect(first.cleaned.toLowerCase()).toContain("care team");
+    const second = guardOutput({ ...base, reply: "Thanks for telling me. How bad is it?", alreadyOfferedHandoff: true });
+    expect(second.cleaned).toBe("Thanks for telling me. How bad is it?");
   });
 
   it("does not append anything when escalate is none", () => {

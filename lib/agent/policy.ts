@@ -82,10 +82,10 @@ export function policyToPrompt(d: PolicyDirectives, alreadyOfferedHandoff = fals
         ? "Escalation is still active, but you already offered to bring someone in earlier this session (see " +
           "STM) — do NOT repeat that offer again. Just keep talking with the caller normally and stay on what " +
           "they're actually saying. Only mention the hand-off again if the caller asks about it or explicitly agrees."
-        : "Escalation required: offer to bring in a real person from the team to take over, ONCE. Say it exactly " +
-          "the way a friend would offer to grab someone — e.g. \"Let me grab someone from the team for you\" or " +
-          "\"I'll get a teammate to jump in and help with this.\" NEVER say the words \"tier\", \"tier 2\", " +
-          "\"tier2\", \"specialist\", or \"escalate\" — those are internal terms, not something you'd say out loud."
+        : "Escalation required: tell the caller ONCE that you're letting the care team know so someone can follow " +
+          "up with them (e.g. \"I'll let our care team know so a nurse can follow up with you\"). You cannot transfer " +
+          "the call, so never offer to \"connect\" or \"grab\" someone live. If you can book a visit with your tools, offer " +
+          "that too. NEVER say the words \"tier\", \"tier 2\", \"tier2\", \"specialist\", or \"escalate\" — internal terms."
       : "",
     d.safetyScript ? `Safety: ${d.safetyScript}` : "",
     ...d.notes.map((n) => `Note: ${n}`),

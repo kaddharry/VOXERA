@@ -43,6 +43,13 @@ export function createSupabaseLearningStore(db: SupabaseClient): LearningStore {
       );
       return (data ?? []) as Learning[];
     },
+    async listAllPatient(clientId, limit = 300) {
+      const data = unwrap(
+        await db.from("call_learnings").select("*").eq("clientId", clientId).eq("scope", "patient").eq("status", "active").order("updatedAt", { ascending: false }).limit(limit),
+        "Reading patient learnings",
+      );
+      return (data ?? []) as Learning[];
+    },
     async listAllAgentLessons(clientId) {
       const data = unwrap(
         await db.from("call_learnings").select("*").eq("clientId", clientId).eq("scope", "agent").in("status", ["active", "pending"]),
@@ -76,6 +83,9 @@ export function createMemoryLearningStore(): LearningStore & { rows: Learning[] 
     },
     async listGlobal(clientId, statuses = DEFAULT_STATUSES) {
       return pick((l) => l.clientId === clientId && l.scope === "global", statuses);
+    },
+    async listAllPatient(clientId, limit = 300) {
+      return pick((l) => l.clientId === clientId && l.scope === "patient", ["active"]).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
     },
     async listAllAgentLessons(clientId) {
       return pick((l) => l.clientId === clientId && l.scope === "agent", ["active", "pending"]);

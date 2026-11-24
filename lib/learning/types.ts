@@ -43,6 +43,8 @@ export interface LearningStore {
   listPatient(clientId: string, patientId: string, statuses?: LearningStatus[]): Promise<Learning[]>;
   listAgent(clientId: string, agentId: string, statuses?: LearningStatus[]): Promise<Learning[]>;
   listGlobal(clientId: string, statuses?: LearningStatus[]): Promise<Learning[]>;
+  /** Every patient's facts in the account (for the admin overview), newest first. */
+  listAllPatient(clientId: string, limit?: number): Promise<Learning[]>;
   /** Every agent-scope lesson in the account — used to find lessons that repeat across agents. */
   listAllAgentLessons(clientId: string): Promise<Learning[]>;
   insert(row: Learning): Promise<void>;

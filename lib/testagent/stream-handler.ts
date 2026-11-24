@@ -610,7 +610,7 @@ export class TestAgentStreamHandler {
     if (this.agentId) {
       const { sessionId, clientId, agentId, patientId } = this;
       // Session events are written fire-and-forget; give the last ones a moment to land.
-      setTimeout(() => void learnFromCall({ sessionId, clientId, agentId, patientId }), 2500);
+      setTimeout(() => void learnFromCall({ sessionId, clientId, agentId, patientId, recordInsights: true }), 2500);
     }
   }
 
