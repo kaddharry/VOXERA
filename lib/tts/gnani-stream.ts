@@ -63,8 +63,15 @@ export class GnaniSpeakStream {
    * technical difficulties" (measured: the same text fails and succeeds at
    * random). A failed clause used to be dropped, leaving a hole in the
    * reply, so each is retried before giving up. */
-  private static readonly MAX_ATTEMPTS = 3;
-  private static readonly RETRY_DELAYS_MS = [150, 400];
+  private static readonly MAX_ATTEMPTS = 5;
+  private static readonly RETRY_DELAYS_MS = [100, 250, 500, 900];
+  private failureHandler: ((text: string) => void) | null = null;
+
+  /** Called with the text of a clause that could not be voiced at all (every retry and fallback failed), so the
+   * caller can tell the user instead of leaving them waiting on a reply that will never be heard. */
+  public setFailureHandler(cb: ((text: string) => void) | null): void {
+    this.failureHandler = cb;
+  }
   /** Safety net: if the server's "complete"/"error" for an in-flight
    * request is ever lost (dropped by the network, or arrives as a frame
    * that doesn't parse as JSON and hits connect()'s catch) `busy` would
@@ -227,15 +234,20 @@ export class GnaniSpeakStream {
       console.warn("[Gnani Speak] REST fallback failed too:", err instanceof Error ? err.message : err);
     }
     // Gnani is down. English clauses can still be voiced by Deepgram (a different voice beats a hole in the reply).
+    let voiced = false;
     if (this.current === cur && !this.closed && isLatinText(cur.text)) {
       try {
         const audio = await synthesizeDeepgramRaw(cur.text, this.opts.sampleRate);
-        if (!this.closed && this.current === cur && audio.length > 0) this.onAudioChunk(audio);
+        if (!this.closed && this.current === cur && audio.length > 0) {
+          this.onAudioChunk(audio);
+          voiced = true;
+        }
         console.warn("[Gnani Speak] Voiced one clause with the Deepgram fallback.");
       } catch (err) {
         console.warn("[Gnani Speak] Deepgram fallback failed too — skipping this clause:", err instanceof Error ? err.message : err);
       }
     }
+    if (!voiced && !this.closed && this.current === cur) this.failureHandler?.(cur.text);
     if (this.current === cur) this.finishCurrent();
   }
 

@@ -72,10 +72,10 @@ describe("GnaniSpeakStream", () => {
   it("falls back to the REST endpoint after repeated failures", async () => {
     restFallback.mockResolvedValue(Buffer.from("rest-audio"));
     const { s, audio } = await makeStream();
-    scripted = ["error", "error", "error"];
+    scripted = ["error", "error", "error", "error", "error"];
     s.sendText("important sentence.");
-    await tick(1500);
-    expect(sent.length).toBe(3);
+    await tick(2800);
+    expect(sent.length).toBe(5);
     expect(restFallback).toHaveBeenCalledTimes(1);
     expect(audio.map((b) => b.toString())).toContain("rest-audio");
   });
@@ -84,9 +84,9 @@ describe("GnaniSpeakStream", () => {
     restFallback.mockRejectedValue(new Error("down"));
     deepgramFallback.mockResolvedValue(Buffer.from("deepgram-audio"));
     const { s, audio } = await makeStream();
-    scripted = ["error", "error", "error"];
+    scripted = ["error", "error", "error", "error", "error"];
     s.sendText("I can book you tomorrow at ten.");
-    await tick(1500);
+    await tick(2800);
     expect(deepgramFallback).toHaveBeenCalledWith("I can book you tomorrow at ten.", 16000);
     expect(audio.map((b) => b.toString())).toContain("deepgram-audio");
   });
@@ -94,19 +94,42 @@ describe("GnaniSpeakStream", () => {
   it("does not send Hindi to the English-only Deepgram voice", async () => {
     restFallback.mockRejectedValue(new Error("down"));
     const { s } = await makeStream();
-    scripted = ["error", "error", "error"];
+    scripted = ["error", "error", "error", "error", "error"];
     s.sendText("आपको ये परेशानी हो रही है।");
-    await tick(1500);
+    await tick(2800);
     expect(deepgramFallback).not.toHaveBeenCalled();
+  });
+
+  it("tells the caller when a sentence could not be voiced at all, and still moves on", async () => {
+    restFallback.mockRejectedValue(new Error("down"));
+    const { s } = await makeStream();
+    const failed: string[] = [];
+    s.setFailureHandler((t) => failed.push(t));
+    scripted = ["error", "error", "error", "error", "error"];
+    s.sendText("पैरों में दर्द कितना है?"); // Hindi: no English fallback voice
+    s.sendText("next one.");
+    await tick(3600);
+    expect(failed).toEqual(["पैरों में दर्द कितना है?"]);
+    expect(sent).toContain("next one.");
+  });
+
+  it("does not report a failure when a retry succeeds", async () => {
+    const { s } = await makeStream();
+    const failed: string[] = [];
+    s.setFailureHandler((t) => failed.push(t));
+    scripted = ["error", "error", "ok"];
+    s.sendText("hello there.");
+    await tick(1200);
+    expect(failed).toEqual([]);
   });
 
   it("keeps going with the next clause when even the fallback fails", async () => {
     restFallback.mockRejectedValue(new Error("down"));
     const { s } = await makeStream();
-    scripted = ["error", "error", "error"];
+    scripted = ["error", "error", "error", "error", "error"];
     s.sendText("first.");
     s.sendText("second.");
-    await tick(1800);
+    await tick(3200);
     expect(sent).toContain("second.");
   });
 
