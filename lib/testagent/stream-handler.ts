@@ -12,6 +12,7 @@ import type { LiveSttConnection, SpeakStreamHandle, SpeechProvider } from "../sp
 import { extractAcousticFeatures, computeRmsEnergy, isolateLastUtterance } from "../audio/acoustic";
 import { int16ToFloat32Pcm } from "../emotion/local-audio-detect";
 import { learnFromCall, getLearningContext } from "../learning";
+import { emitSessionEvent } from "../realtime/emitter";
 import { getAgentWithTenantCached, getPatientCallContextCached } from "../db/agent-cache";
 import { getInlineKnowledgeBase } from "../knowledge/inline";
 import { detectLanguageRequest } from "../agent/language-request";
@@ -488,6 +489,7 @@ export class TestAgentStreamHandler {
           const L = turnLatency();
           console.log(`[Latency] listen ${L.listenMs}ms · think ${L.thinkMs ?? "-"}ms · voice ${L.voiceMs ?? "-"}ms · FIRST WORD ${L.firstWordMs}ms`);
           this.ws.send(JSON.stringify({ type: "latency", turnId: replyTurnId, latency: L }));
+          void emitSessionEvent(this.sessionId, "latency", L as unknown as Record<string, unknown>);
         }
         this.ws.send(
           JSON.stringify({

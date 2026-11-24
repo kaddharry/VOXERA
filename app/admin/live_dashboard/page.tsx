@@ -3,6 +3,8 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Radio, PhoneCall, ShieldAlert, Zap, Database, HelpCircle, History, Circle, LayoutGrid, Maximize2, Trash2, RotateCcw } from "lucide-react";
+import { reduceTranscript, type TranscriptTurn } from "../../../lib/realtime/transcript-reducer";
+import type { TurnLatency } from "../../../lib/realtime/turn-latency";
 import { EngineDiagnosticPanel, type DiagnosticEmotionResult } from "../../_components/EngineDashboard";
 
 interface ActiveCall {
@@ -24,14 +26,28 @@ interface RecentCall {
   durationMs: number | null;
 }
 
-interface TranscriptTurn {
-  role: "user" | "agent";
-  text: string;
-  /** True while this bubble is still being filled in word-by-word from
-   * "transcript_delta" events — cleared once the turn's final "transcript"
-   * event lands. Lets the UI show a subtle "typing" indicator instead of a
-   * fully-formed sentence appearing to just materialize. */
-  streaming?: boolean;
+/** "0:12.345" — time since the first event of the call, to the millisecond. */
+function fmtCallTime(ms: number): string {
+  const t = Math.max(0, Math.round(ms));
+  return `${Math.floor(t / 60000)}:${String(Math.floor((t % 60000) / 1000)).padStart(2, "0")}.${String(t % 1000).padStart(3, "0")}`;
+}
+const fmtMs = (n: number | undefined) => (n === undefined ? "–" : `${Math.round(n).toLocaleString("en-US")} ms`);
+
+function BubbleMeta({ t, startTs }: { t: TranscriptTurn; startTs?: number }) {
+  if (t.ts === undefined && !t.latency) return null;
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-x-2 font-mono text-[9.5px] tracking-wide text-[var(--console-text-dim)]">
+      {t.ts !== undefined && startTs !== undefined && <span>+{fmtCallTime(t.ts - startTs)}</span>}
+      {t.latency && (
+        <span
+          title="Measured on the server. listen = caller stopped talking → transcript; think = transcript → first sentence from the model; voice = first sentence → first audio; first word = caller stopped talking → first audio"
+          className={(t.latency.firstWordMs ?? 0) > 2000 ? "text-amber-300" : "text-emerald-300"}
+        >
+          ⏱ first word {fmtMs(t.latency.firstWordMs)} · listen {fmtMs(t.latency.listenMs)} · think {fmtMs(t.latency.thinkMs)} · voice {fmtMs(t.latency.voiceMs)}
+        </span>
+      )}
+    </span>
+  );
 }
 
 interface RetrievalInfo {
@@ -53,6 +69,10 @@ interface LiveState {
   transcript: TranscriptTurn[];
   diagnostics: DiagnosticEmotionResult | null;
   retrieval: RetrievalInfo | null;
+  /** Server time of the first event seen for this call: the zero of every "+m:ss.mmm" stamp. */
+  startTs?: number;
+  /** Latency that arrived before its reply bubble existed. */
+  pendingLatency?: TurnLatency;
 }
 
 const EMOTION_HUE: Record<string, string> = {
@@ -148,8 +168,10 @@ function emptyLiveState(sessionId: string): LiveState {
   };
 }
 
-function applySsePayload(prev: LiveState, payload: { type: string; data: any }): LiveState {
-  const updated = { ...prev };
+function applySsePayload(prev: LiveState, payload: { type: string; data: any; timestamp?: number }): LiveState {
+  // transcript, streaming text and latency events: see lib/realtime/transcript-reducer.ts
+  if (payload.type === "transcript" || payload.type === "transcript_delta" || payload.type === "latency") return reduceTranscript(prev, payload);
+  const updated = reduceTranscript(prev, { type: "other", data: {}, timestamp: payload.timestamp }); // only stamps the call start
   if (payload.type === "emotion") {
     updated.emotionLabel = payload.data.label || "neutral";
     updated.intensity = payload.data.intensity || 0;
@@ -162,34 +184,6 @@ function applySsePayload(prev: LiveState, payload: { type: string; data: any }):
   } else if (payload.type === "cai") {
     updated.caiScore = payload.data.score || 50;
     updated.caiCategory = payload.data.category || "Moderate Engagement";
-  } else if (payload.type === "transcript_delta") {
-    // Genuine word-by-word streaming, synced with what's actually being
-    // generated — updates (never appends a new bubble for) the in-progress
-    // agent turn as raw text deltas arrive. Only ever fires for the agent's
-    // side; the caller's own turn is always already-final when it's
-    // transcribed.
-    const last = updated.transcript[updated.transcript.length - 1];
-    if (last?.role === "agent" && last.streaming) {
-      updated.transcript = [
-        ...updated.transcript.slice(0, -1),
-        { role: "agent", text: payload.data.text, streaming: true },
-      ];
-    } else {
-      updated.transcript = [...updated.transcript, { role: "agent", text: payload.data.text, streaming: true }];
-    }
-  } else if (payload.type === "transcript") {
-    // The authoritative, guarded final text for this turn. If a streaming
-    // bubble for the same role is already in progress, replace it in place
-    // (the turn is now finalized) rather than appending a duplicate.
-    const last = updated.transcript[updated.transcript.length - 1];
-    if (last?.role === payload.data.role && last.streaming) {
-      updated.transcript = [
-        ...updated.transcript.slice(0, -1),
-        { role: payload.data.role, text: payload.data.text },
-      ];
-    } else {
-      updated.transcript = [...updated.transcript, { role: payload.data.role, text: payload.data.text }];
-    }
   }
   return updated;
 }
@@ -624,6 +618,7 @@ function LiveDashboardInner() {
                         >
                           {t.text}
                           {t.streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-current align-middle opacity-70" />}
+                          <BubbleMeta t={t} startTs={state?.startTs} />
                         </div>
                       ))
                     )}
@@ -690,6 +685,7 @@ function LiveDashboardInner() {
                     >
                       {t.text}
                       {t.streaming && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-current align-middle opacity-70" />}
+                      <BubbleMeta t={t} startTs={focusedLiveState.startTs} />
                     </div>
                   ))
                 )}

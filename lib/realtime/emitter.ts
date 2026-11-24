@@ -2,7 +2,7 @@ import { broadcastSessionEvent } from "./live-events";
 
 export interface SessionEventPayload {
   sessionId: string;
-  type: "emotion" | "transcript" | "transcript_delta" | "cai" | "acoustic" | "policy" | "escalation" | "emotion_diagnostic" | "retrieval";
+  type: "emotion" | "transcript" | "transcript_delta" | "cai" | "acoustic" | "policy" | "escalation" | "emotion_diagnostic" | "retrieval" | "latency";
   data: Record<string, any>;
   timestamp: number;
 }
