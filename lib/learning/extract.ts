@@ -10,7 +10,7 @@ export interface TranscriptTurn {
 export const EXTRACTION_SYSTEM_PROMPT = [
   "You maintain the memory of a hospital's phone agents. You read ONE finished call transcript and extract what is worth remembering for FUTURE calls.",
   "Output ONLY a JSON object, no prose, no code fence, exactly: " +
-    '{"patientFacts":[{"key":"","category":"","text":"","confidence":0.0,"evidence":""}],"resolvedKeys":[""],"lessons":[{"category":"","text":"","confidence":0.0,"evidence":"","general":false}]}',
+    '{"patientFacts":[{"key":"","category":"","text":"","confidence":0.0,"evidence":""}],"resolvedKeys":[""],"lessons":[{"category":"","text":"","confidence":0.0,"evidence":"","general":false,"clinical":false}]}',
   "",
   "patientFacts — durable things the PATIENT said about themselves or their situation that a future caller should know:",
   `- category is one of: ${PATIENT_CATEGORIES.join(", ")}.`,
@@ -29,6 +29,7 @@ export const EXTRACTION_SYSTEM_PROMPT = [
   "- MUST NOT contain the patient's name, phone number, or any personal detail; it must make sense for a different patient.",
   "- evidence is a short exact quote from the transcript (either side) that shows it.",
   "- general=true only if the lesson would help every agent of the hospital, not just this one (informational only).",
+  "- clinical=true if the lesson gives MEDICAL guidance: advising a patient what to do about symptoms, medicines or emergencies, or handling a medical red flag. Lessons about scheduling, tone, language or information are clinical=false.",
   "- If nothing useful happened, return an empty list.",
   "",
   "If the call has nothing worth keeping, return {\"patientFacts\":[],\"resolvedKeys\":[],\"lessons\":[]}.",
@@ -100,7 +101,7 @@ export function validateExtraction(raw: string, ctx: ValidationContext): { extra
     if (confidence < min) { rejected.push(`low-confidence lesson: ${l.text}`); continue; }
     if (!isGrounded(l.evidence, ctx.fullText)) { rejected.push(`ungrounded lesson: ${l.text}`); continue; }
     if (containsIdentifiers(l.text, ctx.identifiers)) { rejected.push(`lesson leaks identity: ${l.text}`); continue; }
-    lessons.push({ category, text: l.text.trim().slice(0, 300), confidence, evidence: l.evidence.trim().slice(0, 300), general: l.general === true });
+    lessons.push({ category, text: l.text.trim().slice(0, 300), confidence, evidence: l.evidence.trim().slice(0, 300), general: l.general === true, clinical: l.clinical === true });
   }
 
   const resolvedKeys = (Array.isArray(parsed.resolvedKeys) ? parsed.resolvedKeys : []).filter((k: unknown) => typeof k === "string" && k).map((k: string) => slug(k));

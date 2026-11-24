@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Lightbulb, RefreshCw, Users, Bot, Globe2, X, Loader2, Search, Clock3 } from "lucide-react";
+import { Lightbulb, RefreshCw, Users, Bot, Globe2, X, Loader2, Search, Clock3, ShieldAlert, Check } from "lucide-react";
 
 /**
  * Agent Learning — what the agents have learned from calls, on ONE screen: lessons shared by all agents and
@@ -23,7 +23,9 @@ interface Overview {
   patients: Array<{ id: string; name: string; facts: LearnedItem[] }>;
   agents: Array<{ id: string; name: string; lessons: LearnedItem[] }>;
   shared: LearnedItem[];
-  totals: { patientFacts: number; agentLessons: number; shared: number; pending: number };
+  /** Clinical lessons (advice about symptoms, medicines, emergencies) waiting for a person to approve them. */
+  needsReview: Array<LearnedItem & { agentName: string }>;
+  totals: { patientFacts: number; agentLessons: number; shared: number; pending: number; review: number };
   setupNeeded?: boolean;
 }
 
@@ -54,6 +56,16 @@ export default function AgentLearningPage() {
     void load();
   }, [load]);
 
+  async function decide(id: string, action: "approve" | "reject") {
+    const res = await fetch(`/api/admin/learnings?learningId=${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    if (res.ok) await load();
+    else setError("Couldn't save that decision — try again.");
+  }
+
   async function forget(id: string) {
     const res = await fetch(`/api/admin/learnings?learningId=${encodeURIComponent(id)}`, { method: "DELETE" });
     if (res.ok) await load();
@@ -81,6 +93,7 @@ export default function AgentLearningPage() {
               <Pill icon={Bot} tone="text-indigo-300" value={t.agentLessons} label="agent lessons" />
               <Pill icon={Globe2} tone="text-amber-300" value={t.shared} label="shared" />
               <Pill icon={Clock3} tone="text-[var(--color-text-secondary)]" value={t.pending} label="waiting" />
+              {t.review > 0 && <Pill icon={ShieldAlert} tone="text-amber-300" value={t.review} label="need your OK" highlight />}
             </div>
           )}
           <button
@@ -108,13 +121,42 @@ export default function AgentLearningPage() {
           <div className="grid h-full grid-cols-1 gap-3 lg:grid-cols-12 lg:grid-rows-1">
             {/* LEFT: shared + per agent */}
             <div className="flex min-h-0 flex-col gap-3 lg:col-span-4">
+              {data.needsReview.length > 0 && (
+                <Panel
+                  icon={ShieldAlert}
+                  tone="text-amber-300"
+                  title="Needs your OK"
+                  hint="Medical guidance the agents drafted from calls. Nothing here is used in any call until you approve it."
+                  count={data.needsReview.length}
+                  className="border-amber-500/40 lg:max-h-[40%]"
+                >
+                  {data.needsReview.map((it) => (
+                    <div key={it.id} className="border-b border-[var(--color-border-subtle)] px-3 py-2 last:border-b-0">
+                      <p className="text-[12px] leading-snug text-[var(--color-text-primary)]">{it.text}</p>
+                      <div className="mt-1.5 flex items-center justify-between gap-2">
+                        <span className="text-[10.5px] text-[var(--color-text-muted)]">
+                          {it.agentName} · seen in {it.supportCount} {it.supportCount === 1 ? "call" : "calls"}
+                        </span>
+                        <span className="flex gap-1.5">
+                          <button onClick={() => void decide(it.id, "reject")} className="flex items-center gap-1 rounded-md border border-[var(--color-border-subtle)] px-2 py-0.5 text-[11px] font-semibold text-[var(--color-text-secondary)] hover:border-red-500/40 hover:text-red-400">
+                            <X className="h-3 w-3" /> Reject
+                          </button>
+                          <button onClick={() => void decide(it.id, "approve")} className="flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/20">
+                            <Check className="h-3 w-3" /> Approve
+                          </button>
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </Panel>
+              )}
               <Panel
                 icon={Globe2}
                 tone="text-amber-300"
                 title="Shared by all agents"
                 hint="Used in every agent's calls. A lesson is shared once two different agents — or three separate calls — show it."
                 count={data.shared.length}
-                className="lg:max-h-[34%]"
+                className="lg:max-h-[30%]"
               >
                 {data.shared.length === 0 ? (
                   <Empty>Nothing shared yet — it appears once a lesson shows up in three separate calls.</Empty>
@@ -196,9 +238,9 @@ export default function AgentLearningPage() {
   );
 }
 
-function Pill({ icon: Icon, tone, value, label }: { icon: React.ComponentType<{ className?: string }>; tone: string; value: number; label: string }) {
+function Pill({ icon: Icon, tone, value, label, highlight }: { icon: React.ComponentType<{ className?: string }>; tone: string; value: number; label: string; highlight?: boolean }) {
   return (
-    <span className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] px-2.5 py-1 text-[12px] text-[var(--color-text-muted)]">
+    <span className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[12px] text-[var(--color-text-muted)] ${highlight ? "border-amber-500/50 bg-amber-500/10" : "border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)]"}`}>
       <Icon className={`h-3 w-3 ${tone}`} />
       <b className="tabular-nums text-[var(--color-text-primary)]">{value}</b> {label}
     </span>
