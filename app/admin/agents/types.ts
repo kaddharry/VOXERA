@@ -22,6 +22,9 @@ export interface GeneratedAgentDraft {
   description: string;
   system_prompt: string;
   greeting: string;
+  language?: string | null;
+  speech_provider?: "deepgram" | "gnani" | null;
+  enabledTools?: string[];
 }
 
 export interface Draft {

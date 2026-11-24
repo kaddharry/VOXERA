@@ -3,6 +3,11 @@
 import { useRef, useState } from "react";
 import { Wand2, PenLine, Sparkles, Loader2, ArrowLeft, X, AlertCircle, Upload, FileText, Check } from "lucide-react";
 import type { GeneratedAgentDraft } from "./types";
+import { GNANI_LANGUAGES } from "./types";
+import { CustomToolPicker } from "./CustomToolPicker";
+import { BuiltInToolsPicker } from "./BuiltInToolsPicker";
+import { PrebuiltIntegrationsPicker } from "./PrebuiltIntegrationsPicker";
+import { MCPToolsPanel } from "./MCPToolsPanel";
 
 interface CreateAgentDialogProps {
   onClose: () => void;
@@ -25,6 +30,11 @@ const MAX_FILE_CONTEXT_CHARS = 8000;
 export function CreateAgentDialog({ onClose, onManual, onGenerated }: CreateAgentDialogProps) {
   const [mode, setMode] = useState<Mode>("choose");
   const [description, setDescription] = useState("");
+  const [successOutcome, setSuccessOutcome] = useState("");
+  const [tone, setTone] = useState("");
+  const [language, setLanguage] = useState("en-IN");
+  const [provider, setProvider] = useState<"deepgram" | "gnani">("deepgram");
+  const [enabledTools, setEnabledTools] = useState<string[]>([]);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [files, setFiles] = useState<AttachedFile[]>([]);
@@ -51,10 +61,12 @@ export function CreateAgentDialog({ onClose, onManual, onGenerated }: CreateAgen
       setFiles((prev) =>
         prev.map((f, i) => (i === index ? { ...f, status: "done", extractedTextPreview: data.extractedTextPreview } : f))
       );
+      return data.extractedTextPreview as string | undefined;
     } catch (e) {
       setFiles((prev) =>
         prev.map((f, i) => (i === index ? { ...f, status: "error", error: e instanceof Error ? e.message : String(e) } : f))
       );
+      throw e;
     }
   };
 
@@ -66,9 +78,15 @@ export function CreateAgentDialog({ onClose, onManual, onGenerated }: CreateAgen
       // Upload any files that haven't been uploaded yet (also seeds the
       // knowledge base for this account — not just prompt context).
       const pending = files.map((f, i) => ({ f, i })).filter(({ f }) => f.status === "pending" || f.status === "error");
-      await Promise.all(pending.map(({ f, i }) => uploadFile(f, i)));
+      const uploadedPreviews = await Promise.all(pending.map(({ f, i }) => uploadFile(f, i)));
 
-      const fileContext = files
+      // Upload results are reflected asynchronously in React state; use the
+      // returned previews in this request so the first draft sees its files.
+      const completedFiles = files.map((f, i) => {
+        const pendingIndex = pending.findIndex((item) => item.i === i);
+        return pendingIndex >= 0 ? { ...f, extractedTextPreview: uploadedPreviews[pendingIndex] } : f;
+      });
+      const fileContext = completedFiles
         .filter((f) => f.extractedTextPreview)
         .map((f) => `--- ${f.file.name} ---\n${f.extractedTextPreview}`)
         .join("\n\n")
@@ -77,11 +95,20 @@ export function CreateAgentDialog({ onClose, onManual, onGenerated }: CreateAgen
       const res = await fetch("/api/admin/agents/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description, fileContext: fileContext || undefined }),
+        body: JSON.stringify({
+          description,
+          successOutcome,
+          tone,
+          language,
+          speechProvider: provider,
+          enabledTools,
+          knowledgeConnected: files.length > 0,
+          fileContext: fileContext || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to generate an agent.");
-      onGenerated(data.agent as GeneratedAgentDraft);
+      onGenerated({ ...data.agent, language, speech_provider: provider, enabledTools } as GeneratedAgentDraft);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -95,7 +122,7 @@ export function CreateAgentDialog({ onClose, onManual, onGenerated }: CreateAgen
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.3)] overflow-hidden"
+        className="w-full max-w-2xl max-h-[92vh] overflow-y-auto bg-[var(--color-bg-elevated)] border border-[var(--color-border-subtle)] rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.3)]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--color-border-subtle)]">
@@ -155,6 +182,7 @@ export function CreateAgentDialog({ onClose, onManual, onGenerated }: CreateAgen
 
         {mode === "ai" && (
           <div className="p-6 flex flex-col gap-4">
+            <p className="text-[12.5px] text-[var(--color-text-secondary)] -mb-1">A few details help tailor the agent's goal, voice, language, and actions. You can review and edit the full prompt before saving.</p>
             <div>
               <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">
                 Describe your business and this agent's job
@@ -167,6 +195,42 @@ export function CreateAgentDialog({ onClose, onManual, onGenerated }: CreateAgen
                 placeholder="e.g. We're a dental clinic called Acme Dental. This agent should answer calls, help patients book or reschedule appointments, answer basic questions about our services and hours, and offer to connect a caller to the front desk for anything urgent."
                 className="w-full px-4 py-3 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-violet)] focus:border-[var(--color-accent-violet)] text-[13.5px] text-[var(--color-text-primary)] transition-colors placeholder:text-[var(--color-text-muted)] resize-none"
               />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">What does a successful call achieve?</label>
+                <input value={successOutcome} onChange={(e) => setSuccessOutcome(e.target.value)} placeholder="e.g. confirm recovery and book a follow-up" className="w-full px-3 py-2.5 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl text-[13px] text-[var(--color-text-primary)]" />
+              </div>
+              <div>
+                <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">How should it sound?</label>
+                <input value={tone} onChange={(e) => setTone(e.target.value)} placeholder="e.g. calm, warm, concise, not scripted" className="w-full px-3 py-2.5 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl text-[13px] text-[var(--color-text-primary)]" />
+              </div>
+              <div>
+                <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">Primary language</label>
+                <select value={language} onChange={(e) => { const value = e.target.value; setLanguage(value); if (value !== "en-IN") setProvider("gnani"); }} className="w-full px-3 py-2.5 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl text-[13px] text-[var(--color-text-primary)]">
+                  <option value="en-IN">English (India)</option>
+                  {GNANI_LANGUAGES.filter((item) => item.id !== "en-IN").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">Speech provider</label>
+                <select value={provider} onChange={(e) => setProvider(e.target.value as "deepgram" | "gnani")} className="w-full px-3 py-2.5 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-xl text-[13px] text-[var(--color-text-primary)]">
+                  <option value="deepgram" disabled={language !== "en-IN"}>Deepgram · English</option>
+                  <option value="gnani">Gnani · Indian languages and English</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Choose call tools <span className="font-normal normal-case text-[var(--color-text-muted)]">(optional)</span></label>
+              <div className="space-y-3">
+                <BuiltInToolsPicker enabledTools={enabledTools} onChange={setEnabledTools} />
+                <PrebuiltIntegrationsPicker enabledTools={enabledTools} onChange={setEnabledTools} />
+                <MCPToolsPanel enabledTools={enabledTools} onChange={setEnabledTools} />
+                <CustomToolPicker enabledTools={enabledTools} onChange={setEnabledTools} />
+              </div>
+              <p className="mt-2 text-[10.5px] text-[var(--color-text-muted)]">Only selected actions are exposed to the agent and included when its prompt is generated. Connect prebuilt apps under Tools first.</p>
             </div>
 
             <div>

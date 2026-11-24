@@ -20,6 +20,7 @@ import {
   MessageSquare,
   Lightbulb,
   CalendarDays,
+  Wrench,
 } from "lucide-react";
 import { AdminMobileNav } from "./AdminMobileNav";
 
@@ -28,6 +29,7 @@ const BASE_NAV_ITEMS = [
   { href: "/admin/patients", icon: UserCheck, label: "Patients" },
   { href: "/admin/calendar", icon: CalendarDays, label: "Appointments" },
   { href: "/admin/staff", icon: Users, label: "Staff" },
+  { href: "/admin/tools", icon: Wrench, label: "Tools" },
   { href: "/admin/live_dashboard", icon: Radio, label: "Live Calls" },
   { href: "/admin/sessions", icon: MessageSquare, label: "Calls & Insights" },
   { href: "/admin/learning", icon: Lightbulb, label: "Agent Learning" },

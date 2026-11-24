@@ -4,7 +4,7 @@
 import OpenAI from "openai";
 import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";
-import { TOOLS, dispatchToolCall, getToolsForAgent } from "./tools";
+import { TOOLS, dispatchToolCall, getToolsForAgentWithMCP } from "./tools";
 import { ClauseChunker } from "./clause-chunker";
 import { isReasoningClause, isWrongIndicScript, matchSpeakerGender, stripForeignScript, stripReasoningLeak, stripWrappingQuotes } from "./reply-hygiene";
 
@@ -354,7 +354,7 @@ export async function generateReply(args: {
           // args.enabledTools undefined = legacy demo path, full
           // RESERVATION_TOOLS (unchanged behavior); an array (even empty)
           // means a real Agent Builder agent, filtered to its own allowlist.
-          const toolsForThisCall = args.enabledTools !== undefined ? getToolsForAgent(args.enabledTools) : TOOLS;
+          const toolsForThisCall = args.enabledTools !== undefined ? await getToolsForAgentWithMCP(args.enabledTools, args.clientId) : TOOLS;
           const baseParams = {
             model: modelForCall,
             messages,
@@ -406,7 +406,10 @@ export async function generateReply(args: {
                 parsedArgs = JSON.parse(argsStr);
               } catch {}
 
-              console.log(`[LLM] Invoking Tool: ${name} with args`, parsedArgs);
+              // MCP tool arguments can carry caller data and are third-party-bound: log keys only.
+              console.log(name.startsWith("mcp_")
+                ? `[LLM] Invoking MCP tool: ${name} (argument keys: ${Object.keys(parsedArgs).join(", ")})`
+                : `[LLM] Invoking Tool: ${name} with args`, name.startsWith("mcp_") ? undefined : parsedArgs);
               const resultStr = await dispatchToolCall(name, parsedArgs, {
                 clientId: args.clientId,
                 sessionId: args.sessionId,

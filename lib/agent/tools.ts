@@ -14,6 +14,8 @@ import {
 } from "../db/appointments";
 import { computeDaySlots } from "../calendar/availability";
 import { cancelAppointmentReminders, scheduleAppointmentReminders, triggerWaitlistBackfill } from "../scheduler/appointment-reminders";
+import { dispatchMCPTool, getMCPToolsForAgent } from "../mcp/client";
+import { dispatchCustomTool, getCustomToolsForAgent } from "../tools/custom";
 
 export interface ToolDef {
   type: "function";
@@ -202,6 +204,20 @@ export function getToolsForAgent(enabledTools: string[] | undefined | null): Too
   return catalog.filter((t) => enabledTools.includes(t.function.name));
 }
 
+export async function getToolsForAgentWithMCP(enabledTools: string[] | undefined | null, clientId: string): Promise<ToolDef[]> {
+  if (!enabledTools?.length) return [];
+  const staticTools = getToolsForAgent(enabledTools);
+  const remoteTools = await getMCPToolsForAgent(clientId, enabledTools).catch((err) => {
+    console.warn("[tools] MCP tools unavailable for this turn:", err);
+    return [];
+  });
+  const customTools = await getCustomToolsForAgent(enabledTools, clientId).catch((err) => {
+    console.warn("[tools] Custom tools unavailable for this turn:", err);
+    return [];
+  });
+  return [...staticTools, ...remoteTools, ...customTools].slice(0, 32);
+}
+
 export interface ToolCallContext {
   clientId: string;
   sessionId?: string;
@@ -246,6 +262,7 @@ async function resolveVerifiedPatient(
 
 export async function dispatchToolCall(name: string, args: Record<string, any>, context: ToolCallContext): Promise<string> {
   const { clientId, sessionId, userId } = context;
+  const loggedArguments = name.startsWith("mcp_") ? { redacted: true, keys: Object.keys(args).slice(0, 30) } : args;
   try {
     let result: string;
     switch (name) {
@@ -472,13 +489,21 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
       }
 
       default:
+        if (name.startsWith("mcp_")) {
+          result = await dispatchMCPTool(name, args, clientId);
+          break;
+        }
+        if (name.startsWith("custom_")) {
+          result = await dispatchCustomTool(name, args, clientId);
+          break;
+        }
         throw new Error(`Unknown tool: ${name}`);
     }
 
     if (sessionId && userId) {
       await logSessionEvent(makeEvent({ sessionId, userId, clientId }, "tool_invocation", {
         tool: name,
-        arguments: args,
+        arguments: loggedArguments,
         success: true,
       }));
     }
@@ -489,7 +514,7 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
     if (sessionId && userId) {
       await logSessionEvent(makeEvent({ sessionId, userId, clientId }, "tool_invocation", {
         tool: name,
-        arguments: args,
+        arguments: loggedArguments,
         success: false,
         error: errMsg,
       }));

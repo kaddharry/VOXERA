@@ -14,14 +14,17 @@ import {
   Wand2,
   PenLine,
   AlertCircle,
-  CalendarClock,
 } from "lucide-react";
 import { CreateAgentDialog } from "./CreateAgentDialog";
-import { APPOINTMENT_TOOL_OPTIONS, BLANK_DRAFT, GNANI_LANGUAGES, type Agent, type Draft, type GeneratedAgentDraft } from "./types";
+import { BLANK_DRAFT, GNANI_LANGUAGES, type Agent, type Draft, type GeneratedAgentDraft } from "./types";
 import { VoicePicker } from "./VoicePicker";
 import { GnaniVoicePicker } from "./GnaniVoicePicker";
 import { parseGnaniPersona, formatGnaniPersona } from "@/lib/tts/gnani-voices";
 import { KnowledgeTab } from "./KnowledgeTab";
+import { MCPToolsPanel } from "./MCPToolsPanel";
+import { CustomToolPicker } from "./CustomToolPicker";
+import { BuiltInToolsPicker } from "./BuiltInToolsPicker";
+import { PrebuiltIntegrationsPicker } from "./PrebuiltIntegrationsPicker";
 
 type Tab = "persona" | "prompt" | "knowledge" | "tools";
 type PromptMode = "manual" | "ai";
@@ -64,6 +67,7 @@ export default function AgentBuilderPage() {
   const [promptMode, setPromptMode] = useState<PromptMode>("manual");
   const [generatingPrompt, setGeneratingPrompt] = useState(false);
   const [promptError, setPromptError] = useState<string | null>(null);
+  const [knowledgeConnected, setKnowledgeConnected] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -89,6 +93,13 @@ export default function AgentBuilderPage() {
 
   useEffect(() => {
     loadAgents();
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/knowledge/documents?limit=50")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => setKnowledgeConnected((data?.documents ?? []).some((doc: { status?: string }) => doc.status === "ready")))
+      .catch(() => setKnowledgeConnected(false));
   }, []);
 
   const filteredAgents = useMemo(() => {
@@ -139,9 +150,9 @@ export default function AgentBuilderPage() {
       system_prompt: generated.system_prompt,
       greeting: generated.greeting,
       voice_persona: "female-friendly",
-      speech_provider: null,
-      language: null,
-      enabledTools: [],
+      speech_provider: generated.speech_provider ?? null,
+      language: generated.language ?? null,
+      enabledTools: generated.enabledTools ?? [],
     });
   };
 
@@ -153,14 +164,24 @@ export default function AgentBuilderPage() {
     setGeneratingPrompt(true);
     setPromptError(null);
     try {
-      const res = await fetch("/api/onboarding/generate-prompt", {
+      const knowledgeRes = await fetch("/api/knowledge/documents?limit=50");
+      const knowledgeData = await knowledgeRes.json().catch(() => ({}));
+      const knowledgeConnected = knowledgeRes.ok && (knowledgeData.documents ?? []).some((doc: { status?: string }) => doc.status === "ready");
+      const res = await fetch("/api/admin/agents/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ businessName: draft.name, description: draft.description || draft.name }),
+        body: JSON.stringify({
+          description: `Business/agent: ${draft.name}\nAgent role: ${draft.description || draft.name}`,
+          tone: draft.voice_persona,
+          language: draft.language ?? "en-IN",
+          speechProvider: draft.speech_provider ?? (draft.language && draft.language !== "en-IN" ? "gnani" : "deepgram"),
+          enabledTools: draft.enabledTools,
+          knowledgeConnected,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to generate a prompt.");
-      setDraft((d) => ({ ...d, system_prompt: data.prompt }));
+      setDraft((d) => ({ ...d, system_prompt: data.agent.system_prompt }));
     } catch (e) {
       setPromptError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -484,56 +505,13 @@ export default function AgentBuilderPage() {
                 )}
 
                 {tab === "tools" && (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <CalendarClock className="w-4 h-4 text-[var(--color-accent-cyan)]" />
-                      <span className="text-[12px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
-                        Appointment Booking Tools
-                      </span>
-                    </div>
-                    <p className="text-[12.5px] text-[var(--color-text-muted)] -mt-4">
-                      Off by default for every agent. Turn on only what this agent should be able to do live
-                      on a call — it can check availability and book/reschedule/cancel/confirm appointments
-                      on the Calendar, scoped to the patient it has already identified on the call.
-                    </p>
-
-                    <div className="flex flex-col gap-2">
-                      {APPOINTMENT_TOOL_OPTIONS.map((opt) => {
-                        const checked = draft.enabledTools.includes(opt.id);
-                        return (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() =>
-                              setDraft((d) => ({
-                                ...d,
-                                enabledTools: checked ? d.enabledTools.filter((t) => t !== opt.id) : [...d.enabledTools, opt.id],
-                              }))
-                            }
-                            className={`flex items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition-all ${
-                              checked
-                                ? "border-[var(--color-accent-violet)]/50 bg-[var(--color-accent-violet)]/10"
-                                : "border-[var(--color-border-subtle)] hover:border-[var(--color-border-active)]"
-                            }`}
-                          >
-                            <span
-                              className={`mt-0.5 flex h-4 w-4 flex-none items-center justify-center rounded border ${
-                                checked
-                                  ? "border-[var(--color-accent-violet)] bg-[var(--color-accent-violet)] text-white"
-                                  : "border-[var(--color-border-subtle)]"
-                              }`}
-                            >
-                              {checked && <Check className="h-3 w-3" />}
-                            </span>
-                            <span className="min-w-0">
-                              <div className="text-[13px] font-semibold text-[var(--color-text-primary)]">{opt.label}</div>
-                              <div className="text-[12px] text-[var(--color-text-muted)] mt-0.5">{opt.description}</div>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </>
+                  <div className="space-y-3">
+                    <BuiltInToolsPicker enabledTools={draft.enabledTools} onChange={(enabledTools) => setDraft((current) => ({ ...current, enabledTools }))} />
+                    <PrebuiltIntegrationsPicker enabledTools={draft.enabledTools} onChange={(enabledTools) => setDraft((current) => ({ ...current, enabledTools }))} />
+                    <MCPToolsPanel enabledTools={draft.enabledTools} onChange={(enabledTools) => setDraft((current) => ({ ...current, enabledTools }))} />
+                    <CustomToolPicker enabledTools={draft.enabledTools} onChange={(enabledTools) => setDraft((current) => ({ ...current, enabledTools }))} />
+                    <p className="text-[10.5px] text-[var(--color-text-muted)]">Actions are off until selected. Connect a prebuilt integration in Tools to discover its callable actions here.</p>
+                  </div>
                 )}
 
                 {tab === "prompt" && (
@@ -549,6 +527,11 @@ export default function AgentBuilderPage() {
                       rules and emotion-aware persona, which always still apply (safety and escalation
                       behavior can't be overridden here).
                     </p>
+                    {(draft.enabledTools.length > 0 || knowledgeConnected) && (
+                      <p className="-mt-3 rounded-lg border border-[var(--color-accent-violet)]/25 bg-[var(--color-accent-violet)]/5 px-3 py-2 text-[11.5px] text-[var(--color-text-secondary)]">
+                        {draft.enabledTools.length > 0 ? `${draft.enabledTools.length} call action${draft.enabledTools.length === 1 ? " is" : "s are"} enabled` : "A vector-indexed knowledge base is connected"}. Regenerate the prompt after changing tools or knowledge so its operating instructions match the current capabilities.
+                      </p>
+                    )}
 
                     <div className="grid grid-cols-2 gap-3">
                       <button
@@ -587,7 +570,9 @@ export default function AgentBuilderPage() {
                           ? "Writing…"
                           : draft.system_prompt
                             ? "Regenerate prompt"
-                            : "Generate prompt from description"}
+                            : draft.enabledTools.length
+                              ? `Generate prompt with ${draft.enabledTools.length} enabled action${draft.enabledTools.length === 1 ? "" : "s"}`
+                              : "Generate prompt from description"}
                       </button>
                     )}
 
