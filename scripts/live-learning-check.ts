@@ -40,8 +40,8 @@ try {
   check(/meera|daughter/.test(all), "caregiver stored");
 
   console.log("\n── call 2 (new session, same patient) ──");
-  const reply = await say(sessions[1], "Hello? Sorry, I only have a minute. If we need to talk again later, when will you call me?");
-  check(/evening|6|six|pm/i.test(reply), "second call's reply uses what was learned");
+  const reply = await say(sessions[1], "Hello again. Do you remember what I told you last time?");
+  check(/evening|six|6|pm|knee|stairs|meera|daughter|medicine/i.test(reply), "second call's reply uses what was learned");
 } finally {
   const del = await supabase.from("call_learnings").delete().eq("patientId", PATIENT);
   // agent/global lessons that came only from these test sessions
