@@ -1,3 +1,4 @@
+import { learnFromCall } from "../learning";
 import { supabase } from "../db/supabase";
 import { generateCallSummary } from "../agent/call-summary";
 import { analyzeCall, saveCallInsights } from "../insights/analyze-call";
@@ -44,7 +45,7 @@ export async function runPostCallJob(job: BackgroundJob): Promise<void> {
 
   const { data: call, error } = await supabase
     .from("call_logs")
-    .select('sessionId, clientId, patientId, "followUpTaskId", summary')
+    .select('sessionId, clientId, patientId, "agentId", "followUpTaskId", summary')
     .eq("id", callSid)
     .maybeSingle();
   if (error) throw new Error(`Reading call_logs failed: ${error.message}`);
@@ -148,4 +149,14 @@ export async function runPostCallJob(job: BackgroundJob): Promise<void> {
       insights,
     });
   }
+
+  // What the agents learn from this call — patient facts, agent and global
+  // lessons (lib/learning). Best-effort and idempotent per call; never fails the job.
+  await learnFromCall({
+    sessionId: call.sessionId,
+    callId: callSid,
+    clientId: call.clientId,
+    agentId: (call.agentId as string | null) ?? null,
+    patientId: call.patientId,
+  }).catch((err) => console.error(`[PostCall] learnFromCall failed for ${callSid}:`, err));
 }

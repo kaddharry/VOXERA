@@ -56,6 +56,7 @@ export const ENV_SPEC: EnvVar[] = [
   { name: "GROQ_API_KEYS", level: "one-of:llm", secret: true, source: "Groq Console → API Keys (comma-separated for rotation)", purpose: "Primary LLM provider." },
   { name: "GROQ_API_KEYS_2", level: "optional", secret: true, source: "Keys from a second Groq account", purpose: "Second Groq quota, tried before ZenMux." },
   { name: "GROQ_MODEL", level: "optional", secret: false, source: "Groq model id", purpose: "Overrides the default Groq model." },
+  { name: "CALL_LEARNING", level: "optional", secret: false, source: "Set to \"off\" to disable", purpose: "Turns off learning from calls (patient facts, agent and global lessons) when set to off." },
   { name: "ZENMUX_API_KEY", level: "one-of:llm", secret: true, source: "ZenMux dashboard", purpose: "LLM fallback after Groq (an OpenAI-compatible gateway; no OpenAI key needed)." },
   { name: "ZENMUX_BASE_URL", level: "optional", secret: false, source: "Default https://zenmux.ai/api/v1", purpose: "Overrides the ZenMux endpoint." },
   { name: "ZENMUX_MODEL", level: "optional", secret: false, source: "Default openai/gpt-4o-mini (a model name served by ZenMux)", purpose: "Overrides the ZenMux model." },
