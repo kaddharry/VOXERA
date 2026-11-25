@@ -15,7 +15,7 @@ describe("language rules size", () => {
   it("an English turn on an auto call gets the SHORT language rules", () => {
     const { system } = buildLLMContext({ ...base, userTurn: turn("I have a little pain in my legs.") });
     expect(system).toContain("=== LANGUAGE");
-    expect(system).toContain("English in → English out");
+    expect(system).toContain("Reply in the CALL LANGUAGE");
     expect(system).not.toContain("Devanagari is shared by Hindi and Marathi");
     expect(system).toContain("FEMALE");
   });

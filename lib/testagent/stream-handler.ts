@@ -16,7 +16,7 @@ import { learnFromCall, getLearningContext } from "../learning";
 import { emitSessionEvent } from "../realtime/emitter";
 import { getAgentWithTenantCached, getPatientCallContextCached } from "../db/agent-cache";
 import { getInlineKnowledgeBase } from "../knowledge/inline";
-import { detectLanguageRequest } from "../agent/language-request";
+import { detectLanguageRequest, type RequestedLanguage } from "../agent/language-request";
 import { normalizeTranscript } from "../agent/transcript-language";
 import { DEMO, ensureSeeded } from "../bootstrap";
 import { CONFIG } from "../config";
@@ -77,7 +77,7 @@ export interface TestAgentStreamHandlerOptions {
  */
 export class TestAgentStreamHandler {
   /** Language the caller explicitly asked for; pins the reply language and STT. */
-  private languageLock: "english" | "hindi" | null = null;
+  private languageLock: RequestedLanguage | null = null;
   private loudChunkStreak = 0;
   /** Server clock: the last audio chunk with real sound in it. */
   private lastCallerSoundAt = 0;

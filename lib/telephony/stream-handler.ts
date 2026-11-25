@@ -1,5 +1,6 @@
 import { CallerSoundClock, TurnMarks } from "../realtime/turn-latency";
 import { normalizeTranscript } from "../agent/transcript-language";
+import { detectLanguageRequest, type RequestedLanguage } from "../agent/language-request";
 import { emitSessionEvent } from "../realtime/emitter";
 import { computeRmsEnergy } from "../audio/acoustic";
 import { nanoid } from "nanoid";
@@ -260,6 +261,8 @@ export class TelephonyStreamHandler {
   // fallback (speakBuffered, the ElevenLabs/filler-phrase path).
   private speechProvider: SpeechProvider = "deepgram";
   private language: string = "en-IN";
+  /** Language the caller explicitly asked for on this call ("English mein baat karo") — kept for the whole call. */
+  private languageLock: RequestedLanguage | null = null;
   private ttsEngine: TtsEngine = new DeepgramTtsAdapter();
   // Agent Builder's "greeting" field (lib/db/agents.ts's AgentRecord),
   // resolved alongside voice/provider in setupVoiceForCall() — spoken once,
@@ -831,6 +834,8 @@ export class TelephonyStreamHandler {
 
       // One language per utterance: "yes आई एम हार्दिक" (English split across scripts) becomes "yes I am Hardik".
       const spoken = await normalizeTranscript(text, { clientId: this.clientId });
+      const requested = detectLanguageRequest(text);
+      if (requested) this.languageLock = requested;
 
       const turnInput = {
         sessionId: this.sessionId,
@@ -841,6 +846,7 @@ export class TelephonyStreamHandler {
         callerNumber: this.callerNumber,
         transcript: spoken,
         language: this.language,
+        languageLock: this.languageLock ?? undefined,
         sttConfidence: 0.9,
         audioEmotion: null,
         acousticFeatures,
