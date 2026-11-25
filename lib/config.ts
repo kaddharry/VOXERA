@@ -261,6 +261,9 @@ export const CONFIG = {
     // a longer reply no longer means a longer wait before the caller hears
     // anything, just a slightly longer total reply.
     maxOutputTokens: 300,
+    // Calls on a reasoning model (gpt-oss for Hindi/Indic, tool agents): the hidden reasoning shares
+    // max_tokens with the reply, so 300 cut long Hindi replies off mid-sentence.
+    maxOutputTokensReasoning: 800,
   },
   taskCritical: [
     "payment",

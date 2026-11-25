@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "../../../lib/db/server";
 import { listAlerts } from "../../../lib/db/alerts";
 import { listPatients } from "../../../lib/db/patients";
+import { isTestSession } from "../../../lib/agent/alert-priority";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,7 @@ export const dynamic = "force-dynamic";
  * or it carries a sessionId at all — a session only ever gets created once
  * a call connects and a conversation starts, so sessionId alone is proof
  * of pickup even when callId is missing. That matters because live-call
- * escalation alerts (lib/db/alerts.ts::createEscalationAlert) are written
+ * escalation alerts (lib/db/alerts.ts::raiseCallAlert) are written
  * with a sessionId but no callId — they can only fire mid-conversation, so
  * relying on callId alone silently sorted every escalation into "patient
  * didn't pick up," which is backwards (that's literally the case where the
@@ -50,6 +51,8 @@ export async function GET(request: NextRequest) {
     ...a,
     patientName: a.patientId ? patientNameById.get(a.patientId) ?? "Unknown patient" : "Unknown patient",
     pickedUp: !!a.sessionId || (!!a.callId && callStatuses.get(a.callId) === "completed"),
+    // From the browser test drawer / Test Agent page, not a real patient call — shown on its own tab.
+    isTest: isTestSession(a.sessionId),
   }));
 
   return NextResponse.json({ alerts: enriched });

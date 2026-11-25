@@ -32,6 +32,8 @@ interface Alert {
   priority: "low" | "normal" | "high";
   status: "open" | "resolved";
   pickedUp: boolean;
+  /** From the browser test drawer / Test Agent page — kept out of the real queues. */
+  isTest?: boolean;
   createdAt: number;
 }
 
@@ -43,13 +45,14 @@ const PRIORITY_COLOR: Record<Alert["priority"], string> = {
   low: "var(--color-accent-violet)",
 };
 
-type TabId = "all" | Alert["priority"] | "missed";
+type TabId = "all" | Alert["priority"] | "missed" | "test";
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "all", label: "All" },
   { id: "high", label: "High Priority" },
   { id: "normal", label: "Medium Priority" },
   { id: "low", label: "Low Priority" },
   { id: "missed", label: "Didn't Pick Up" },
+  { id: "test", label: "Test Calls" },
 ];
 
 export default function AlertsPage() {
@@ -76,8 +79,9 @@ export default function AlertsPage() {
     }
   }
 
-  const { pickedUpByPriority, notPickedUp, counts } = useMemo(() => {
-    const all = alerts ?? [];
+  const { pickedUpByPriority, notPickedUp, testAlerts, counts } = useMemo(() => {
+    const all = (alerts ?? []).filter((a) => !a.isTest);
+    const testAlerts = (alerts ?? []).filter((a) => a.isTest);
     const pickedUp = all.filter((a) => a.pickedUp);
     const missed = all.filter((a) => !a.pickedUp);
     const byPriority = new Map<Alert["priority"], Alert[]>();
@@ -88,8 +92,9 @@ export default function AlertsPage() {
       normal: byPriority.get("normal")?.length ?? 0,
       low: byPriority.get("low")?.length ?? 0,
       missed: missed.length,
+      test: testAlerts.length,
     };
-    return { pickedUpByPriority: byPriority, notPickedUp: missed, counts };
+    return { pickedUpByPriority: byPriority, notPickedUp: missed, testAlerts, counts };
   }, [alerts]);
 
   return (
@@ -139,6 +144,11 @@ export default function AlertsPage() {
             <CheckCircle2 className="w-8 h-8 mx-auto mb-3 text-emerald-500 opacity-70" />
             <p className="text-[15px] text-[var(--color-text-muted)]">Nothing needs attention right now.</p>
           </GlassCard>
+        ) : tab === "all" && counts.all === 0 ? (
+          <GlassCard className="p-10 text-center">
+            <CheckCircle2 className="w-8 h-8 mx-auto mb-3 text-emerald-500 opacity-70" />
+            <p className="text-[15px] text-[var(--color-text-muted)]">No real patient alerts. Test-agent calls are on the Test Calls tab.</p>
+          </GlassCard>
         ) : tab === "all" ? (
           <div className="flex flex-col gap-10">
             <section>
@@ -181,7 +191,7 @@ export default function AlertsPage() {
           </div>
         ) : (
           (() => {
-            const items = tab === "missed" ? notPickedUp : pickedUpByPriority.get(tab) ?? [];
+            const items = tab === "missed" ? notPickedUp : tab === "test" ? testAlerts : pickedUpByPriority.get(tab) ?? [];
             return items.length === 0 ? (
               <GlassCard className="p-10 text-center">
                 <CheckCircle2 className="w-8 h-8 mx-auto mb-3 text-emerald-500 opacity-70" />
@@ -207,7 +217,15 @@ function AlertRow({ alert, busy, onResolve }: { alert: Alert; busy: boolean; onR
     <GlassCard className="p-4 flex items-center justify-between gap-4">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[15px] font-semibold text-[var(--color-text-primary)]">{alert.patientName}</span>
+          <span className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+            {alert.isTest && !alert.patientId ? "Test call" : alert.patientName}
+          </span>
+          <span
+            className="rounded-full px-2 py-0.5 text-[11px] font-mono font-bold uppercase tracking-wider text-black"
+            style={{ backgroundColor: PRIORITY_COLOR[alert.priority] }}
+          >
+            {alert.priority === "normal" ? "medium" : alert.priority}
+          </span>
           <span className="text-[12.5px] text-[var(--color-text-muted)]">{new Date(alert.createdAt).toLocaleString()}</span>
         </div>
         <p className="text-[14.5px] text-[var(--color-text-secondary)] mt-1">{alert.reason}</p>
