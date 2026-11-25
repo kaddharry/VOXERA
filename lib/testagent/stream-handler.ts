@@ -1,6 +1,7 @@
 import type { WebSocket } from "ws";
 import { nanoid } from "nanoid";
 import { announceGreeting, handleTurn } from "../agent/orchestrator";
+import { onActionSettled, pendingAnnouncements, markAnnounced, clearActions } from "../agent/background-actions";
 import { synthesize, resolveVoiceModel, getClientVoiceSettings } from "../deepgram/tts";
 import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "../emotion/tts-params";
 import { getAgentWithTenant } from "../db/agents";
@@ -189,6 +190,7 @@ export class TestAgentStreamHandler {
     // trip, and kicked off here (not awaited yet) so it overlaps with
     // ensureSeeded()/STT connect below.
     this.voiceSetupPromise = this.setupVoice();
+    this.stopActionWatch = onActionSettled(this.sessionId, () => { setTimeout(() => this.announcePendingActions(), 400); });
 
     this.init().catch((err) => {
       console.error("[TestAgentStream] Failed to connect to Deepgram:", err);
@@ -286,6 +288,19 @@ export class TestAgentStreamHandler {
     if (myGeneration !== this.generation) return;
     speakStream.sendText(text);
     speakStream.flush();
+  }
+
+  private stopActionWatch: (() => void) | null = null;
+
+  /** The background booking worker finished while the agent was idle (or the turn that asked for it was
+   * cancelled): say the result now instead of leaving the caller wondering. */
+  private announcePendingActions(): void {
+    if (this.isBusy || this.isSpeaking) return;
+    const next = pendingAnnouncements(this.sessionId)[0];
+    if (!next?.confirmation) return;
+    markAnnounced(next);
+    console.log(`[TestAgentStream] Background ${next.tool} finished — announcing: "${next.confirmation}"`);
+    void this.speakGreeting(next.confirmation);
   }
 
   private async setupVoice(): Promise<void> {
@@ -570,6 +585,7 @@ export class TestAgentStreamHandler {
         this.currentTurnText = "";
         this.currentAbortController = null;
         this.ws.send(JSON.stringify({ type: "turn_end" }));
+        setTimeout(() => this.announcePendingActions(), 300);
       } else if (!this.isBusy) {
         // Superseded by a barge-in (which freed the turn), not by a merge: the
         // client still needs turn_end to leave its "thinking" state.
@@ -659,6 +675,8 @@ export class TestAgentStreamHandler {
     console.log(`[TestAgentStream] Client disconnected (session ${this.sessionId}), code=${code}, reason="${reason.toString()}", audioChunksReceived=${this.audioChunkCount}.`);
     this.stt.close();
     this.currentSpeakStream?.close();
+    this.stopActionWatch?.();
+    setTimeout(() => clearActions(this.sessionId), 5000);
     // A test call teaches the agents the same way a real one does, so
     // learning can be verified end to end from the test drawer.
     if (this.agentId) {
