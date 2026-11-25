@@ -17,7 +17,10 @@ import { getLearningContext } from "../learning";
 import { buildBookingContext } from "./booking-context";
 import { getAgentWithTenantCached } from "../db/agent-cache";
 import { getPatientCallContextCached } from "../db/agent-cache";
-import { createEscalationAlert } from "../db/alerts";
+import { raiseCallAlert } from "../db/alerts";
+import { alertPriority } from "./alert-priority";
+import { resolveCallLanguage } from "./call-language";
+import type { RequestedLanguage } from "./language-request";
 import { retrieve, topScore } from "../memory/retrieval";
 import { stm } from "../memory/stm";
 import { vectorStore } from "../memory/store";
@@ -84,7 +87,7 @@ export interface TurnInput {
    * the existing engine untouched. */
   language?: string;
   /** Pinned caller language (lib/agent/language-request.ts) — see buildLLMContext. */
-  languageLock?: "english" | "hindi";
+  languageLock?: RequestedLanguage;
 }
 
 /** Lightweight, judge-readable view of a MemoryRecord — enough to show WHY a
@@ -493,7 +496,6 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // reply is still being generated). If it fails, the fast-path label is used.
   let finalFused = fused;
   let finalEmotionData = emotionData;
-  let policyEscalated = false;
   const emotionPublished: Promise<void> = modelEmotionPromise.then((modelLabel) => {
     if (modelLabel) {
       const textSignal: EmotionSignal = {
@@ -519,17 +521,20 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     }
     void logSessionEvent(makeEvent(evBase, "emotion", finalEmotionData));
     void emitSessionEvent(input.sessionId, "emotion", finalEmotionData);
-    // Alert on severe feelings the keyword policy missed (one per session and kind).
-    if (!policyEscalated && ALERT_LABELS.has(finalFused.label) && finalFused.confidence >= 0.5) {
+    // Alert on severe feelings. Same call = same alert row (raiseCallAlert merges), so this
+    // never duplicates the policy escalation below; priority follows how bad it actually is.
+    if (ALERT_LABELS.has(finalFused.label) && finalFused.confidence >= 0.5) {
       const key = `${input.sessionId}:${finalFused.label}`;
       if (!alertedEmotions.has(key)) {
         if (alertedEmotions.size > 2000) alertedEmotions.clear();
         alertedEmotions.add(key);
-        void createEscalationAlert(supabaseService, {
+        void raiseCallAlert(supabaseService, {
           clientId: evBase.clientId,
           patientId: input.patientId ?? null,
           sessionId: input.sessionId,
-          reason: `Caller sounded ${finalFused.label}: "${input.transcript.slice(0, 120)}"`,
+          kind: `Caller sounded ${finalFused.label}`,
+          detail: `"${input.transcript.slice(0, 120)}"`,
+          priority: alertPriority({ label: finalFused.label, intensity: finalFused.intensity, text: input.transcript }),
         });
       }
     }
@@ -655,7 +660,6 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   }));
 
   if (policy.escalate !== "none") {
-    policyEscalated = true;
     void logSessionEvent(makeEvent(evBase, "escalation", {
       type: policy.escalate,
       reason: policy.notes.join(", ")
@@ -664,11 +668,13 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     // writes to for exhausted/unresolved follow-ups (spec §11.4/§16.10) —
     // a live-call escalation is just as much a human-review case as a
     // scheduler one, and hospital staff shouldn't have to check two places.
-    void createEscalationAlert(supabaseService, {
+    void raiseCallAlert(supabaseService, {
       clientId: evBase.clientId,
       patientId: input.patientId ?? null,
       sessionId: input.sessionId,
-      reason: `Escalation (${policy.escalate}): ${policy.notes.join(", ") || "flagged by policy"}`,
+      kind: `Escalation (${policy.escalate})`,
+      detail: `${policy.notes.join(", ") || "flagged by policy"} — caller said "${input.transcript.slice(0, 100)}"`,
+      priority: alertPriority({ label: emotionCtx.current.label, intensity: emotionCtx.current.intensity, escalate: policy.escalate, text: input.transcript }),
     });
   }
 
@@ -691,10 +697,16 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     ? await buildBookingContext(supabaseService, resolvedAgent.tenantId, resolvedAgent.enabledTools ?? []).catch(() => undefined)
     : undefined;
 
+  // The call's reply language, replayed from the caller's own turns (oldest first, this turn last).
+  const callLanguage = resolveCallLanguage([
+    ...sttHistory.filter((t) => t.role === "user" && t.id !== userTurn.id).map((t) => t.text),
+    userTurn.text,
+  ]);
   const llmContext = buildLLMContext({
     bookingContext,
     learningContext,
     languageLock: input.languageLock,
+    callLanguage,
     userId: input.userId,
     clientId: input.clientId,
     userTurn,

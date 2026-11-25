@@ -138,9 +138,11 @@ export default function AnalyticsDashboard() {
   useEffect(() => {
     fetch("/api/alerts")
       .then((r) => r.json())
-      .then((d: { alerts?: Array<{ reason: string }> }) => {
-        setAlertCount(d.alerts?.length ?? 0);
-        setTopAlertReason(d.alerts?.[0]?.reason ?? null);
+      .then((d: { alerts?: Array<{ reason: string; isTest?: boolean }> }) => {
+        // Test-agent calls aren't real patients — they live on the Alerts page's own tab.
+        const real = (d.alerts ?? []).filter((a) => !a.isTest);
+        setAlertCount(real.length);
+        setTopAlertReason(real[0]?.reason ?? null);
       })
       .catch(() => setAlertCount(0));
   }, []);

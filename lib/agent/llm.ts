@@ -77,11 +77,24 @@ function isEnglishLanguage(language: string | undefined): boolean {
  * of raw token deltas. */
 const STREAM_IDLE_MS = 6_000;
 
+/** True when a clause ends a sentence (., !, ?, Hindi danda, ellipsis), ignoring closing quotes/space. */
+export function endsSentence(text: string): boolean {
+  return /[.!?।॥…]["'”’)\]]*\s*$/.test(text);
+}
+
+/** A reply that stopped at the token limit, cut back to its last full sentence (unchanged if it has none). */
+export function trimToLastSentence(text: string): string {
+  if (endsSentence(text)) return text;
+  let cut = -1;
+  for (const m of text.matchAll(/[.!?।॥…]["'”’)\]]*(?=\s)/g)) cut = (m.index ?? 0) + m[0].length;
+  return cut > 0 ? text.slice(0, cut).trim() : text;
+}
+
 async function streamChatCompletion(
   openai: OpenAI,
   params: Record<string, unknown>,
   opts: { onContentDelta?: (delta: string) => void; signal?: AbortSignal; idleMs?: number }
-): Promise<{ content: string; tool_calls?: any[] }> {
+): Promise<{ content: string; tool_calls?: any[]; truncated?: boolean }> {
   // Stall watchdog (replaces a whole-turn timeout): abort only when the
   // provider stops sending data for STREAM_IDLE_MS, never because a long but
   // healthy reply is still streaming. The old behaviour raced the ENTIRE
@@ -108,6 +121,8 @@ async function streamChatCompletion(
   armIdle();
 
   let content = "";
+  // finish_reason "length" = the model hit max_tokens and stopped mid-sentence.
+  let truncated = false;
   const toolCallsByIndex: Record<number, { id?: string; type?: string; function: { name?: string; arguments: string } }> = {};
 
   try {
@@ -118,6 +133,7 @@ async function streamChatCompletion(
 
   for await (const chunk of stream) {
     armIdle();
+    if (chunk.choices?.[0]?.finish_reason === "length") truncated = true;
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) continue;
 
@@ -152,6 +168,7 @@ async function streamChatCompletion(
   const toolCallsArr = Object.values(toolCallsByIndex);
   return {
     content,
+    truncated,
     tool_calls: toolCallsArr.length > 0
       ? toolCallsArr.map((tc, i) => ({ id: tc.id ?? `call_${i}`, type: "function", function: { name: tc.function.name ?? "", arguments: tc.function.arguments } }))
       : undefined,
@@ -351,6 +368,9 @@ export async function generateReply(args: {
   // turn needs it, and the fast model (its own quota, ~0.3s to first word) handles the rest.
   const lastUserLine = [...args.user.matchAll(/^USER:\s*(.*)$/gm)].pop()?.[1] ?? "";
   const turnIsIndic = /[\u0900-\u0DFF]/.test(lastUserLine); // Hindi / Punjabi / Gujarati ... need the multilingual model
+  // The call language can be Hindi (Devanagari) even on a turn the caller said in English ("ok, I understand"):
+  // the reply is still Hindi, so it still needs the multilingual model.
+  const callIsIndic = !!callerLang && callerLang !== "English" && callerLang !== "Hinglish";
   const explicitIndicSetting = !isEnglishLanguage(args.language) && args.language !== "auto";
   const toolAgentCfg = (args.useTools ?? true) && (args.enabledTools?.length ?? 0) > 0;
   // Only the live conversation counts: the recent turns + the caller's latest line. NOT the rest of the prompt —
@@ -361,10 +381,10 @@ export async function generateReply(args: {
   const recentTurns = stmStart >= 0 ? args.user.slice(stmStart, stmEnd > stmStart ? stmEnd : undefined) : "";
   const conversation = `${recentTurns}\n${lastUserLine}`;
   const bookingTurn = toolAgentCfg && BOOKING_HINT.test(conversation);
-  const needStrong = !args.fastModel && (turnIsIndic || explicitIndicSetting || bookingTurn);
+  const needStrong = !args.fastModel && (turnIsIndic || callIsIndic || explicitIndicSetting || bookingTurn);
   // Send tools only when the conversation is about booking: fewer tokens, and a chatty reply is never held up by tool rounds.
   const toolsAllowed = !toolAgentCfg || bookingTurn;
-  const canFallToFast = args.fastModel || (!turnIsIndic && !explicitIndicSetting); // the fast model writes poor Hindi, so never fall back to it for Hindi
+  const canFallToFast = args.fastModel || (!turnIsIndic && !callIsIndic && !explicitIndicSetting); // the fast model writes poor Hindi, so never fall back to it for Hindi
   let modelOverride = "";
 
   for (const provider of CONFIG.llm.providers) {
@@ -448,6 +468,7 @@ export async function generateReply(args: {
         // After a booking/cancel/reschedule succeeds, no more tools this turn: the model has
         // to tell the patient. Left free, it re-checked the calendar, saw its own booking
         // had taken the slot, and told the patient the slot "isn't available".
+        let hitTokenLimit = false;
         let toolsLocked = false;
         let toolNudged = false;
         for (let i = 0; i < 3; i++) {
@@ -460,7 +481,10 @@ export async function generateReply(args: {
           const baseParams = {
             model: modelForCall,
             messages,
-            max_tokens: args.maxOutputTokens ?? CONFIG.llm.maxOutputTokens,
+            // The multilingual model spends part of max_tokens on hidden reasoning, and Hindi/Indic
+            // text costs several tokens per word: 300 was cut off mid-sentence on longer Hindi
+            // safety replies ("…आपातकालीन लाइन से संपर्क"). It is a ceiling, not a target length.
+            max_tokens: args.maxOutputTokens ?? (strongModel || effectiveReasoningEffort && effectiveReasoningEffort !== "none" ? CONFIG.llm.maxOutputTokensReasoning : CONFIG.llm.maxOutputTokens),
             ...(useTools && toolsForThisCall.length > 0 ? { tools: toolsForThisCall as any, tool_choice: "auto" as const } : {}),
             ...reasoningOpt,
           };
@@ -482,6 +506,7 @@ export async function generateReply(args: {
             if (!streamed.content && !streamed.tool_calls) {
               throw new Error(`Provider "${provider.name}" returned no content or tool_calls (streamed)`);
             }
+            if (streamed.truncated) hitTokenLimit = true;
             message = { role: "assistant", content: streamed.content || null, tool_calls: streamed.tool_calls };
           } else {
             const resp = await openai.chat.completions.create(baseParams as any);
@@ -496,6 +521,7 @@ export async function generateReply(args: {
                 `Provider "${provider.name}" returned no message (choices=${resp.choices?.length ?? 0})`
               );
             }
+            if (choice.finish_reason === "length") hitTokenLimit = true;
             message = choice.message;
           }
           messages.push(message);
@@ -571,7 +597,10 @@ export async function generateReply(args: {
               ...messages,
               { role: "user", content: "Reply to the caller now in one or two spoken sentences, summarizing what you just did. Do not call any more tools." },
             ],
-            max_tokens: args.maxOutputTokens ?? CONFIG.llm.maxOutputTokens,
+            // The multilingual model spends part of max_tokens on hidden reasoning, and Hindi/Indic
+            // text costs several tokens per word: 300 was cut off mid-sentence on longer Hindi
+            // safety replies ("…आपातकालीन लाइन से संपर्क"). It is a ceiling, not a target length.
+            max_tokens: args.maxOutputTokens ?? (strongModel || effectiveReasoningEffort && effectiveReasoningEffort !== "none" ? CONFIG.llm.maxOutputTokensReasoning : CONFIG.llm.maxOutputTokens),
             ...reasoningOpt,
           } as any);
           finalResponseText = closingResp.choices[0].message.content || "";
@@ -598,12 +627,15 @@ export async function generateReply(args: {
           // clause that never hit sentence-ending punctuation — needs to
           // reach the caller too, not just get silently dropped.
           const remainder = clauseChunker!.flush();
-          if (remainder) emitClauseOnce(remainder);
+          // Cut off by the token limit: the leftover is half a sentence. Don't speak it if
+          // something complete was already said (the caller hears a clean end instead).
+          if (remainder && !(hitTokenLimit && anyClauseEmitted && !endsSentence(remainder))) emitClauseOnce(remainder);
+          else if (remainder) console.warn(`[LLM] Reply hit the token limit — dropped the unfinished tail: "${remainder.slice(0, 60)}"`);
         }
 
         let finalText = args.raw
           ? finalResponseText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim()
-          : sanitizeReply(finalResponseText);
+          : sanitizeReply(hitTokenLimit ? trimToLastSentence(finalResponseText) : finalResponseText);
         // Everything the model wrote was planning text -> never go silent.
         if (!finalText && !anyClauseEmitted && !args.raw) {
           finalText = "माफ़ कीजिए, क्या आप एक बार फिर से बोल सकते हैं?";

@@ -1,4 +1,5 @@
-import { looksLikeTransliteratedEnglish } from "./language-request";
+import { looksLikeTransliteratedEnglish, type RequestedLanguage } from "./language-request";
+import { callLanguageLine, type CallLanguageState } from "./call-language";
 import type { EmotionContext, EmotionLabel, MemoryRecord, PolicyDirectives, RetrievedContext, Utterance } from "../types";
 import { CONFIG } from "../config";
 import { policyToPrompt } from "./policy";
@@ -101,9 +102,19 @@ export function buildLLMContext(args: {
   /** Language the caller explicitly asked for earlier in this call (lib/agent/
    * language-request.ts). Overrides per-turn script detection, which is
    * unreliable when STT writes English speech in an Indic script. */
-  languageLock?: "english" | "hindi";
+  languageLock?: RequestedLanguage;
+  /** The call's reply language, from the caller's own turns (lib/agent/call-language.ts).
+   * Stays fixed for the call; changes only when the caller asks or keeps speaking another language. */
+  callLanguage?: CallLanguageState | null;
 }): LLMContext {
-  const { retrieved, emotion, policy, userTurn, customInstructions, personaLock, inlineKnowledgeBase, patientContext, language, speakerGender, bookingContext, languageLock, learningContext } = args;
+  const { retrieved, emotion, policy, userTurn, customInstructions, personaLock, inlineKnowledgeBase, patientContext, language, speakerGender, bookingContext, learningContext, callLanguage } = args;
+  // An explicit request remembered by the call handler wins over the history replay
+  // (it survives even after that turn has left the short-term memory window).
+  const callLang: CallLanguageState | null =
+    args.languageLock && callLanguage?.reason !== "asked"
+      ? { language: args.languageLock, reason: "asked", script: args.languageLock === "english" ? "roman" : args.languageLock === "hindi" ? (callLanguage?.language === "hindi" ? callLanguage.script : "devanagari") : "native" }
+      : callLanguage ?? null;
+  const languageLock = callLang?.reason === "asked" ? callLang.language : undefined;
 
   // Uses full record `text`, not the 180-char `summary` — `summary` exists
   // to keep conversational-memory listings compact, but knowledge-base
@@ -170,11 +181,12 @@ export function buildLLMContext(args: {
     "",
     // An "auto" call where the caller is writing in Latin letters this turn (English, or Roman-letter Hinglish) doesn't
     // need the ~1.9k-character Indic script/gender rulebook: a short version is enough and saves ~450 tokens a turn.
-    ...(nonEnglish && language === "auto" && languageLock !== "hindi" && !/[\u0900-\u0DFF]/.test(userTurn.text)
+    ...(nonEnglish && language === "auto" && (!callLang || callLang.language === "english" || (callLang.language === "hindi" && callLang.script === "roman")) && !/[\u0900-\u0DFF]/.test(userTurn.text)
       ? [
           "=== LANGUAGE (HIGHEST PRIORITY, ABOVE EVEN TONE) ===",
-          "Reply in the language the caller uses in the CURRENT TURN: English in → English out (even if earlier turns were Hindi); " +
-            "Roman-letter Hinglish in → the same Roman Hinglish out. Your words are read aloud: simple everyday words, short sentences (≤15 words). " +
+          "Reply in the CALL LANGUAGE given right above the caller's words (English, or Roman-letter Hinglish). It is the language " +
+            "the caller chose; keep it for the whole call. A few words or a short phrase in another language do NOT change it; " +
+            "it changes only when the caller asks for another language or keeps speaking one. Your words are read aloud: simple everyday words, short sentences (≤15 words). " +
             "Keep names, numbers and times exactly as the caller says them. " +
             (speakerGender ? `Your own voice is ${speakerGender.toUpperCase()}: use ${speakerGender} verb forms for yourself, never both ("देता/देती"); ` : "") +
             "use neutral respectful forms for the caller. If they ask you to repeat, say your last point again in simpler, shorter words.",
@@ -184,9 +196,9 @@ export function buildLLMContext(args: {
       ? [
           "=== LANGUAGE (HIGHEST PRIORITY, ABOVE EVEN TONE) ===",
           `Call language setting: ${LANGUAGE_LABELS[language!] ?? language}. Your words are read aloud by an Indian-language voice.`,
-          "1. Reply in the language the caller used in the CURRENT TURN (see \"CALLER LANGUAGE THIS TURN\" below): English in → " +
-            "English out, even if earlier turns were Hindi; Hindi in → Hindi out. Re-check every turn, follow them if they " +
-            "switch or ask for a language. Hindi+English mixed → reply in the same natural mix.",
+          "1. Reply in the CALL LANGUAGE (see \"CALLER LANGUAGE THIS TURN\" below). It is the language the caller chose: keep it " +
+            "for the whole call, even if one turn has a few English words or a short English phrase (\"ok\", \"thank you\"). It " +
+            "changes only when that line says the caller asked for or switched to another language. Hindi+English mixed → reply in the same natural mix.",
           "2. Same script as the caller: Devanagari in → Devanagari Hindi out (never romanize it; common English words like " +
             "\"appointment\", \"doctor\", \"ok\" may stay in Latin). Roman in → Roman out. Other Indian languages: their own script.",
           "2b. STT can write English speech in an Indic script (e.g. Gujarati/Devanagari spelling of \"I am not feeling good\"). " +
@@ -302,10 +314,12 @@ export function buildLLMContext(args: {
     "=== CURRENT TURN ===",
     ...(bookingContext ? [bookingContext] : []),
     `TODAY: ${todayLine()} — resolve "tomorrow", "next Monday" etc. from this date; never guess a date or weekday.`,
-    ...(!languageLock && looksLikeTransliteratedEnglish(userTurn.text)
+    ...(nonEnglish && callLang
+      ? [callLanguageLine(callLang)]
+      : !languageLock && looksLikeTransliteratedEnglish(userTurn.text)
       ? ["CALLER LANGUAGE THIS TURN: English — the transcript below is English words spelled in another script (STT quirk). Reply in English only, in Latin letters."]
       : []),
-    ...(languageLock === "english"
+    ...(nonEnglish && callLang ? [] : languageLock === "english"
       ? ["CALLER LANGUAGE THIS TURN: English — the caller asked to speak English. Reply in English only, in Latin letters, even if the transcript below shows another script (that is STT error)."]
       : languageLock === "hindi"
         ? ["CALLER LANGUAGE THIS TURN: Hindi (Devanagari) — the caller asked for Hindi."]
