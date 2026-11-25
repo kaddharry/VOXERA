@@ -7,6 +7,7 @@ import { nanoid } from "nanoid";
 import WebSocket from "ws";
 import { resolveVoiceModel, getClientVoiceSettings } from "../deepgram/tts";
 import { announceGreeting, handleTurn, recordInterruptedReply } from "../agent/orchestrator";
+import { onActionSettled, pendingAnnouncements, markAnnounced, clearActions } from "../agent/background-actions";
 import { applyEmotionProsody, getEmotionTTSParams, type TTSProsodyParams } from "../emotion/tts-params";
 import type { EmotionLabel, PolicyDirectives } from "../types";
 import { supabase } from "../db/supabase";
@@ -280,6 +281,7 @@ export class TelephonyStreamHandler {
     this.sessionId = `tel-${nanoid(12)}`;
     this.userId = `caller-${opts.callerNumber.replace(/\D/g, "")}`;
     this.startedAt = Date.now();
+    this.stopActionWatch = onActionSettled(this.sessionId, () => { setTimeout(() => this.announcePendingActions(), 400); });
 
     // Barge-in is decided from the caller's words (onTranscript), not from
     // Deepgram's SpeechStarted VAD event or raw audio energy: both fire on a
@@ -544,8 +546,8 @@ export class TelephonyStreamHandler {
    * call, so it shares the exact same resolved voice/provider a normal
    * reply this call would use.
    */
-  private async speakGreeting(): Promise<void> {
-    const text = this.greeting?.trim();
+  private async speakGreeting(override?: string): Promise<void> {
+    const text = (override ?? this.greeting)?.trim();
     if (!text || this.hasEnded) return;
 
     void announceGreeting({ sessionId: this.sessionId, userId: this.userId, clientId: this.clientId, text });
@@ -570,6 +572,19 @@ export class TelephonyStreamHandler {
     } finally {
       if (myGeneration === this.generation) this.isSpeaking = false;
     }
+  }
+
+  private stopActionWatch: (() => void) | null = null;
+
+  /** The background booking worker finished while the agent was idle (or the turn that asked for it was
+   * cancelled): say the result now instead of leaving the caller wondering. */
+  private announcePendingActions(): void {
+    if (this.hasEnded || this.isBusy || this.isSpeaking) return;
+    const next = pendingAnnouncements(this.sessionId)[0];
+    if (!next?.confirmation) return;
+    markAnnounced(next);
+    console.log(`[TelephonyStream] Background ${next.tool} finished — announcing to ${this.callSid}`);
+    void this.speakGreeting(next.confirmation).catch((err) => console.error(`[TelephonyStream] announce failed for ${this.callSid}:`, err));
   }
 
   private onTwilioMessage(raw: Buffer) {
@@ -949,6 +964,7 @@ export class TelephonyStreamHandler {
         this.turnAudioChunks = [];
         this.turnInterruptionCount = 0;
         this.vad.resetTurn();
+        setTimeout(() => this.announcePendingActions(), 300);
       }
     }
   }
@@ -1082,6 +1098,8 @@ export class TelephonyStreamHandler {
 
     console.log(`[TelephonyStream] Call ended: ${this.callSid}, duration: ${durationMs}ms`);
 
+    this.stopActionWatch?.();
+    setTimeout(() => clearActions(this.sessionId), 5000);
     await this.releaseCallSlot();
     this.stt.close();
     this.currentSpeakStream?.close();

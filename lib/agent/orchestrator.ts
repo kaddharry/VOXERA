@@ -34,6 +34,7 @@ import { guardOutput, guardBeforeLLM, guardOpeningClause, cleanClause, guardTrai
 import { guardInput, type InputGuardResult } from "./input-guard";
 import { generateReply } from "./llm";
 import { BOOKING_HINT } from "./booking-intent";
+import { actionsContext, unannounceSince } from "./background-actions";
 import { decidePolicy } from "./policy";
 
 export interface TurnInput {
@@ -697,13 +698,14 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     ? await buildBookingContext(supabaseService, resolvedAgent.tenantId, resolvedAgent.enabledTools ?? []).catch(() => undefined)
     : undefined;
 
+  const actionsBlock = actionsContext(input.sessionId);
   // The call's reply language, replayed from the caller's own turns (oldest first, this turn last).
   const callLanguage = resolveCallLanguage([
     ...sttHistory.filter((t) => t.role === "user" && t.id !== userTurn.id).map((t) => t.text),
     userTurn.text,
   ]);
   const llmContext = buildLLMContext({
-    bookingContext,
+    bookingContext: [bookingContext, actionsBlock].filter(Boolean).join("\n\n") || undefined,
     learningContext,
     languageLock: input.languageLock,
     callLanguage,
@@ -855,6 +857,8 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   // Whatever WAS spoken before a barge-in is recorded separately
   // (recordInterruptedReply).
   if (opts?.abortSignal?.aborted) {
+    // A confirmation spoken by this turn never reached the caller: let the next turn re-announce it.
+    unannounceSince(input.sessionId, llmStart);
     throw new DOMException("Turn cancelled before its reply was used", "AbortError");
   }
 

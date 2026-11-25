@@ -6,6 +6,7 @@ import OpenAI from "openai";
 import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";
 import { TOOLS, dispatchToolCall, getToolsForAgentWithMCP } from "./tools";
+import { runBackgroundAction, markAnnounced } from "./background-actions";
 import { ClauseChunker } from "./clause-chunker";
 import { isReasoningClause, isWrongIndicScript, matchSpeakerGender, stripForeignScript, stripReasoningLeak, stripWrappingQuotes } from "./reply-hygiene";
 
@@ -471,6 +472,7 @@ export async function generateReply(args: {
         let hitTokenLimit = false;
         let toolsLocked = false;
         let toolNudged = false;
+        let confirmedText = "";
         for (let i = 0; i < 3; i++) {
           // args.enabledTools undefined = legacy demo path, full
           // RESERVATION_TOOLS (unchanged behavior); an array (even empty)
@@ -548,13 +550,38 @@ export async function generateReply(args: {
               console.log(name.startsWith("mcp_")
                 ? `[LLM] Invoking MCP tool: ${name} (argument keys: ${Object.keys(parsedArgs).join(", ")})`
                 : `[LLM] Invoking Tool: ${name} with args`, name.startsWith("mcp_") ? undefined : parsedArgs);
-              const resultStr = await dispatchToolCall(name, parsedArgs, {
+              const toolCtx = {
                 clientId: args.clientId,
                 sessionId: args.sessionId,
                 userId: args.userId,
                 patientId: args.patientId,
                 callerNumber: args.callerNumber,
-              });
+              };
+              let resultStr: string;
+              if (MUTATING_TOOLS.has(name) && args.sessionId) {
+                // Hand the work to the background worker: it finishes (and records the outcome) even if the
+                // caller talks over this turn and it is cancelled, and an identical repeat request joins the
+                // same job instead of booking twice.
+                const callerLine = (args.user.match(/USER:\s*([\s\S]*)$/)?.[1] ?? args.user).slice(-400);
+                const job = runBackgroundAction(args.sessionId, name, parsedArgs, () => dispatchToolCall(name, parsedArgs, toolCtx), callerLine);
+                const abortP = args.abortSignal
+                  ? new Promise<never>((_, reject) => {
+                      if (args.abortSignal!.aborted) reject(new DOMException("Turn cancelled", "AbortError"));
+                      args.abortSignal!.addEventListener("abort", () => reject(new DOMException("Turn cancelled", "AbortError")), { once: true });
+                    })
+                  : null;
+                await (abortP ? Promise.race([job.promise, abortP]) : job.promise);
+                resultStr = job.resultStr ?? "";
+                // Booked: say so right away from the verified result, instead of another slow model round
+                // (10 s "think" on the reasoning model) that may never be heard.
+                if (job.success && job.confirmation && !args.abortSignal?.aborted) {
+                  emitClauseOnce(job.confirmation);
+                  markAnnounced(job);
+                  confirmedText = job.confirmation;
+                }
+              } else {
+                resultStr = await dispatchToolCall(name, parsedArgs, toolCtx);
+              }
 
               if (MUTATING_TOOLS.has(name) && /"success"\s*:\s*true/.test(resultStr)) toolsLocked = true;
               messages.push({
@@ -564,6 +591,7 @@ export async function generateReply(args: {
                 name: name,
               });
             }
+            if (confirmedText) { finalResponseText = confirmedText; break; }
             continue;
           }
 
