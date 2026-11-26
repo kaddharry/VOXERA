@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "../../lib/db/server";
 import { AdminShell } from "../../components/admin/AdminShell";
 import { isPlatformAdmin } from "../../lib/auth/roles";
+import { getAccess } from "../../lib/auth/access";
 
 export default async function AdminLayout({
   children,
@@ -23,9 +24,14 @@ export default async function AdminLayout({
   // this just stops a non-admin from seeing the link at all.
   const platformAdmin = isPlatformAdmin(user.email);
 
+  // Doctors have their own portal; they never see the admin shell. A user with no hospital yet (fresh signup
+  // before onboarding) keeps the pre-existing behaviour and is treated as an admin of their (empty) account.
+  const access = await getAccess().catch(() => null);
+  if (access?.role === "clinician") redirect("/doctor");
+
   return (
     <div className="voxera-admin-dark">
-      <AdminShell userEmail={user.email ?? ""} isPlatformAdmin={platformAdmin}>
+      <AdminShell userEmail={user.email ?? ""} isPlatformAdmin={platformAdmin} role={access?.role ?? "hospital_admin"}>
         {children}
       </AdminShell>
     </div>

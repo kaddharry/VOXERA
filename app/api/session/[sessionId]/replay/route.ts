@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../../lib/db/server";
+import { requireAccess } from "../../../../../lib/auth/access";
 import { getSessionLog } from "../../../../../lib/logging/session-logger";
 
 export const dynamic = "force-dynamic";
@@ -25,13 +25,10 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const guard = await requireAccess("calls.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const { data: call } = await supabase
     .from("call_logs")

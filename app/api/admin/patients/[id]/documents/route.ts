@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../../../lib/db/server";
+import { requireAccess } from "../../../../../../lib/auth/access";
 import { getPatient } from "../../../../../../lib/db/patients";
 import { createPatientDocument, listPatientDocuments } from "../../../../../../lib/db/patient-documents";
 import { extractPdfText } from "../../../../../../lib/knowledge/pdf";
@@ -9,9 +9,10 @@ export const dynamic = "force-dynamic";
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("patients.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const { id } = await params;
   const patient = await getPatient(supabase, id, user.id);
@@ -29,9 +30,10 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
  * single `notes` field on every new upload.
  */
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("patients.write");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const { id } = await params;
   const patient = await getPatient(supabase, id, user.id);

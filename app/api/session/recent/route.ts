@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "../../../../lib/db/server";
+import { requireAccess } from "../../../../lib/auth/access";
 
 export const dynamic = "force-dynamic";
 
@@ -12,14 +12,10 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const guard = await requireAccess("calls.read");
+    if (!guard.ok) return guard.response;
+    const supabase = guard.access.db;
+    const user = { id: guard.access.clientId };
 
     // No `.not("sessionId", "is", null)` filter here on purpose: a call that
     // never reached the Twilio Media Stream (voicemail, hung up before the

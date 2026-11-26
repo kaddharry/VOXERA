@@ -47,6 +47,7 @@ interface Patient {
   doNotContactReason: string | null;
   condition: string | null;
   riskLevel: RiskLevel;
+  primaryProviderId?: string | null;
 }
 
 interface PatientDocument {
@@ -544,9 +545,9 @@ export default function PatientProfilePage() {
       </div>
 
       <EditRiskDialog
-        patient={editOpen ? { id: patient.id, name: patient.name, condition: patient.condition, riskLevel: patient.riskLevel } : null}
+        patient={editOpen ? { id: patient.id, name: patient.name, condition: patient.condition, riskLevel: patient.riskLevel, primaryProviderId: patient.primaryProviderId } : null}
         onClose={() => setEditOpen(false)}
-        onSaved={(updated) => setPatient((prev) => (prev ? { ...prev, condition: updated.condition, riskLevel: updated.riskLevel } : prev))}
+        onSaved={(updated) => setPatient((prev) => (prev ? { ...prev, condition: updated.condition, riskLevel: updated.riskLevel, primaryProviderId: updated.primaryProviderId } : prev))}
       />
     </div>
   );

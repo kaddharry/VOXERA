@@ -50,6 +50,10 @@ function parseLogic(expr: string): Filter {
   switch (op) {
     case "eq":
       return (r) => read(r, col) === val;
+    case "in": {
+      const set = String(rest.join(".")).replace(/^\(|\)$/g, "").split(",");
+      return (r) => set.includes(String(read(r, col)));
+    }
     case "is":
       return (r) => (read(r, col) ?? null) === val;
     case "lt":
@@ -72,7 +76,7 @@ export function createFakeDb(initial: Record<string, Row[]> = {}) {
   function from(table: string) {
     tables[table] ??= [];
     const filters: Filter[] = [];
-    let op: "select" | "update" | "insert" = "select";
+    let op: "select" | "update" | "insert" | "delete" = "select";
     let payload: Row | Row[] | null = null;
     let orderBy: { col: string; asc: boolean } | null = null;
     let limitTo: number | null = null;
@@ -85,6 +89,10 @@ export function createFakeDb(initial: Record<string, Row[]> = {}) {
         return { data: toInsert.map((r) => ({ ...r })), error: null };
       }
       let matched = rows.filter((r) => filters.every((f) => f(r)));
+      if (op === "delete") {
+        tables[table] = rows.filter((r) => !matched.includes(r));
+        return { data: matched.map((r) => ({ ...r })), error: null };
+      }
       if (op === "update") {
         for (const r of matched) Object.assign(r, payload);
       }
@@ -100,6 +108,12 @@ export function createFakeDb(initial: Record<string, Row[]> = {}) {
       select: () => builder,
       insert: (rows: Row | Row[]) => ((op = "insert"), (payload = rows), builder),
       update: (values: Row) => ((op = "update"), (payload = values), builder),
+      delete: () => ((op = "delete"), builder),
+      not: (col: string, operator: string, val: unknown) => {
+        const inner = parseLogic(`${col}.${operator}.${String(val)}`);
+        filters.push((r) => !inner(r));
+        return builder;
+      },
       eq: (col: string, val: unknown) => (filters.push((r) => read(r, col) === val), builder),
       neq: (col: string, val: unknown) => (filters.push((r) => read(r, col) !== val), builder),
       in: (col: string, vals: unknown[]) => (filters.push((r) => vals.includes(read(r, col))), builder),

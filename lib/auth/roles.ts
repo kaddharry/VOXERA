@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-export type HospitalRole = "hospital_admin" | "care_coordinator" | "clinician" | "auditor";
+import type { HospitalRole } from "./permissions";
+export type { HospitalRole } from "./permissions";
 
 export interface Membership {
   tenantId: string;

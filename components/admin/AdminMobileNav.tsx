@@ -3,50 +3,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import {
-  LayoutDashboard,
-  Database,
-  Settings,
-  LogOut,
-  Sparkles,
-  Users,
-  PhoneCall,
-  Bot,
-  Menu,
-  X,
-  UserCheck,
-  Radio,
-  MessageSquare,
-  Lightbulb,
-  CalendarDays,
-  Wrench,
-} from "lucide-react";
+import { LogOut, Menu, X } from "lucide-react";
+import { navItemsFor } from "./nav";
+import type { HospitalRole } from "../../lib/auth/permissions";
 
-// Bulk Calls is reachable from Hospital Setup rather than being a top-level
-// destination — mirrors components/admin/AdminShell.tsx's desktop sidebar.
-const BASE_NAV_ITEMS = [
-  { href: "/admin", icon: LayoutDashboard, label: "Overview" },
-  { href: "/admin/patients", icon: UserCheck, label: "Patients" },
-  { href: "/admin/calendar", icon: CalendarDays, label: "Appointments" },
-  { href: "/admin/staff", icon: Users, label: "Staff" },
-  { href: "/admin/tools", icon: Wrench, label: "Tools" },
-  { href: "/admin/live_dashboard", icon: Radio, label: "Live Calls" },
-  { href: "/admin/sessions", icon: MessageSquare, label: "Calls & Insights" },
-  { href: "/admin/learning", icon: Lightbulb, label: "Agent Learning" },
-  { href: "/admin/agents", icon: Bot, label: "Agent Builder" },
-  { href: "/admin/knowledge", icon: Database, label: "Hospital Information & Policies" },
-  { href: "/admin/try-call", icon: PhoneCall, label: "Test Agent" },
-  { href: "/admin/settings", icon: Settings, label: "Team & Settings" },
-];
-
-const PLATFORM_ADMIN_NAV_ITEMS = [
-  { href: "/admin/tenants", icon: Users, label: "Tenants" },
-  { href: "/admin/rag", icon: Sparkles, label: "RAG Debugger" },
-];
-
-export function AdminMobileNav({ userEmail, isPlatformAdmin = false }: { userEmail: string; isPlatformAdmin?: boolean }) {
+export function AdminMobileNav({ userEmail, isPlatformAdmin = false, role = "hospital_admin" }: { userEmail: string; isPlatformAdmin?: boolean; role?: HospitalRole }) {
   const [open, setOpen] = useState(false);
-  const navItems = isPlatformAdmin ? [...BASE_NAV_ITEMS, ...PLATFORM_ADMIN_NAV_ITEMS] : BASE_NAV_ITEMS;
+  const navItems = navItemsFor(role, isPlatformAdmin);
 
   return (
     <div className="md:hidden border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)]">

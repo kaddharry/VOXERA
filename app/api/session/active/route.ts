@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "../../../../lib/db/server";
+import { requireAccess } from "../../../../lib/auth/access";
 
 export const dynamic = "force-dynamic";
 
@@ -14,14 +14,10 @@ const STALE_FLOOR_MS = 15 * 60 * 1000;
  */
 export async function GET() {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const guard = await requireAccess("calls.read");
+    if (!guard.ok) return guard.response;
+    const supabase = guard.access.db;
+    const user = { id: guard.access.clientId };
 
     const { data: calls, error } = await supabase
       .from("call_logs")

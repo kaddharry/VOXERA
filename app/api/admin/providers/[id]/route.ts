@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "../../../../../lib/db/server";
-import { getTenantIdForUser } from "../../../../../lib/db/agents";
+import { requireAccess } from "../../../../../lib/auth/access";
+import type { Permission } from "../../../../../lib/auth/permissions";
 import { deleteProvider, getProviderForTenant, updateProvider } from "../../../../../lib/db/providers";
 
 export const dynamic = "force-dynamic";
@@ -16,18 +16,16 @@ const UpdateProviderSchema = z.object({
   status: z.enum(["active", "inactive"]).optional(),
 });
 
-async function resolveTenant() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { supabase, tenantId: null, unauthorized: true as const };
-  const tenantId = await getTenantIdForUser(supabase, user.id);
-  return { supabase, tenantId, unauthorized: false as const };
+async function resolveTenant(permission: Permission) {
+  const guard = await requireAccess(permission);
+  if (!guard.ok) return { supabase: null as never, tenantId: null, unauthorized: true as const, denied: guard.response };
+  return { supabase: guard.access.db, tenantId: guard.access.tenantId as string | null, unauthorized: false as const, denied: null };
 }
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase, tenantId, unauthorized } = await resolveTenant();
-  if (unauthorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { supabase, tenantId, unauthorized, denied } = await resolveTenant("staff.read");
+  if (unauthorized) return denied!;
   if (!tenantId) return NextResponse.json({ error: "No tenant found" }, { status: 404 });
 
   const provider = await getProviderForTenant(supabase, id, tenantId);
@@ -37,8 +35,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase, tenantId, unauthorized } = await resolveTenant();
-  if (unauthorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { supabase, tenantId, unauthorized, denied } = await resolveTenant("staff.manage");
+  if (unauthorized) return denied!;
   if (!tenantId) return NextResponse.json({ error: "No tenant found" }, { status: 404 });
 
   const body = await request.json().catch(() => null);
@@ -62,8 +60,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase, tenantId, unauthorized } = await resolveTenant();
-  if (unauthorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { supabase, tenantId, unauthorized, denied } = await resolveTenant("staff.manage");
+  if (unauthorized) return denied!;
   if (!tenantId) return NextResponse.json({ error: "No tenant found" }, { status: 404 });
 
   const result = await deleteProvider(supabase, id, tenantId);

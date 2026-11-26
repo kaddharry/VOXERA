@@ -36,6 +36,8 @@ export interface PatientRecord {
   /** Drives the color-coded badge everywhere a patient shows up
    * (migration_v28.sql). */
   riskLevel: RiskLevel;
+  /** The doctor (providers.id) who owns this patient's care — migration_v37.sql. Drives "my patients" in the doctor portal. */
+  primaryProviderId: string | null;
 }
 
 export interface PatientFields {
@@ -46,11 +48,13 @@ export interface PatientFields {
   nextCheckInAt?: number | null;
   condition?: string | null;
   riskLevel?: RiskLevel;
+  primaryProviderId?: string | null;
 }
 
 const BASE_PATIENT_COLUMNS =
   'id, "clientId", name, phone, notes, "assignedAgentId", "nextCheckInAt", "createdAt", "doNotContact", "doNotContactAt", "doNotContactReason"';
-const PATIENT_COLUMNS = `${BASE_PATIENT_COLUMNS}, "condition", "riskLevel"`;
+const MID_PATIENT_COLUMNS = `${BASE_PATIENT_COLUMNS}, "condition", "riskLevel"`;
+const PATIENT_COLUMNS = `${MID_PATIENT_COLUMNS}, "primaryProviderId"`;
 
 /** Postgres' "column does not exist" SQLSTATE — the specific, narrow signal
  * that migration_v28.sql hasn't been run (or its schema cache hasn't
@@ -69,6 +73,7 @@ function withDefaults(row: Record<string, unknown>): PatientRecord {
     ...row,
     condition: (row.condition as string | null | undefined) ?? null,
     riskLevel: (row.riskLevel as RiskLevel | undefined) ?? "low",
+    primaryProviderId: (row.primaryProviderId as string | null | undefined) ?? null,
   } as PatientRecord;
 }
 
@@ -83,6 +88,9 @@ async function withPatientColumnFallback<T>(
 ): Promise<{ data: T | null; error: { code?: string; message: string } | null; migrationPending: boolean }> {
   const result = await run(PATIENT_COLUMNS);
   if (result.error && isMissingColumnError(result.error)) {
+    // migration_v37 (primaryProviderId) missing → keep condition/riskLevel; v28 missing too → base columns only.
+    const mid = await run(MID_PATIENT_COLUMNS);
+    if (!(mid.error && isMissingColumnError(mid.error))) return { ...mid, migrationPending: true };
     const fallback = await run(BASE_PATIENT_COLUMNS);
     return { ...fallback, migrationPending: true };
   }
@@ -159,13 +167,15 @@ export async function createPatient(db: SupabaseClient, clientId: string, fields
     nextCheckInAt: fields.nextCheckInAt ?? null,
     condition: fields.condition ?? null,
     riskLevel: fields.riskLevel ?? "low",
+    ...(fields.primaryProviderId ? { primaryProviderId: fields.primaryProviderId } : {}),
     createdAt: Date.now(),
   };
 
   let { data, error } = await db.from("patients").insert(payload).select(PATIENT_COLUMNS).single();
   if (error && isMissingColumnError(error)) {
     console.warn("[lib/db/patients] \"condition\"/\"riskLevel\" columns not found — run sql/migration_v28.sql. Creating patient without them in the meantime.");
-    const { condition: _condition, riskLevel: _riskLevel, ...basePayload } = payload;
+    const { condition: _condition, riskLevel: _riskLevel, primaryProviderId: _primary, ...basePayload } = payload;
+    void _primary;
     void _condition;
     void _riskLevel;
     ({ data, error } = await db.from("patients").insert(basePayload).select(BASE_PATIENT_COLUMNS).single());

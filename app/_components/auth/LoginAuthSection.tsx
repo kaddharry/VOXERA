@@ -30,6 +30,9 @@ export default function LoginAuthSection({ action, demoRequestId, error, message
               <p className="mt-2 text-[14px] text-white/50">
                 Sign in to keep your AI receptionist running
               </p>
+              <p className="mt-1 text-[12.5px] text-white/35">
+                Doctors &amp; hospital staff: use the email and temporary password your admin gave you — you&apos;ll land on your own dashboard.
+              </p>
             </div>
 
             {error && (

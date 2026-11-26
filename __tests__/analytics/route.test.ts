@@ -14,6 +14,7 @@ function fakeRequest(url = "http://localhost/api/analytics") {
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
+vi.mock("../../lib/auth/access", async () => (await import("../helpers/mock-access")).mockAccessModule());
 vi.mock("../../lib/db/supabase", () => {
   const mockChain = {
     select: () => mockChain,

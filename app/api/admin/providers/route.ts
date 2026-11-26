@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAccess } from "../../../../lib/auth/access";
 import { z } from "zod";
-import { createClient } from "../../../../lib/db/server";
 import { createProvider, listProvidersForTenant } from "../../../../lib/db/providers";
 import { getTenantIdForUser } from "../../../../lib/db/agents";
 
@@ -16,9 +16,10 @@ const CreateProviderSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("staff.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
   const tenantId = await getTenantIdForUser(supabase, user.id);
   if (!tenantId) return NextResponse.json({ error: "No tenant found" }, { status: 404 });
 
@@ -30,9 +31,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("staff.manage");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
   const tenantId = await getTenantIdForUser(supabase, user.id);
   if (!tenantId) return NextResponse.json({ error: "No tenant found" }, { status: 404 });
 

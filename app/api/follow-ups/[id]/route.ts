@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../lib/db/server";
+import { requireAccess } from "../../../../lib/auth/access";
 import { setFollowUpTaskStatus } from "../../../../lib/db/follow-up-tasks";
 
 export const dynamic = "force-dynamic";
@@ -8,9 +8,10 @@ export const dynamic = "force-dynamic";
  * A task currently "dispatching"/"calling" can't be touched here — those
  * are owned by lib/scheduler/dispatcher.ts mid-flight. */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("patients.write");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const { id } = await params;
   const body = await request.json().catch(() => null);

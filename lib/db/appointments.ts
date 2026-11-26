@@ -32,6 +32,12 @@ export interface AppointmentRecord {
   created_by_user_id: string | null;
   cancelled_at: string | null;
   cancel_reason: string | null;
+  /** migration_v37.sql — absent on a database that hasn't run it yet. */
+  severity?: "routine" | "moderate" | "serious" | "emergency";
+  severity_reason?: string | null;
+  priority_score?: number;
+  cancelled_by_user_id?: string | null;
+  cancelled_by_role?: string | null;
   reminder_72h_task_id: string | null;
   reminder_24h_task_id: string | null;
   reminder_2h_task_id: string | null;
@@ -134,6 +140,26 @@ export async function rescheduleAppointment(
     throw new Error(error.message || "Failed to reschedule appointment.");
   }
   return data as unknown as AppointmentRecord;
+}
+
+/** Records how serious a booking is (migration_v37.sql). A database that hasn't run the migration just
+ * keeps the defaults — never fails the booking itself. */
+export async function setAppointmentSeverity(
+  db: SupabaseClient,
+  appointmentId: string,
+  fields: { severity: "routine" | "moderate" | "serious" | "emergency"; reason: string | null; priorityScore: number },
+): Promise<void> {
+  const { error } = await db
+    .from("appointments")
+    .update({ severity: fields.severity, severity_reason: fields.reason, priority_score: fields.priorityScore })
+    .eq("id", appointmentId);
+  if (error && !isMissingColumnError(error)) console.error("[lib/db/appointments] setAppointmentSeverity failed:", error.message);
+}
+
+/** Notes who cancelled (a doctor, staff or the patient). Best-effort, same tolerance as above. */
+export async function setCancelledBy(db: SupabaseClient, appointmentId: string, userId: string | null, role: string): Promise<void> {
+  const { error } = await db.from("appointments").update({ cancelled_by_user_id: userId, cancelled_by_role: role }).eq("id", appointmentId);
+  if (error && !isMissingColumnError(error)) console.error("[lib/db/appointments] setCancelledBy failed:", error.message);
 }
 
 export async function cancelAppointment(

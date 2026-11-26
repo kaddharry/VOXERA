@@ -1,5 +1,5 @@
 import { getSessionLog } from "@/lib/logging/session-logger";
-import { createClient } from "@/lib/db/server";
+import { requireAccess } from "@/lib/auth/access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,13 +25,10 @@ export async function GET(
     );
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const guard = await requireAccess("calls.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   // Full row (not just an ownership-check id) — the Sessions admin page
   // uses this to show which patient the call belongs to and surface the

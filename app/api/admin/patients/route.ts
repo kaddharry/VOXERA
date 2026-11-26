@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../lib/db/server";
+import { requireAccess } from "../../../../lib/auth/access";
 import { createPatient, listPatients, RISK_LEVELS, type RiskLevel } from "../../../../lib/db/patients";
 import { createPatientDocument } from "../../../../lib/db/patient-documents";
 import { extractPdfText } from "../../../../lib/knowledge/pdf";
@@ -9,9 +9,10 @@ export const dynamic = "force-dynamic";
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 export async function GET() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("patients.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const patients = await listPatients(supabase, user.id);
   return NextResponse.json({ patients });
@@ -28,9 +29,10 @@ export async function GET() {
  * getPatientCallContext() merges notes + every document at call time.
  */
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("patients.write");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const formData = await request.formData().catch(() => null);
   if (!formData) return NextResponse.json({ error: "Expected multipart/form-data" }, { status: 400 });
@@ -42,6 +44,7 @@ export async function POST(request: NextRequest) {
   const condition = formData.get("condition") ? String(formData.get("condition")).trim() || null : null;
   const riskLevelRaw = formData.get("riskLevel") ? String(formData.get("riskLevel")) : "low";
   const riskLevel: RiskLevel = (RISK_LEVELS as readonly string[]).includes(riskLevelRaw) ? (riskLevelRaw as RiskLevel) : "low";
+  const primaryProviderId = formData.get("primaryProviderId") ? String(formData.get("primaryProviderId")) : null;
   const file = formData.get("file");
 
   if (!name) return NextResponse.json({ error: "Patient name is required." }, { status: 400 });
@@ -68,7 +71,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Upload a knowledge base file or enter context manually." }, { status: 400 });
   }
 
-  const patient = await createPatient(supabase, user.id, { name, phone, notes, assignedAgentId, condition, riskLevel });
+  if (primaryProviderId) {
+    const { data: doctor } = await supabase.from("providers").select("id").eq("id", primaryProviderId).eq("tenant_id", guard.access.tenantId).maybeSingle();
+    if (!doctor) return NextResponse.json({ error: "That doctor isn't part of this hospital." }, { status: 404 });
+  }
+
+  const patient = await createPatient(supabase, user.id, { name, phone, notes, assignedAgentId, condition, riskLevel, primaryProviderId });
   if (!patient) return NextResponse.json({ error: "Failed to create patient" }, { status: 500 });
 
   if (fileDoc?.extractedText) {

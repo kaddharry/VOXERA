@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../../../../lib/db/server";
+import { requireAccess } from "../../../../../../../lib/auth/access";
 import { getPatient } from "../../../../../../../lib/db/patients";
 import { archiveFinishedTasks, listFollowUpTasksForPatient, MigrationRequiredError } from "../../../../../../../lib/db/follow-up-tasks";
 import { isClearable, scheduleIdOf } from "../../../../../../../lib/scheduler/schedules";
@@ -17,11 +17,10 @@ export const dynamic = "force-dynamic";
  * alerts are untouched and remain in Calls & Insights.
  */
 export async function POST(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("patients.write");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const { id } = await params;
   const patient = await getPatient(supabase, id, user.id);

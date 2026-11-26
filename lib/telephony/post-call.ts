@@ -1,6 +1,8 @@
 import { learnFromCall } from "../learning";
 import { supabase } from "../db/supabase";
 import { generateCallSummary } from "../agent/call-summary";
+import { applyCallMedicationReports } from "../agent/adherence";
+import { listMedications } from "../db/medications";
 import { analyzeCall, saveCallInsights } from "../insights/analyze-call";
 import { hasPatientSpoken } from "../logging/session-logger";
 import { handleFollowUpCallOutcome, applyDoNotContactRequest, readAnsweredBy } from "../scheduler/dispatcher";
@@ -107,7 +109,9 @@ export async function runPostCallJob(job: BackgroundJob): Promise<void> {
   let summary: Awaited<ReturnType<typeof generateCallSummary>>;
   try {
     // Reuse a summary an earlier attempt of this job already saved.
-    summary = (call.summary as typeof summary) ?? (await generateCallSummary(call.sessionId, call.clientId));
+    // The prescribed medicines go to the summary so it can report what the patient said about each.
+    const medications = call.summary ? [] : await listMedications(supabase, call.clientId, call.patientId, { activeOnly: true }).catch(() => []);
+    summary = (call.summary as typeof summary) ?? (await generateCallSummary(call.sessionId, call.clientId, { medications }));
   } catch (err) {
     // Unclear outcome: let the scheduler retry the follow-up now, and let
     // this job retry the summary later.
@@ -119,6 +123,16 @@ export async function runPostCallJob(job: BackgroundJob): Promise<void> {
     return;
   }
   if (!call.summary) await supabase.from("call_logs").update({ summary }).eq("id", callSid);
+
+  // Medicine answers given on the call -> the adherence log (skips anything the agent already recorded live).
+  if (summary.medicationReports?.length) {
+    await applyCallMedicationReports(supabase, {
+      clientId: call.clientId,
+      patientId: call.patientId,
+      sessionId: call.sessionId,
+      reports: summary.medicationReports,
+    }).catch((err) => console.error(`[PostCall] applyCallMedicationReports failed for ${callSid}:`, err));
+  }
 
   if (summary.requestedDoNotContact && call.patientId) {
     await applyDoNotContactRequest(call.clientId, call.patientId, "Patient asked to stop being called (detected from call transcript).");
