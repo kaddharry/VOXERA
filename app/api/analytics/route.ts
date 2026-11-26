@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../lib/db/server";
+import { requireAccess } from "../../../lib/auth/access";
 import { getTelephonyMetrics } from "../../../lib/telephony/call-coordination";
 
 export const dynamic = "force-dynamic";
@@ -17,12 +17,10 @@ const MAX_ROWS = 20000;
 
 export async function GET(request: NextRequest) {
   try {
-    const supabaseServer = await createClient();
-    const { data: { user } } = await supabaseServer.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const guard = await requireAccess("insights.read");
+    if (!guard.ok) return guard.response;
+    const supabaseServer = guard.access.db;
+    const user = { id: guard.access.clientId };
     const clientId = user.id;
 
     const rangeParam = request.nextUrl.searchParams.get("range") ?? DEFAULT_RANGE;

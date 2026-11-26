@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../../../lib/db/server";
+import { requireAccess } from "../../../../../../lib/auth/access";
+import type { Permission } from "../../../../../../lib/auth/permissions";
 import { getPatient } from "../../../../../../lib/db/patients";
 import { createSupabaseLearningStore, LearningTableMissingError } from "../../../../../../lib/learning/store";
 import { invalidateLearningContext } from "../../../../../../lib/learning";
 
 export const dynamic = "force-dynamic";
 
-async function authorize(params: Promise<{ id: string }>) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) } as const;
+async function authorize(params: Promise<{ id: string }>, permission: Permission = "patients.read") {
+  const guard = await requireAccess(permission);
+  if (!guard.ok) return { error: guard.response } as const;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
   const { id } = await params;
   const patient = await getPatient(supabase, id, user.id);
   if (!patient) return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) } as const;
@@ -31,7 +33,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
 /** DELETE /api/admin/patients/[id]/learnings?learningId=… — forget one learned fact (or all with ?all=1). */
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await authorize(params);
+  const auth = await authorize(params, "patients.write");
   if ("error" in auth) return auth.error;
   const store = createSupabaseLearningStore(auth.supabase);
   try {

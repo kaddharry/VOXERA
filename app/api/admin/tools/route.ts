@@ -4,7 +4,7 @@ import { createClient } from "../../../../lib/db/server";
 import { getTenantIdForUser } from "../../../../lib/db/agents";
 import { customToolDefinitions, executeCustomTool, type CustomToolRow } from "../../../../lib/tools/custom";
 import { encrypt } from "../../../../lib/util/crypto";
-import { APPOINTMENT_TOOLS, RESERVATION_TOOLS } from "../../../../lib/agent/tools";
+import { APPOINTMENT_TOOLS, CARE_TOOLS, RESERVATION_TOOLS } from "../../../../lib/agent/tools";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -37,7 +37,7 @@ export async function GET() {
     db.from("mcp_connections").select("id,name,endpoint,status,tools,tools_checked_at,last_error").eq("tenant_id",tenantId).order("created_at",{ascending:false}),
   ]);
   if(error) return NextResponse.json({error:"Could not load tool registry. Apply migration_v34.sql."},{status:500});
-  const builtIns = [...APPOINTMENT_TOOLS.map((tool) => ({ ...tool, category: "Appointments" })), ...RESERVATION_TOOLS.map((tool) => ({ ...tool, category: "Reservations" }))].map((tool) => ({
+  const builtIns = [...APPOINTMENT_TOOLS.map((tool) => ({ ...tool, category: "Appointments" })), ...CARE_TOOLS.map((tool) => ({ ...tool, category: "Care plan" })), ...RESERVATION_TOOLS.map((tool) => ({ ...tool, category: "Reservations" }))].map((tool) => ({
     id: tool.function.name,
     name: tool.function.name.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join(" "),
     category: tool.category,

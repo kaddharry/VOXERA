@@ -4,60 +4,26 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import {
-  LayoutDashboard,
-  Database,
-  Settings,
-  LogOut,
-  Sparkles,
-  Users,
-  Radio,
-  PhoneCall,
-  Bot,
-  UserCheck,
-  Bell,
-  Search,
-  MessageSquare,
-  Lightbulb,
-  CalendarDays,
-  Wrench,
-} from "lucide-react";
+import { LogOut, Search, Bell, ShieldAlert } from "lucide-react";
 import { AdminMobileNav } from "./AdminMobileNav";
-
-const BASE_NAV_ITEMS = [
-  { href: "/admin", icon: LayoutDashboard, label: "Overview" },
-  { href: "/admin/patients", icon: UserCheck, label: "Patients" },
-  { href: "/admin/calendar", icon: CalendarDays, label: "Appointments" },
-  { href: "/admin/staff", icon: Users, label: "Staff" },
-  { href: "/admin/tools", icon: Wrench, label: "Tools" },
-  { href: "/admin/live_dashboard", icon: Radio, label: "Live Calls" },
-  { href: "/admin/sessions", icon: MessageSquare, label: "Calls & Insights" },
-  { href: "/admin/learning", icon: Lightbulb, label: "Agent Learning" },
-  { href: "/admin/agents", icon: Bot, label: "Agent Builder" },
-  { href: "/admin/knowledge", icon: Database, label: "Hospital Information & Policies" },
-  { href: "/admin/try-call", icon: PhoneCall, label: "Test Agent" },
-  { href: "/admin/settings", icon: Settings, label: "Team & Settings" },
-];
-
-const PLATFORM_ADMIN_NAV_ITEMS = [
-  { href: "/admin/tenants", icon: Users, label: "Tenants" },
-  { href: "/admin/rag", icon: Sparkles, label: "RAG Debugger" },
-];
+import { navItemsFor } from "./nav";
+import { canAccessAdminPath, ROLE_LABELS, type HospitalRole } from "../../lib/auth/permissions";
 
 export function AdminShell({
   userEmail,
   isPlatformAdmin,
+  role = "hospital_admin",
   children,
 }: {
   userEmail: string;
   isPlatformAdmin: boolean;
+  role?: HospitalRole;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const navItems = useMemo(
-    () => (isPlatformAdmin ? [...BASE_NAV_ITEMS, ...PLATFORM_ADMIN_NAV_ITEMS] : BASE_NAV_ITEMS),
-    [isPlatformAdmin]
-  );
+  const navItems = useMemo(() => navItemsFor(role, isPlatformAdmin), [role, isPlatformAdmin]);
+  // Platform pages are guarded by their own routes; everything else follows the role's permissions.
+  const allowed = pathname.startsWith("/admin/tenants") || pathname.startsWith("/admin/rag") ? isPlatformAdmin : canAccessAdminPath(role, pathname);
 
   const activeItem =
     [...navItems].sort((a, b) => b.href.length - a.href.length).find((item) =>
@@ -100,7 +66,8 @@ export function AdminShell({
 
           <div className="border-t border-[var(--color-border-subtle)] p-3">
             <div className="rounded-lg px-3 py-2.5">
-              <p className="mb-2 truncate text-[12px] text-[var(--color-text-secondary)]">{userEmail}</p>
+              <p className="truncate text-[12px] text-[var(--color-text-secondary)]">{userEmail}</p>
+              <p className="mb-2 text-[11px] text-[var(--color-text-muted)]">{ROLE_LABELS[role]}</p>
               <form action="/api/auth/logout" method="POST">
                 <button
                   type="submit"
@@ -116,9 +83,22 @@ export function AdminShell({
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <AdminMobileNav userEmail={userEmail} isPlatformAdmin={isPlatformAdmin} />
+        <AdminMobileNav userEmail={userEmail} isPlatformAdmin={isPlatformAdmin} role={role} />
         <AdminHeader activeLabel={activeItem.label} navItems={navItems} />
-        <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+        <main className="min-h-0 flex-1 overflow-y-auto">
+          {allowed ? (
+            children
+          ) : (
+            <div role="alert" className="mx-auto mt-24 max-w-md rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)] p-8 text-center">
+              <ShieldAlert className="mx-auto mb-3 size-8 text-[var(--risk-medium)]" />
+              <h1 className="text-[16px] font-semibold">You don&apos;t have access to this page</h1>
+              <p className="mt-1 text-[13px] text-[var(--color-text-secondary)]">
+                Your role ({ROLE_LABELS[role]}) can&apos;t open it. Ask a hospital admin if you need it.
+              </p>
+              <Link href="/admin" className="mt-4 inline-block text-[13px] font-semibold text-[var(--color-accent-cyan)]">Back to overview</Link>
+            </div>
+          )}
+        </main>
       </div>
     </div>
   );

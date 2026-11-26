@@ -11,10 +11,12 @@ export function EditRiskDialog({
   onClose,
   onSaved,
 }: {
-  patient: { id: string; name: string; condition: string | null; riskLevel: RiskLevel } | null;
+  patient: { id: string; name: string; condition: string | null; riskLevel: RiskLevel; primaryProviderId?: string | null } | null;
   onClose: () => void;
-  onSaved: (patient: { id: string; condition: string | null; riskLevel: RiskLevel }) => void;
+  onSaved: (patient: { id: string; condition: string | null; riskLevel: RiskLevel; primaryProviderId: string | null }) => void;
 }) {
+  const [doctors, setDoctors] = useState<{ id: string; name: string; specialty: string | null }[]>([]);
+  const [primaryProviderId, setPrimaryProviderId] = useState("");
   const [condition, setCondition] = useState("");
   const [riskLevel, setRiskLevel] = useState<RiskLevel>("low");
   const [saving, setSaving] = useState(false);
@@ -27,7 +29,16 @@ export function EditRiskDialog({
     if (!patient) return;
     setCondition(patient.condition ?? "");
     setRiskLevel(patient.riskLevel);
+    setPrimaryProviderId(patient.primaryProviderId ?? "");
     setError(null);
+  }, [patient]);
+
+  useEffect(() => {
+    if (!patient) return;
+    fetch("/api/admin/providers?status=active")
+      .then((r) => r.json())
+      .then((d: { providers?: { id: string; name: string; specialty: string | null }[] }) => setDoctors(d.providers ?? []))
+      .catch(() => {});
   }, [patient]);
 
   async function save() {
@@ -38,14 +49,14 @@ export function EditRiskDialog({
       const res = await fetch(`/api/admin/patients/${patient.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ condition: condition.trim() || null, riskLevel }),
+        body: JSON.stringify({ condition: condition.trim() || null, riskLevel, primaryProviderId: primaryProviderId || null }),
       });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Failed to save");
         return;
       }
-      onSaved({ id: patient.id, condition: data.patient.condition, riskLevel: data.patient.riskLevel });
+      onSaved({ id: patient.id, condition: data.patient.condition, riskLevel: data.patient.riskLevel, primaryProviderId: data.patient.primaryProviderId ?? null });
       onClose();
     } catch {
       setError("Failed to save");
@@ -59,7 +70,7 @@ export function EditRiskDialog({
       open={!!patient}
       onClose={onClose}
       title={`Edit ${patient?.name ?? "patient"}`}
-      subtitle="Condition & risk level"
+      subtitle="Condition, risk level & primary doctor"
       size="sm"
       footer={
         <>
@@ -108,6 +119,21 @@ export function EditRiskDialog({
               </button>
             ))}
           </div>
+        </div>
+        <div>
+          <label className="text-[11px] font-mono uppercase tracking-widest text-[var(--color-text-muted)] mb-1.5 block">
+            Primary doctor
+          </label>
+          <select
+            value={primaryProviderId}
+            onChange={(e) => setPrimaryProviderId(e.target.value)}
+            className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+          >
+            <option value="">Not assigned</option>
+            {doctors.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}{d.specialty ? ` — ${d.specialty}` : ""}</option>
+            ))}
+          </select>
         </div>
         {error && <p className="text-[12px] text-red-400">{error}</p>}
       </div>

@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { createClient } from "../../../../../lib/db/server";
+import { requireAccess } from "../../../../../lib/auth/access";
+import type { Permission } from "../../../../../lib/auth/permissions";
 import {
   AppointmentConflictError,
   cancelAppointment,
+  setCancelledBy,
   checkInAppointment,
   completeAppointment,
   confirmAppointment,
@@ -23,17 +25,16 @@ const UpdateAppointmentSchema = z.object({
   notes: z.string().max(2000).nullable().optional(),
 });
 
-async function resolveClient() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { supabase, clientId: null as string | null, unauthorized: true as const };
-  return { supabase, clientId: user.id, unauthorized: false as const };
+async function resolveClient(permission: Permission) {
+  const guard = await requireAccess(permission);
+  if (!guard.ok) return { supabase: null as never, clientId: null as string | null, unauthorized: true as const, denied: guard.response, actor: { userId: null as string | null, role: "staff" } };
+  return { supabase: guard.access.db, clientId: guard.access.clientId, unauthorized: false as const, denied: null, actor: { userId: guard.access.userId as string | null, role: guard.access.role as string } };
 }
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase, clientId, unauthorized } = await resolveClient();
-  if (unauthorized || !clientId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { supabase, clientId, unauthorized, denied } = await resolveClient("appointments.read");
+  if (unauthorized || !clientId) return denied!;
 
   const appointment = await getAppointmentById(supabase, id, clientId);
   if (!appointment) return NextResponse.json({ error: "Appointment not found" }, { status: 404 });
@@ -42,8 +43,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase, clientId, unauthorized } = await resolveClient();
-  if (unauthorized || !clientId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { supabase, clientId, unauthorized, denied, actor } = await resolveClient("appointments.write");
+  if (unauthorized || !clientId) return denied!;
 
   const body = await request.json().catch(() => null);
   const parsed = UpdateAppointmentSchema.safeParse(body);
@@ -92,6 +93,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         case "cancelled":
           appointment = await cancelAppointment(supabase, id, clientId);
           if (appointment) {
+            await setCancelledBy(supabase, id, actor.userId, actor.role);
             await cancelAppointmentReminders(supabase, appointment);
             await triggerWaitlistBackfill(supabase, {
               tenantId: appointment.tenant_id,
@@ -122,8 +124,8 @@ const CancelSchema = z.object({ reason: z.string().max(500).optional() });
 
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { supabase, clientId, unauthorized } = await resolveClient();
-  if (unauthorized || !clientId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { supabase, clientId, unauthorized, denied, actor } = await resolveClient("appointments.cancel");
+  if (unauthorized || !clientId) return denied!;
 
   const body = await request.json().catch(() => ({}));
   const parsed = CancelSchema.safeParse(body);
@@ -131,6 +133,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
   const appointment = await cancelAppointment(supabase, id, clientId, reason);
   if (!appointment) return NextResponse.json({ error: "Appointment not found" }, { status: 404 });
+  await setCancelledBy(supabase, id, actor.userId, actor.role);
   await cancelAppointmentReminders(supabase, appointment);
   await triggerWaitlistBackfill(supabase, {
     tenantId: appointment.tenant_id,

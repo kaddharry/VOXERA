@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { isValidTimeZone, validateCallingWindow } from "../../lib/scheduler/validation";
 
 let patient: any;
+vi.mock("../../lib/auth/access", async () => (await import("../helpers/mock-access")).mockAccessModule());
 vi.mock("../../lib/db/server", () => ({
   createClient: async () => ({ auth: { getUser: async () => ({ data: { user: { id: "c1" } } }) } }),
 }));

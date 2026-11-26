@@ -5,7 +5,7 @@ import { NextResponse, type NextRequest } from "next/server";
 /** Routes that require a signed-in session — everything else is public and
  * must never be redirected to /login, even though this middleware now runs
  * on nearly every request (see middleware.ts's matcher). */
-const PROTECTED_PREFIXES = ["/admin", "/onboarding"];
+const PROTECTED_PREFIXES = ["/admin", "/onboarding", "/doctor", "/account"];
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });

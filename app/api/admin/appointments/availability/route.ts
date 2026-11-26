@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../../lib/db/server";
+import { requireAccess } from "../../../../../lib/auth/access";
 import { getTenantIdForUser } from "../../../../../lib/db/agents";
 import { getProviderForTenant } from "../../../../../lib/db/providers";
 import { listAppointmentsForRange } from "../../../../../lib/db/appointments";
@@ -12,9 +12,10 @@ export const dynamic = "force-dynamic";
  * check_appointment_availability agent tool uses (lib/agent/tools.ts), so
  * a hospital admin and the voice agent always see the same open slots. */
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("appointments.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
   const tenantId = await getTenantIdForUser(supabase, user.id);
   if (!tenantId) return NextResponse.json({ error: "No tenant found" }, { status: 404 });
 

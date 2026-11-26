@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../lib/db/server";
+import { requireAccess } from "../../../lib/auth/access";
 import { listAlerts } from "../../../lib/db/alerts";
 import { listPatients } from "../../../lib/db/patients";
 import { isTestSession } from "../../../lib/agent/alert-priority";
@@ -23,9 +23,10 @@ export const dynamic = "force-dynamic";
  * didn't pick up," which is backwards (that's literally the case where the
  * patient *did* pick up and something still went wrong). */
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("alerts.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const status = request.nextUrl.searchParams.get("status");
   const patientId = request.nextUrl.searchParams.get("patientId") ?? undefined;

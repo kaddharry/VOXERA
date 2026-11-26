@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../../../lib/db/server";
+import { requireAccess } from "../../../../../../lib/auth/access";
 import { setDoNotContact } from "../../../../../../lib/db/patients";
 
 export const dynamic = "force-dynamic";
@@ -11,9 +11,10 @@ export const dynamic = "force-dynamic";
  * automatic path, a staff member setting this sees the Follow-up Plan tab
  * directly and can decide per-task, since they're already looking at it. */
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("patients.write");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const { id } = await params;
   const body = await request.json().catch(() => ({}));

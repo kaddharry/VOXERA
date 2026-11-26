@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getAgentWithTenant, type AgentWithTenant } from "./agents";
 import { getPatientCallContext } from "./patient-documents";
+import { buildCarePlanContext } from "../agent/care-plan";
 
 /**
  * Short-TTL in-process caches for the two per-turn lookups that never change
@@ -59,7 +60,36 @@ export function getPatientCallContextCached(db: SupabaseClient, patientId: strin
   return p;
 }
 
+const carePlans = new Map<string, Entry<string>>();
+const carePlanInflight = new Map<string, Promise<string>>();
+
+/** Last-call pain, medicines and approved doctor instructions for this patient (lib/agent/care-plan.ts). */
+export function getCarePlanContextCached(db: SupabaseClient, clientId: string, patientId: string): Promise<string> {
+  const key = `${clientId}:${patientId}`;
+  const hit = carePlans.get(key);
+  if (hit && Date.now() - hit.at < TTL_MS) return Promise.resolve(hit.value);
+  const pending = carePlanInflight.get(key);
+  if (pending) return pending;
+  const p = buildCarePlanContext(db, { clientId, patientId })
+    .then((ctx) => {
+      carePlans.set(key, { value: ctx, at: Date.now() });
+      return ctx;
+    })
+    .finally(() => carePlanInflight.delete(key));
+  carePlanInflight.set(key, p);
+  return p;
+}
+
+/** Call after a doctor changes medicines or an instruction is approved so the next call sees it at once. */
+export function invalidateCarePlanContext(clientId: string, patientId?: string): void {
+  for (const key of [...carePlans.keys()]) {
+    if (key.startsWith(`${clientId}:`) && (!patientId || key.endsWith(`:${patientId}`))) carePlans.delete(key);
+  }
+}
+
 export function __clearAgentCachesForTesting(): void {
+  carePlans.clear();
+  carePlanInflight.clear();
   agents.clear();
   patients.clear();
   agentInflight.clear();

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../../../lib/db/server";
-import { getTenantIdForUser } from "../../../../../../lib/db/agents";
+import { requireAccess } from "../../../../../../lib/auth/access";
 import { getProviderForTenant } from "../../../../../../lib/db/providers";
 import { listDistinctPatientIdsForProvider } from "../../../../../../lib/db/appointments";
 import { listPatientsByIds } from "../../../../../../lib/db/patients";
@@ -11,11 +10,11 @@ export const dynamic = "force-dynamic";
  * Backs the staff-directory slide-over (app/admin/staff/page.tsx). */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const tenantId = await getTenantIdForUser(supabase, user.id);
-  if (!tenantId) return NextResponse.json({ error: "No tenant found" }, { status: 404 });
+  const guard = await requireAccess("staff.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
+  const tenantId = guard.access.tenantId;
 
   const provider = await getProviderForTenant(supabase, id, tenantId);
   if (!provider) return NextResponse.json({ error: "Provider not found" }, { status: 404 });

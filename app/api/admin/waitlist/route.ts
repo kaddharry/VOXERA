@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAccess } from "../../../../lib/auth/access";
 import { z } from "zod";
-import { createClient } from "../../../../lib/db/server";
 import { getTenantIdForUser } from "../../../../lib/db/agents";
 import { addToWaitlist, listWaitlistEntries } from "../../../../lib/db/waitlist";
 
@@ -16,9 +16,10 @@ const CreateWaitlistSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("appointments.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const providerId = request.nextUrl.searchParams.get("providerId") ?? undefined;
   const statusParam = request.nextUrl.searchParams.get("status");
@@ -31,9 +32,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("appointments.write");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
   const tenantId = await getTenantIdForUser(supabase, user.id);
   if (!tenantId) return NextResponse.json({ error: "No tenant found" }, { status: 404 });
 

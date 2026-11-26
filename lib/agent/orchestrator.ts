@@ -16,7 +16,7 @@ import { supabase as supabaseService } from "../db/supabase";
 import { getLearningContext } from "../learning";
 import { buildBookingContext } from "./booking-context";
 import { getAgentWithTenantCached } from "../db/agent-cache";
-import { getPatientCallContextCached } from "../db/agent-cache";
+import { getPatientCallContextCached, getCarePlanContextCached } from "../db/agent-cache";
 import { raiseCallAlert } from "../db/alerts";
 import { alertPriority } from "./alert-priority";
 import { resolveCallLanguage } from "./call-language";
@@ -334,6 +334,13 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
       }),
     )
     .catch((): undefined => undefined);
+  // Last call's pain, prescribed medicines and approved doctor instructions: same shape as the learning lookup
+  // (starts once the agent's tenant is known, capped below so it can never stall a live turn).
+  const carePlanPromise: Promise<string | undefined> = input.patientId
+    ? agentInfoPromise
+        .then((resolved) => getCarePlanContextCached(supabaseService, resolved ? resolved.tenant_auth_user_id : input.clientId, input.patientId!))
+        .catch((): undefined => undefined)
+    : Promise.resolve(undefined);
   const [agentInfo, textEmoResult, queryEmbedding, patientContext] = await Promise.all([
     agentInfoPromise,
     detectTextEmotion(input.transcript, { language: input.language }).then((result) => {
@@ -689,6 +696,10 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
     learningPromise,
     new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1500)),
   ]).catch(() => undefined);
+  const carePlanContext = await Promise.race([
+    carePlanPromise,
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1500)),
+  ]).catch(() => undefined);
   if (input.patientId) console.log(`[Orchestrator] learned context for this turn: ${learningContext ? `${learningContext.length} chars` : "none"} (client=${input.clientId} agent=${resolvedAgent?.id ?? "-"})`);
 
   // The booking block (doctors + rules, ~1.4k characters) is only useful when the conversation is about booking;
@@ -707,6 +718,7 @@ export async function handleTurn(input: TurnInput, opts?: HandleTurnOpts): Promi
   const llmContext = buildLLMContext({
     bookingContext: [bookingContext, actionsBlock].filter(Boolean).join("\n\n") || undefined,
     learningContext,
+    carePlanContext: carePlanContext || undefined,
     languageLock: input.languageLock,
     callLanguage,
     userId: input.userId,

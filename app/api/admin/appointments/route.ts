@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAccess } from "../../../../lib/auth/access";
 import { z } from "zod";
-import { createClient } from "../../../../lib/db/server";
 import { getTenantIdForUser } from "../../../../lib/db/agents";
 import { AppointmentConflictError, bookAppointment, listAppointmentsForRange } from "../../../../lib/db/appointments";
 import { scheduleAppointmentReminders } from "../../../../lib/scheduler/appointment-reminders";
@@ -17,9 +17,10 @@ const CreateAppointmentSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("appointments.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const from = request.nextUrl.searchParams.get("from");
   const to = request.nextUrl.searchParams.get("to");
@@ -31,9 +32,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("appointments.write");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
   const tenantId = await getTenantIdForUser(supabase, user.id);
   if (!tenantId) return NextResponse.json({ error: "No tenant found" }, { status: 404 });
 
@@ -57,7 +59,7 @@ export async function POST(request: NextRequest) {
       visitType: parsed.data.visitType,
       notes: parsed.data.notes,
       bookedVia: "staff",
-      createdByUserId: user.id,
+      createdByUserId: guard.access.userId,
     });
     await scheduleAppointmentReminders(supabase, appointment, tenantId).catch((err) =>
       console.error("[api/admin/appointments] scheduleAppointmentReminders failed:", err),

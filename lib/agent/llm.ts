@@ -1,11 +1,11 @@
 // The `openai` package is used only as an OpenAI-COMPATIBLE client: every
 // provider in CONFIG.llm.providers (Groq, ZenMux) sets its own baseURL. VOXERA
 // makes no direct calls to the OpenAI API and needs no OpenAI key.
-import { BOOKING_HINT } from "./booking-intent";
+import { BOOKING_HINT, isMedicationTurn } from "./booking-intent";
 import OpenAI from "openai";
 import { CONFIG } from "../config";
 import { getKeyRotator } from "../util/keys";
-import { TOOLS, dispatchToolCall, getToolsForAgentWithMCP } from "./tools";
+import { TOOLS, CARE_TOOL_NAMES, dispatchToolCall, getToolsForAgentWithMCP } from "./tools";
 import { runBackgroundAction, markAnnounced } from "./background-actions";
 import { ClauseChunker } from "./clause-chunker";
 import { isReasoningClause, isWrongIndicScript, matchSpeakerGender, stripForeignScript, stripReasoningLeak, stripWrappingQuotes } from "./reply-hygiene";
@@ -384,7 +384,8 @@ export async function generateReply(args: {
   const bookingTurn = toolAgentCfg && BOOKING_HINT.test(conversation);
   const needStrong = !args.fastModel && (turnIsIndic || callIsIndic || explicitIndicSetting || bookingTurn);
   // Send tools only when the conversation is about booking: fewer tokens, and a chatty reply is never held up by tool rounds.
-  const toolsAllowed = !toolAgentCfg || bookingTurn;
+  const medicationTurn = toolAgentCfg && !bookingTurn && isMedicationTurn(conversation, args.system);
+  const toolsAllowed = !toolAgentCfg || bookingTurn || medicationTurn;
   const canFallToFast = args.fastModel || (!turnIsIndic && !callIsIndic && !explicitIndicSetting); // the fast model writes poor Hindi, so never fall back to it for Hindi
   let modelOverride = "";
 
@@ -477,9 +478,11 @@ export async function generateReply(args: {
           // args.enabledTools undefined = legacy demo path, full
           // RESERVATION_TOOLS (unchanged behavior); an array (even empty)
           // means a real Agent Builder agent, filtered to its own allowlist.
-          const toolsForThisCall = toolsLocked || !toolsAllowed
+          const allToolsForAgent = toolsLocked || !toolsAllowed
             ? []
             : args.enabledTools !== undefined ? await getToolsForAgentWithMCP(args.enabledTools, args.clientId) : TOOLS;
+          // A medicine-only turn (no booking talk) gets just the care-plan tool, so chat stays fast.
+          const toolsForThisCall = medicationTurn ? allToolsForAgent.filter((t) => CARE_TOOL_NAMES.has(t.function.name)) : allToolsForAgent;
           const baseParams = {
             model: modelForCall,
             messages,

@@ -15,7 +15,8 @@ export type SessionEventType =
   | "email_dispatch"
   | "input_guard"
   | "acoustic"
-  | "emotion_diagnostic";
+  | "emotion_diagnostic"
+  | "triage_decision";
 
 export interface SessionEvent {
   ts: number;

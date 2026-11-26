@@ -15,6 +15,7 @@ const NOW = ist("2026-10-26", 15, 30); // 26 Oct 2026, 3:30 pm Kolkata
 let db: ReturnType<typeof createFakeDb>;
 let currentUser: { id: string } | null;
 
+vi.mock("../../lib/auth/access", async () => (await import("../helpers/mock-access")).mockAccessModule());
 vi.mock("../../lib/db/server", () => ({
   createClient: async () => ({
     auth: { getUser: async () => ({ data: { user: currentUser } }) },

@@ -37,6 +37,13 @@ interface Patient {
   doNotContact: boolean;
   condition: string | null;
   riskLevel: RiskLevel;
+  primaryProviderId?: string | null;
+}
+
+interface Doctor {
+  id: string;
+  name: string;
+  specialty: string | null;
 }
 
 interface Agent {
@@ -86,6 +93,8 @@ export default function PatientsPage() {
   const [riskLevel, setRiskLevel] = useState<RiskLevel>("low");
   const [file, setFile] = useState<File | null>(null);
   const [assignedAgentId, setAssignedAgentId] = useState("");
+  const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const [primaryProviderId, setPrimaryProviderId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -198,6 +207,10 @@ export default function PatientsPage() {
       .then((r) => r.json())
       .then((data: { agents?: Agent[] }) => setAgents(data.agents ?? []))
       .catch(() => {});
+    fetch("/api/admin/providers?status=active")
+      .then((r) => r.json())
+      .then((data: { providers?: Doctor[] }) => setDoctors(data.providers ?? []))
+      .catch(() => {});
     fetch("/api/follow-up-programmes")
       .then((r) => r.json())
       .then((data: { programmes?: Programme[] }) => setProgrammes(data.programmes ?? []))
@@ -249,6 +262,7 @@ export default function PatientsPage() {
       form.set("name", name);
       form.set("phone", phone);
       if (assignedAgentId) form.set("assignedAgentId", assignedAgentId);
+      if (primaryProviderId) form.set("primaryProviderId", primaryProviderId);
       if (notes) form.set("notes", notes);
       if (condition) form.set("condition", condition);
       form.set("riskLevel", riskLevel);
@@ -480,6 +494,22 @@ export default function PatientsPage() {
                 placeholder="Anything not in the document..."
                 className="w-full bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
               />
+            </div>
+
+            <div className="mb-4">
+              <label className="text-[11px] font-mono uppercase tracking-widest text-[var(--color-text-muted)] mb-1.5 block">
+                Primary doctor (sees this patient in their own dashboard)
+              </label>
+              <select
+                value={primaryProviderId}
+                onChange={(e) => setPrimaryProviderId(e.target.value)}
+                className="w-full sm:w-64 bg-[var(--color-bg-surface)] border border-[var(--color-border-subtle)] rounded-lg px-3 py-2 text-[13px] text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-violet)]/50"
+              >
+                <option value="">Not assigned</option>
+                {doctors.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}{d.specialty ? ` — ${d.specialty}` : ""}</option>
+                ))}
+              </select>
             </div>
 
             <div className="mb-5">
@@ -899,7 +929,7 @@ export default function PatientsPage() {
         patient={editTarget}
         onClose={() => setEditTarget(null)}
         onSaved={(updated) => {
-          setPatients((prev) => prev?.map((p) => (p.id === updated.id ? { ...p, condition: updated.condition, riskLevel: updated.riskLevel } : p)) ?? prev);
+          setPatients((prev) => prev?.map((p) => (p.id === updated.id ? { ...p, condition: updated.condition, riskLevel: updated.riskLevel, primaryProviderId: updated.primaryProviderId } : p)) ?? prev);
         }}
       />
     </div>

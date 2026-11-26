@@ -46,7 +46,31 @@ export interface CallSummary {
    * the LLM's `flaggedConcerns` missed it. Empty array, never omitted, so a
    * reader can tell "checked, nothing found" from "wasn't checked". */
   automatedSafetySignals: string[];
+  /** Pain the patient described on THIS call. The next call opens by asking how it is now
+   * (lib/agent/care-plan.ts). `present` is false when no pain/discomfort was mentioned. */
+  painReported: PainReport;
+  /** What the patient said about each prescribed medicine on this call (only medicines the call
+   * actually discussed). Applied to the adherence log in lib/telephony/post-call.ts. */
+  medicationReports: MedicationReport[];
 }
+
+export interface PainReport {
+  present: boolean;
+  /** Where it hurts, in the patient's words ("lower back", "left knee"). */
+  location: string | null;
+  /** 0-10 only if the patient gave or clearly implied a number; otherwise null — never guessed. */
+  score: number | null;
+  /** One short grounded sentence ("worse at night, better after the tablet"). */
+  description: string | null;
+}
+
+export interface MedicationReport {
+  medicationId: string;
+  status: "taken" | "partial" | "missed" | "unknown";
+  note: string | null;
+}
+
+export const NO_PAIN: PainReport = { present: false, location: null, score: null, description: null };
 
 const SUMMARY_SYSTEM_PROMPT =
   "You are reviewing the transcript of a completed check-in phone call for a clinician to read afterward. " +
@@ -73,11 +97,46 @@ const SUMMARY_SYSTEM_PROMPT =
   "the patient explicitly confirmed they will attend (e.g. 'yes I'll be there', 'confirmed'), false otherwise " +
   "or if this call wasn't about an appointment at all>, " +
   '"appointmentCancelRequested": <true ONLY if the patient explicitly asked to cancel that appointment during ' +
-  'this call (not merely to reschedule it), false otherwise>}';
+  'this call (not merely to reschedule it), false otherwise>, ' +
+  '"painReported": {"present": <true ONLY if the patient described pain or physical discomfort on this call>, ' +
+  '"location": "<where, in the patient\'s own words, or null>", "score": <0-10 ONLY if the patient said or clearly ' +
+  'implied a number, otherwise null — never estimate>, "description": "<one short sentence grounded in what they said, ' +
+  'or null>"}, ' +
+  '"medicationReports": [{"medicationId": "<id exactly as listed in the MEDICATIONS section>", "status": "<taken | ' +
+  'partial | missed | unknown>", "note": "<short reason if given, or null>"}]} ' +
+  "The MEDICATIONS section (when present) lists the patient's prescribed medicines. Include an entry ONLY for a " +
+  "medicine the patient actually talked about on this call; use \"unknown\" when they were asked but gave no clear " +
+  "answer. If there is no MEDICATIONS section, medicationReports must be an empty array.";
 
 type LlmSummary = Omit<CallSummary, "automatedSafetySignals" | "callEmotion">;
 
-function parseSummary(raw: string): LlmSummary | null {
+function parsePain(raw: unknown): PainReport {
+  if (!raw || typeof raw !== "object") return NO_PAIN;
+  const p = raw as Record<string, unknown>;
+  if (p.present !== true) return NO_PAIN;
+  const score = typeof p.score === "number" && p.score >= 0 && p.score <= 10 ? Math.round(p.score) : null;
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : null);
+  return { present: true, location: text(p.location), score, description: text(p.description) };
+}
+
+function parseMedicationReports(raw: unknown, allowedIds: Set<string>): MedicationReport[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: MedicationReport[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    const id = typeof r.medicationId === "string" ? r.medicationId : "";
+    // Only ids we listed: the model cannot invent a medicine.
+    if (!allowedIds.has(id) || seen.has(id)) continue;
+    const status = r.status === "taken" || r.status === "partial" || r.status === "missed" ? r.status : "unknown";
+    seen.add(id);
+    out.push({ medicationId: id, status, note: typeof r.note === "string" && r.note.trim() ? r.note.trim().slice(0, 200) : null });
+  }
+  return out;
+}
+
+export function parseSummary(raw: string, allowedMedicationIds: Set<string> = new Set()): LlmSummary | null {
   try {
     // Model output occasionally wraps JSON in a code fence despite the
     // "ONLY a JSON object" instruction — strip that defensively rather than
@@ -98,6 +157,8 @@ function parseSummary(raw: string): LlmSummary | null {
         requestedDoNotContact: parsed.requestedDoNotContact === true,
         appointmentConfirmed: parsed.appointmentConfirmed === true,
         appointmentCancelRequested: parsed.appointmentCancelRequested === true,
+        painReported: parsePain(parsed.painReported),
+        medicationReports: parseMedicationReports(parsed.medicationReports, allowedMedicationIds),
       };
     }
     return null;
@@ -116,7 +177,12 @@ function parseSummary(raw: string): LlmSummary | null {
  * decoupled from any live turn, so it cannot add latency to an in-progress
  * call by construction.
  */
-export async function generateCallSummary(sessionId: string, clientId: string): Promise<CallSummary | null> {
+export async function generateCallSummary(
+  sessionId: string,
+  clientId: string,
+  opts: { medications?: Array<{ id: string; name: string; dosage?: string | null; frequency?: string }> } = {},
+): Promise<CallSummary | null> {
+  const medications = opts.medications ?? [];
   const { data: rows, error } = await supabase
     .from("session_logs")
     .select("payload")
@@ -144,10 +210,13 @@ export async function generateCallSummary(sessionId: string, clientId: string): 
     console.warn(`[CallSummary] Failed to load automated safety signals for ${sessionId}:`, err);
     return [] as string[];
   });
+  const medicationsSection = medications.length
+    ? `\n\nMEDICATIONS (prescribed to this patient):\n${medications.map((m) => `- id=${m.id}: ${m.name}${m.dosage ? ` ${m.dosage}` : ""}${m.frequency ? `, ${m.frequency}` : ""}`).join("\n")}`
+    : "";
   const userPrompt =
-    automatedSafetySignals.length > 0
+    (automatedSafetySignals.length > 0
       ? `${transcript}\n\nAUTOMATED SIGNALS (from the emotion-detection engine, not written by you):\n${automatedSafetySignals.map((s) => `- ${s}`).join("\n")}`
-      : transcript;
+      : transcript) + medicationsSection;
 
   try {
     const reply = await generateReply({
@@ -156,9 +225,9 @@ export async function generateCallSummary(sessionId: string, clientId: string): 
       clientId,
       useTools: false,
       raw: true,
-      maxOutputTokens: 400,
+      maxOutputTokens: 700,
     });
-    const llmSummary = parseSummary(reply.text);
+    const llmSummary = parseSummary(reply.text, new Set(medications.map((m) => m.id)));
     if (!llmSummary) return null;
     const callEmotion = await loadCallEmotion(sessionId).catch(() => null);
     return {

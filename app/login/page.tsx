@@ -1,6 +1,8 @@
 import { login } from "./actions";
 import { redirect } from "next/navigation";
 import { createClient } from "../../lib/db/server";
+import { getAccess } from "../../lib/auth/access";
+import { homeForRole } from "../../lib/auth/permissions";
 import LoginAuthSection from "../_components/auth/LoginAuthSection";
 
 export default async function LoginPage(props: {
@@ -18,7 +20,10 @@ export default async function LoginPage(props: {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (user) {
-    redirect(demoRequestId ? `/book-demo/confirm?id=${encodeURIComponent(demoRequestId)}` : "/admin");
+    if (demoRequestId) redirect(`/book-demo/confirm?id=${encodeURIComponent(demoRequestId)}`);
+    const access = await getAccess().catch(() => null);
+    const home = homeForRole(access?.role);
+    redirect(user.user_metadata?.must_change_password ? `/account/password?next=${encodeURIComponent(home)}` : home);
   }
 
   return (

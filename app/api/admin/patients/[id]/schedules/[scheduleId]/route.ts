@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../../../../../lib/db/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { requireAccess } from "../../../../../../../lib/auth/access";
+import type { Permission } from "../../../../../../../lib/auth/permissions";
 import { getPatient } from "../../../../../../../lib/db/patients";
 import { getAgentForTenant, getTenantIdForUser } from "../../../../../../../lib/db/agents";
 import {
@@ -19,7 +21,7 @@ type Loaded =
   | { ok: false; response: NextResponse }
   | {
       ok: true;
-      supabase: Awaited<ReturnType<typeof createClient>>;
+      supabase: SupabaseClient;
       user: { id: string };
       patient: NonNullable<Awaited<ReturnType<typeof getPatient>>>;
       scheduleId: string;
@@ -27,12 +29,11 @@ type Loaded =
       tasks: FollowUpTaskRecord[];
     };
 
-async function loadSchedule(params: Params["params"]): Promise<Loaded> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return { ok: false, response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+async function loadSchedule(params: Params["params"], permission: Permission = "patients.read"): Promise<Loaded> {
+  const guard = await requireAccess(permission);
+  if (!guard.ok) return { ok: false, response: guard.response };
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const { id, scheduleId: rawScheduleId } = await params;
   const scheduleId = decodeURIComponent(rawScheduleId);
@@ -105,7 +106,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
  * became locked while the form was open rejects the whole edit (409).
  */
 export async function PATCH(request: NextRequest, { params }: Params) {
-  const loaded = await loadSchedule(params);
+  const loaded = await loadSchedule(params, "patients.write");
   if (!loaded.ok) return loaded.response;
   const { supabase, user, patient, kind, tasks } = loaded;
 

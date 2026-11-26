@@ -14,6 +14,11 @@ import {
 } from "../db/appointments";
 import { computeDaySlots, parseStartsAt, dateKeyInZone, formatSlotLabel, DEFAULT_CLINIC_TIMEZONE } from "../calendar/availability";
 import { cancelAppointmentReminders, scheduleAppointmentReminders, triggerWaitlistBackfill } from "../scheduler/appointment-reminders";
+import { decideBooking, gatherBookingEvidence, isSeverity, SEVERITIES } from "./triage";
+import { setAppointmentSeverity } from "../db/appointments";
+import { raiseCallAlert } from "../db/alerts";
+import { recordAdherenceAndCheck } from "./adherence";
+import { ADHERENCE_STATUSES } from "../db/medications";
 import { dispatchMCPTool, getMCPToolsForAgent } from "../mcp/client";
 import { dispatchCustomTool, getCustomToolsForAgent } from "../tools/custom";
 
@@ -125,7 +130,10 @@ export const APPOINTMENT_TOOLS: ToolDef[] = [
     type: "function",
     function: {
       name: "book_appointment",
-      description: "Book a new appointment for the caller (already-identified patient) with a provider.",
+      description:
+        "Book a new appointment for the caller (already-identified patient) with a provider. Appointments are booked by the assistant " +
+        "ONLY when the caller's situation is genuinely serious (worsening or severe symptoms, an emergency, a flagged concern). " +
+        "You must rate the severity from what the caller actually said; the system checks it against the call and may decline a routine request.",
       parameters: {
         type: "object",
         properties: {
@@ -133,9 +141,11 @@ export const APPOINTMENT_TOOLS: ToolDef[] = [
           startsAt: { type: "string", description: "ISO 8601 datetime, e.g. 2026-03-05T14:30:00+05:30" },
           durationMinutes: { type: "number", description: "Appointment length in minutes, e.g. 30" },
           visitType: { type: "string", description: "consultation | follow_up | procedure | telehealth | other" },
+          severity: { type: "string", description: "routine (no clinical need) | moderate (mild symptom) | serious (severe or worsening symptom, needs a doctor soon) | emergency" },
+          clinicalReason: { type: "string", description: "One sentence quoting what the caller said that justifies the severity" },
           notes: { type: "string" },
         },
-        required: ["providerId", "startsAt", "durationMinutes"],
+        required: ["providerId", "startsAt", "durationMinutes", "severity", "clinicalReason"],
       },
     },
   },
@@ -186,6 +196,29 @@ export const APPOINTMENT_TOOLS: ToolDef[] = [
   },
 ];
 
+/** Care-plan tools: what the patient says about their medicines (lib/agent/care-plan.ts lists the ids). */
+export const CARE_TOOLS: ToolDef[] = [
+  {
+    type: "function",
+    function: {
+      name: "record_medication_adherence",
+      description:
+        "Record what the patient just told you about ONE prescribed medicine: taken as prescribed, partly taken, missed, or unknown if they didn't say. " +
+        "Use the medicine id from the CARE PLAN. Call it right after they answer; never guess an answer they didn't give.",
+      parameters: {
+        type: "object",
+        properties: {
+          medicationId: { type: "string", description: "The id=... of the medicine in the CARE PLAN" },
+          status: { type: "string", description: "taken | partial | missed | unknown" },
+          note: { type: "string", description: "Short reason if the patient gave one (e.g. 'felt nauseous')" },
+        },
+        required: ["medicationId", "status"],
+      },
+    },
+  },
+];
+export const CARE_TOOL_NAMES = new Set(CARE_TOOLS.map((t) => t.function.name));
+
 /** The legacy demo path's unconditional tool set — unchanged behavior. */
 export const TOOLS: ToolDef[] = RESERVATION_TOOLS;
 
@@ -200,7 +233,7 @@ export const TOOLS: ToolDef[] = RESERVATION_TOOLS;
  * path it's on. */
 export function getToolsForAgent(enabledTools: string[] | undefined | null): ToolDef[] {
   if (!enabledTools || enabledTools.length === 0) return [];
-  const catalog = [...RESERVATION_TOOLS, ...APPOINTMENT_TOOLS];
+  const catalog = [...RESERVATION_TOOLS, ...APPOINTMENT_TOOLS, ...CARE_TOOLS];
   return catalog.filter((t) => enabledTools.includes(t.function.name));
 }
 
@@ -492,6 +525,34 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
             break;
           }
         }
+        // Severity gate: the assistant books only when the call genuinely supports it. A routine request is
+        // declined and handed to staff as a low-priority callback; the model is told exactly what to say.
+        const claimedSeverity = isSeverity(args.severity) ? args.severity : null;
+        const evidence = await gatherBookingEvidence(supabaseService, { clientId, patientId: verified.patientId, sessionId });
+        const decision = decideBooking({ claimed: claimedSeverity, evidence });
+        if (sessionId && userId) {
+          await logSessionEvent(makeEvent({ sessionId, userId, clientId }, "triage_decision", {
+            claimed: claimedSeverity,
+            severity: decision.severity,
+            allowed: decision.allow,
+            priorityScore: decision.priorityScore,
+            reasons: decision.reasons,
+          })).catch(() => undefined);
+        }
+        if (!decision.allow) {
+          if (sessionId) {
+            await raiseCallAlert(supabaseService, {
+              clientId,
+              patientId: verified.patientId,
+              sessionId,
+              kind: "Appointment requested (routine)",
+              detail: `${String(args.clinicalReason ?? "No clinical reason given").slice(0, 160)} — not booked by the assistant; please arrange if needed`,
+              priority: "low",
+            });
+          }
+          result = JSON.stringify({ success: false, declined: true, severity: decision.severity, error: decision.refusal });
+          break;
+        }
         // Real-time slot check against the provider's working hours and existing
         // bookings, so a free-hand time can't land outside the schedule.
         const slotCheck = await checkProviderSlot(args.providerId, startsAt);
@@ -511,6 +572,11 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
             notes: args.notes,
             bookedVia: "ai_call",
             bookedBySessionId: sessionId ?? null,
+          });
+          await setAppointmentSeverity(supabaseService, appointment.id, {
+            severity: decision.severity,
+            reason: [String(args.clinicalReason ?? "").slice(0, 200), ...decision.reasons].filter(Boolean).join(" · ").slice(0, 500),
+            priorityScore: decision.priorityScore,
           });
           await scheduleAppointmentReminders(supabaseService, appointment, tenantId).catch((err) =>
             console.error("[tools] scheduleAppointmentReminders failed:", err),
@@ -588,6 +654,32 @@ export async function dispatchToolCall(name: string, args: Record<string, any>, 
           }).catch((err) => console.error("[tools] triggerWaitlistBackfill failed:", err));
         }
         result = JSON.stringify({ success: !!cancelled, appointment: cancelled });
+        break;
+      }
+
+      case "record_medication_adherence": {
+        const verified = await resolveVerifiedPatient(context);
+        if (!verified.ok) {
+          result = JSON.stringify({ error: verified.error });
+          break;
+        }
+        const status = String(args.status ?? "").toLowerCase();
+        if (!(ADHERENCE_STATUSES as readonly string[]).includes(status)) {
+          result = JSON.stringify({ error: "status must be taken, partial, missed or unknown." });
+          break;
+        }
+        const saved = await recordAdherenceAndCheck(supabaseService, {
+          clientId,
+          patientId: verified.patientId,
+          medicationId: String(args.medicationId ?? ""),
+          status: status as (typeof ADHERENCE_STATUSES)[number],
+          note: typeof args.note === "string" ? args.note : null,
+          sessionId: sessionId ?? null,
+          source: "call",
+        });
+        result = saved
+          ? JSON.stringify({ success: true, recorded: status, note: saved.atRisk ? "Often missed — ask kindly what gets in the way. The doctor has been flagged." : undefined })
+          : JSON.stringify({ error: "That medicine isn't on this patient's list." });
         break;
       }
 

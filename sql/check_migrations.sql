@@ -3,7 +3,7 @@
 -- Paste into the Supabase SQL Editor and run. READ-ONLY (only SELECTs).
 --
 -- Checks every table, column, function, extension and row-level-security
--- policy that sql/migration.sql ... sql/migration_v36.sql create (477 checks),
+-- policy that sql/migration.sql ... sql/migration_v37.sql create (495 checks),
 -- and reports one row per migration:
 --   status = OK       everything that migration creates exists
 --   status = MISSING  what_is_missing lists exactly what is absent -> run that sql/ file
@@ -488,7 +488,25 @@ WITH expected(migration, kind, tbl, name) AS (
     ('v36','column','call_learnings','status'),
     ('v36','column','call_learnings','createdAt'),
     ('v36','column','call_learnings','updatedAt'),
-    ('v36','policy','call_learnings','Tenants can manage their own call learnings')
+    ('v36','policy','call_learnings','Tenants can manage their own call learnings'),
+    ('v37','column','patients','primaryProviderId'),
+    ('v37','column','appointments','severity'),
+    ('v37','column','appointments','severity_reason'),
+    ('v37','column','appointments','priority_score'),
+    ('v37','column','appointments','cancelled_by_user_id'),
+    ('v37','column','appointments','cancelled_by_role'),
+    ('v37','table','medications',''),
+    ('v37','table','medication_adherence',''),
+    ('v37','table','referrals',''),
+    ('v37','table','agent_instruction_requests',''),
+    ('v37','column','medications','patientId'),
+    ('v37','column','medication_adherence','medicationId'),
+    ('v37','column','referrals','to_provider_id'),
+    ('v37','column','agent_instruction_requests','proposed_instruction'),
+    ('v37','policy','medications','Tenants can manage their own medications'),
+    ('v37','policy','medication_adherence','Tenants can manage their own adherence'),
+    ('v37','policy','referrals','Tenants can manage their own referrals'),
+    ('v37','policy','agent_instruction_requests','Tenants can manage their own instruction requests')
 ),
 checked AS (
   SELECT e.*,

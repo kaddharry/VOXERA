@@ -1,5 +1,5 @@
+import { requireAccess } from "../../../lib/auth/access";
 import { NextResponse } from "next/server";
-import { createClient } from "../../../lib/db/server";
 import { listFollowUpTasks } from "../../../lib/db/follow-up-tasks";
 
 export const dynamic = "force-dynamic";
@@ -9,9 +9,10 @@ export const dynamic = "force-dynamic";
  * Patient name/phone are looked up separately rather than via a PostgREST
  * embed, to keep this independent of exact FK-embedding syntax. */
 export async function GET() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const guard = await requireAccess("patients.read");
+  if (!guard.ok) return guard.response;
+  const supabase = guard.access.db;
+  const user = { id: guard.access.clientId };
 
   const tasks = await listFollowUpTasks(supabase, user.id);
 
